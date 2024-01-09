@@ -1,0 +1,22 @@
+{
+    // "C_Cpp.intelliSenseEngine": "default",
+    "cmake.configureSettings": {
+        "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
+        // for macos
+        "LLVM_ENABLE_ZSTD": false,
+        "LLVM_ENABLE_TERMINFO": false,
+        //
+        // "IREE_ENABLE_ASSERTIONS": true,
+        // "IREE_ENABLE_SPLIT_DWARF": true,
+        "IREE_ENABLE_LLD": true,
+        "IREE_BUILD_TESTS": false,
+        // targets
+        "IREE_TARGET_BACKEND_VMVX": true,
+        "IREE_TARGET_BACKEND_LLVM_CPU": true,
+        "IREE_TARGET_BACKEND_LLVM_CPU_WASM": false,
+        "IREE_TARGET_BACKEND_METAL_SPIRV": false,
+        "IREE_TARGET_BACKEND_VULKAN_SPIRV": false,
+        "IREE_TARGET_BACKEND_ROCM": false,
+        "IREE_TARGET_BACKEND_CUDA_DEFAULT": false,
+    }
+}
