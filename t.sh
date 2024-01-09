@@ -20,16 +20,14 @@ pushd ..
 git clone https://github.com/shark-infra/llvm-project.git
 popd
 
-pushd ..
-TAG="6b65d79fbb4682468333cea42b62f15c2dffd8f3"
+TAG="c51da07d81ac91ca9775502af2cc6171e68bd3da"
 mkdir llvm-project-$TAG
 pushd llvm-project-$TAG
 git init
 git remote add origin ../../llvm-project
 git fetch --depth 1 origin $TAG
 git checkout FETCH_HEAD
-git remote set-url origin git@github.com:llvm/llvm-project.git
-popd
+git remote set-url origin https://github.com/shark-infra/llvm-project.git
 popd
 
 # replace with local repo
