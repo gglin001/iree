@@ -206,6 +206,10 @@ function(iree_cc_binary)
           set(_install_rpath "${_origin_prefix}:${_lib_dir}")
         endif()
       endif()
+      if(APPLE)
+        # temp for macos
+        set(_install_rpath "${CMAKE_INSTALL_PREFIX}/../lib")
+      endif()
       set_target_properties(${_NAME} PROPERTIES
         BUILD_WITH_INSTALL_RPATH OFF
         INSTALL_RPATH "${_install_rpath}"
