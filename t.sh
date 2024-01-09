@@ -16,7 +16,8 @@ git submodule update --recursive --init --depth=1
 
 # clone once
 pushd ..
-git clone https://github.com/llvm/llvm-project.git
+# git clone https://github.com/llvm/llvm-project.git
+git clone https://github.com/shark-infra/llvm-project.git
 popd
 
 pushd ..
