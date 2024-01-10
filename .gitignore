@@ -92,3 +92,4 @@ llvm-external-projects/iree-dialects/.cache
 artifacts/
 
 iree-build-*
+demos
