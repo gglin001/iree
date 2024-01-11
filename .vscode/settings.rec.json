@@ -34,5 +34,12 @@
         "IREE_TARGET_BACKEND_VULKAN_SPIRV": false,
         "IREE_TARGET_BACKEND_ROCM": false,
         "IREE_TARGET_BACKEND_CUDA_DEFAULT": false,
+        // trace
+        // "IREE_ENABLE_RUNTIME_TRACING": true,
+        // "IREE_TRACING_MODE": "tracy",
+        // "IREE_BUILD_TRACY": true,
+        // // TODO: raise error from llvm
+        // "IREE_ENABLE_COMPILER_TRACING": true,
+        // "IREE_LINK_COMPILER_SHARED_LIBRARY": false,
     }
 }
