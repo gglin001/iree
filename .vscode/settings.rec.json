@@ -1,13 +1,29 @@
 {
+    // use C_Cpp instead of clangd
     // "C_Cpp.intelliSenseEngine": "default",
+    // .bashrc/.zshrc
+    // export PATH=$PATH:${EXT_PATH}
+    // export PYTHONPATH=$PYTHONPATH:${EXT_PYTHONPATH}
+    "terminal.integrated.env.linux": {
+        "EXT_PATH": "${workspaceFolder}/build/install/bin",
+        "EXT_PYTHONPATH": "",
+    },
+    "terminal.integrated.env.osx": {
+        "EXT_PATH": "${workspaceFolder}/build/install/bin",
+        "EXT_PYTHONPATH": "",
+    },
+    "files.exclude": {
+        "**/.git": true,
+        "**/.DS_Store": true,
+        "**/third_party": true,
+        "**/llvm-project-*": true,
+    },
     "cmake.configureSettings": {
         "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
         // for macos
         "LLVM_ENABLE_ZSTD": false,
         "LLVM_ENABLE_TERMINFO": false,
-        //
-        // "IREE_ENABLE_ASSERTIONS": true,
-        // "IREE_ENABLE_SPLIT_DWARF": true,
+        // misc
         "IREE_ENABLE_LLD": true,
         "IREE_BUILD_TESTS": false,
         // targets
