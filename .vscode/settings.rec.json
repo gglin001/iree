@@ -12,6 +12,11 @@
         "EXT_PATH": "${workspaceFolder}/build/install/bin",
         "EXT_PYTHONPATH": "",
     },
+    "search.exclude": {
+        "**/llvm-project": true,
+        "**/llvm-project-**": true,
+        "**/third_party": true,
+    },
     "cmake.configureSettings": {
         "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
         // for macos
