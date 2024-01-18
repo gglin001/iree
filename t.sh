@@ -33,11 +33,11 @@ popd
 # replace with local repo
 rm -rf $PWD/third_party/llvm-project/
 ln -sf $PWD/llvm-project-$TAG $PWD/third_party/llvm-project
-git add third_party/llvm-project
+# git add third_party/llvm-project
 
 # replace with local repo
 rm -rf third_party/torch-mlir/externals/llvm-project
 ln -sf $PWD/llvm-project-$TAG $PWD/third_party/torch-mlir/externals/llvm-project
 pushd third_party/torch-mlir
-git add externals/llvm-project
+# git add externals/llvm-project
 popd
