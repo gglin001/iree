@@ -12,6 +12,7 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": true,
         "CMAKE_C_COMPILER": "/usr/bin/clang",
         "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "CMAKE_INSTALL_RPATH_USE_LINK_PATH": true,
         "IREE_ERROR_ON_MISSING_SUBMODULES": false,
         "IREE_ENABLE_LLD": true,
         "IREE_BUILD_TESTS": false,
