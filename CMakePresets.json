@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "configurePresets": [
+    {
+      "name": "iree_llvm",
+      "description": "for iree_llvm docker env",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "CMAKE_C_COMPILER": "/usr/bin/clang",
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "IREE_ERROR_ON_MISSING_SUBMODULES": false,
+        "IREE_ENABLE_LLD": true,
+        "IREE_BUILD_TESTS": false,
+        "IREE_BUILD_SAMPLES": false,
+        "IREE_TARGET_BACKEND_VMVX": true,
+        "IREE_TARGET_BACKEND_LLVM_CPU": true,
+        "IREE_TARGET_BACKEND_VULKAN_SPIRV": true,
+        "IREE_TARGET_BACKEND_LLVM_CPU_WASM": false,
+        "IREE_TARGET_BACKEND_METAL_SPIRV": false,
+        "IREE_TARGET_BACKEND_ROCM": false,
+        "IREE_TARGET_BACKEND_CUDA": false,
+        "IREE_HAL_DRIVER_CUDA": false,
+        "IREE_BUILD_PYTHON_BINDINGS": true,
+        "IREE_BUILD_BUNDLED_LLVM": false,
+        "LLVM_DIR": "/iree-llvm-project/build/install/lib/cmake/llvm",
+        "LLD_DIR": "/iree-llvm-project/build/install/lib/cmake/lld",
+        "MLIR_DIR": "/iree-llvm-project/build/install/lib/cmake/mlir",
+        "Clang_DIR": "/iree-llvm-project/build/install/lib/cmake/clang",
+        "IREE_ENABLE_ASSERTIONS": true,
+        "IREE_EXTERNAL_HAL_DRIVERS": "ocl",
+        "IREE_TARGET_BACKEND_OCL": true
+      }
+    }
+  ]
+}
