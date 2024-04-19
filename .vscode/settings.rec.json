@@ -1,48 +1,17 @@
 {
-    // use C_Cpp instead of clangd
-    // "C_Cpp.intelliSenseEngine": "default",
-    // .bashrc/.zshrc
-    // export PATH=$PATH:${EXT_PATH}
-    // export PYTHONPATH=$PYTHONPATH:${EXT_PYTHONPATH}
     "terminal.integrated.env.linux": {
-        "EXT_PATH": "${workspaceFolder}/build/install/bin",
-        "EXT_PYTHONPATH": "",
+        "EXT_PATH": "${workspaceFolder}/build/tools",
+        "EXT_PYTHONPATH": "${workspaceFolder}/build/runtime/bindings/python:${workspaceFolder}/build/compiler/bindings",
     },
     "terminal.integrated.env.osx": {
-        "EXT_PATH": "${workspaceFolder}/build/install/bin",
-        "EXT_PYTHONPATH": "",
+        "EXT_PATH": "${workspaceFolder}/build/tools",
+        "EXT_PYTHONPATH": "${workspaceFolder}/build/runtime/bindings/python:${workspaceFolder}/build/compiler/bindings",
     },
-    "search.exclude": {
-        "**/llvm-project": true,
-        "**/llvm-project-**": true,
-        "**/third_party": true,
-    },
-    "cmake.configureSettings": {
-        "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
-        // for macos
-        "LLVM_ENABLE_ZSTD": false,
-        "LLVM_ENABLE_TERMINFO": false,
-        // misc
-        "IREE_ENABLE_LLD": true,
-        "IREE_BUILD_TESTS": false,
-        // targets
-        "IREE_TARGET_BACKEND_VMVX": true,
-        "IREE_TARGET_BACKEND_LLVM_CPU": true,
-        "IREE_TARGET_BACKEND_LLVM_CPU_WASM": false,
-        "IREE_TARGET_BACKEND_METAL_SPIRV": false,
-        "IREE_TARGET_BACKEND_VULKAN_SPIRV": false,
-        "IREE_TARGET_BACKEND_ROCM": false,
-        "IREE_TARGET_BACKEND_CUDA_DEFAULT": false,
-        // trace
-        // "IREE_ENABLE_RUNTIME_TRACING": true,
-        // "IREE_TRACING_MODE": "tracy",
-        // "IREE_BUILD_TRACY": true,
-        // // TODO: raise error from llvm
-        // "IREE_ENABLE_COMPILER_TRACING": true,
-        // "IREE_LINK_COMPILER_SHARED_LIBRARY": false,
-        // misc
-        "IREE_BUILD_EXPERIMENTAL_CPU_UKERNEL_PLUGINS": true,
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
-    }
+    "cmake.useCMakePresets": "always",
+    // use abs path
+    // "mlir.server_path": "/Users/allen/repos/_COMPILER/iree/build/tools/iree-mlir-lsp-server",
+    // "mlir.tablegen_server_path": "/iree-llvm-project/build/bin/tblgen-lsp-server",
+    // "mlir.pdll_server_path": "/iree-llvm-project/build/bin/mlir-pdll-lsp-server",
+    // "mlir.tablegen_compilation_databases": [],
+    // "mlir.pdll_compilation_databases": []
 }
