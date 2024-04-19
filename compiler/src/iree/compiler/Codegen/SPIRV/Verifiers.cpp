@@ -10,9 +10,9 @@
 #include "iree/compiler/Codegen/SPIRV/Utils.h"
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "llvm/Support/Debug.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/SPIRV/IR/TargetAndABI.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 
 #define DEBUG_TYPE "iree-spirv-verifier"
 
@@ -44,13 +44,22 @@ LogicalResult verifySPIRVMatmulPromoteVectorizePassPipeline(
     llvm::dbgs() << "]\n";
   });
 
+  FailureOr<int64_t> maybeDepth =
+      getSoftwarePipelineDepth(translationInfo.getConfiguration());
+  FailureOr<int64_t> maybeStage =
+      getSoftwarePipelineStoreStage(translationInfo.getConfiguration());
+  if (failed(maybeDepth) || failed(maybeStage)) {
+    return op->emitOpError(
+        "invalid matmul configuration without pipelining config");
+  }
+
   // Get spirv.target_env attributes
   const spirv::TargetEnvAttr targetEnvAttr = getSPIRVTargetEnvAttr(op);
   const spirv::TargetEnv targetEnv(targetEnvAttr);
   const auto limits = targetEnv.getResourceLimits();
   LLVM_DEBUG(llvm::dbgs() << "target environment: " << targetEnvAttr << "\n");
 
-  auto funcOp = op->getParentOfType<func::FuncOp>();
+  auto funcOp = op->getParentOfType<mlir::FunctionOpInterface>();
   const std::optional<int> subgroupSize = getSPIRVSubgroupSize(funcOp);
   if (!subgroupSize)
     return funcOp->emitError("failed to query subgroup size");
@@ -58,6 +67,11 @@ LogicalResult verifySPIRVMatmulPromoteVectorizePassPipeline(
   const auto maxWorkGroupSize = llvm::map_to_vector<3>(
       limits.getMaxComputeWorkgroupSize().getAsValueRange<IntegerAttr>(),
       [](const APInt &dim) { return dim.getSExtValue(); });
+
+  if (workgroupSize.size() < 3) {
+    return funcOp->emitOpError("expected workgroup size to have three "
+                               "dimensions for SPIR-V pipelines");
+  }
 
   // Verify each dimension of workgroupSize should be power of two.
   if (!llvm::isPowerOf2_64(workgroupSize[0]) ||
@@ -122,9 +136,6 @@ LogicalResult verifySPIRVMatmulPromoteVectorizePassPipeline(
     return op->emitOpError("RHS shape is indivisible by first level tile size");
   }
 
-  auto pipelineDepth = translationInfo.getSoftwarePipelineDepth();
-  pipelineDepth = pipelineDepth ? pipelineDepth : 1;
-
   return success();
 }
 
@@ -149,13 +160,22 @@ LogicalResult verifySPIRVCooperativeMatrixVectorizePassPipeline(
     llvm::dbgs() << "]\n";
   });
 
+  FailureOr<int64_t> maybeDepth =
+      getSoftwarePipelineDepth(translationInfo.getConfiguration());
+  FailureOr<int64_t> maybeStage =
+      getSoftwarePipelineStoreStage(translationInfo.getConfiguration());
+  if (failed(maybeDepth) || failed(maybeStage)) {
+    return op->emitOpError(
+        "invalid cooperative matrix configuration without pipelining config");
+  }
+
   // Get spirv.target_env attributes
   const spirv::TargetEnvAttr targetEnvAttr = getSPIRVTargetEnvAttr(op);
   const spirv::TargetEnv targetEnv(targetEnvAttr);
   const auto limits = targetEnv.getResourceLimits();
   LLVM_DEBUG(llvm::dbgs() << "target environment: " << targetEnvAttr << "\n");
 
-  auto funcOp = op->getParentOfType<func::FuncOp>();
+  auto funcOp = op->getParentOfType<mlir::FunctionOpInterface>();
   const std::optional<int> subgroupSize = getSPIRVSubgroupSize(funcOp);
   if (!subgroupSize)
     return funcOp->emitError("failed to query subgroup size");

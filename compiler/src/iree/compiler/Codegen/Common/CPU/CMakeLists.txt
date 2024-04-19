@@ -48,9 +48,6 @@ iree_cc_library(
   DEPS
     ::PassHeaders
     ::PassesIncGen
-    IREELinalgExtDialect
-    IREELinalgExtTransforms
-    IREELinalgExtUtils
     LLVMSupport
     MLIRAffineDialect
     MLIRAffineTransforms
@@ -59,6 +56,7 @@ iree_cc_library(
     MLIRBufferizationDialect
     MLIRDestinationStyleOpInterface
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRIR
     MLIRLinalgDialect
     MLIRLinalgUtils
@@ -72,6 +70,7 @@ iree_cc_library(
     MLIRSupport
     MLIRTensorDialect
     MLIRTensorTransforms
+    MLIRTransformUtils
     MLIRTransforms
     MLIRVectorDialect
     MLIRVectorToSCF
@@ -83,6 +82,7 @@ iree_cc_library(
     iree::compiler::Codegen::Transforms
     iree::compiler::Codegen::Utils
     iree::compiler::Dialect::HAL::IR
+    iree::compiler::Dialect::LinalgExt::IR
   PUBLIC
 )
 

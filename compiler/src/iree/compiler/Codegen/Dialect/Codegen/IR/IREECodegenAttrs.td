@@ -25,25 +25,31 @@ def CPU_BufferOpsTileAndVectorize
     : I32EnumAttrCase<"CPUBufferOpsTileAndVectorize", 5>;
 def CPU_DataTiling
     : I32EnumAttrCase<"CPUDataTiling", 6>;
+def CPU_LinalgExtTileAndVectorize
+    : I32EnumAttrCase<"CPULinalgExtTileAndVectorize", 7>;
 
 def LLVMGPU_Default
     : I32EnumAttrCase<"LLVMGPUDefault", 100>;
+def LLVMGPU_BaseLowering
+    : I32EnumAttrCase<"LLVMGPUBaseLowering", 101>;
 def LLVMGPU_SimpleDistribute
-    : I32EnumAttrCase<"LLVMGPUDistribute", 101>;
+    : I32EnumAttrCase<"LLVMGPUDistribute", 102>;
 def LLVMGPU_Vectorize
-    : I32EnumAttrCase<"LLVMGPUVectorize", 102>;
+    : I32EnumAttrCase<"LLVMGPUVectorize", 103>;
 def LLVMGPU_MatmulSimt
-    : I32EnumAttrCase<"LLVMGPUMatmulSimt", 103>;
+    : I32EnumAttrCase<"LLVMGPUMatmulSimt", 104>;
 def LLVMGPU_MatmulTensorCore
-    : I32EnumAttrCase<"LLVMGPUMatmulTensorCore", 104>;
+    : I32EnumAttrCase<"LLVMGPUMatmulTensorCore", 105>;
 def LLVMGPU_TransposeSharedMem
-    : I32EnumAttrCase<"LLVMGPUTransposeSharedMem", 105>;
+    : I32EnumAttrCase<"LLVMGPUTransposeSharedMem", 106>;
 def LLVMGPU_WarpReduction
-    : I32EnumAttrCase<"LLVMGPUWarpReduction", 106>;
+    : I32EnumAttrCase<"LLVMGPUWarpReduction", 107>;
 def LLVMGPU_PackUnPack
-    : I32EnumAttrCase<"LLVMGPUPackUnPack", 107>;
+    : I32EnumAttrCase<"LLVMGPUPackUnPack", 108>;
 def LLVMGPU_MatmulTensorCoreMmaSync
-    : I32EnumAttrCase<"LLVMGPUMatmulTensorCoreMmaSync", 108>;
+    : I32EnumAttrCase<"LLVMGPUMatmulTensorCoreMmaSync", 109>;
+def LLVMGPU_VectorDistribute
+    : I32EnumAttrCase<"LLVMGPUVectorDistribute", 110>;
 
 def SPIRV_BaseLowering
     : I32EnumAttrCase<"SPIRVBaseLowering", 200>;
@@ -62,9 +68,10 @@ def SPIRV_WinogradVectorize
 
 def VMVX_Default : I32EnumAttrCase<"VMVXDefault", 300>;
 
-
 def Linalg_TransformDialectCodegen
     : I32EnumAttrCase<"TransformDialectCodegen", 1000>;
+def Custom
+    : I32EnumAttrCase<"Custom", 1001>;
 
 def None : I32EnumAttrCase<"None", 0xffff>;
 
@@ -77,13 +84,13 @@ def DispatchLoweringPassPipelineEnum : I32EnumAttr<
     CPU_Default, CPU_DoubleTilingExpert,
     CPU_DoubleTilingPeelingExpert, CPU_ConvTileAndDecomposeExpert,
     CPU_Mmt4dTilingExpert, CPU_BufferOpsTileAndVectorize,
-    CPU_DataTiling,
+    CPU_DataTiling, CPU_LinalgExtTileAndVectorize,
 
     // LLVMGPU CodeGen pipelines
-    LLVMGPU_Default, LLVMGPU_SimpleDistribute, LLVMGPU_Vectorize,
-    LLVMGPU_MatmulSimt, LLVMGPU_MatmulTensorCore,
-    LLVMGPU_TransposeSharedMem, LLVMGPU_WarpReduction,
-    LLVMGPU_PackUnPack, LLVMGPU_MatmulTensorCoreMmaSync,
+    LLVMGPU_Default, LLVMGPU_BaseLowering, LLVMGPU_SimpleDistribute,
+    LLVMGPU_Vectorize, LLVMGPU_MatmulSimt, LLVMGPU_MatmulTensorCore,
+    LLVMGPU_TransposeSharedMem, LLVMGPU_WarpReduction, LLVMGPU_PackUnPack,
+    LLVMGPU_MatmulTensorCoreMmaSync, LLVMGPU_VectorDistribute,
 
     // SPIR-V CodeGen pipelines
     SPIRV_BaseLowering, SPIRV_BaseDistribute, SPIRV_BaseVectorize,
@@ -93,7 +100,13 @@ def DispatchLoweringPassPipelineEnum : I32EnumAttr<
     VMVX_Default,
 
     // Transform dialect based codegen
-    Linalg_TransformDialectCodegen, None
+    Linalg_TransformDialectCodegen,
+
+    // For out of tree pass-pipelines
+    Custom,
+
+    // None to specify no in-built pipelines to use.
+    None
   ]> {
   let cppNamespace = "::mlir::iree_compiler::IREE::Codegen";
   // Don't generate a C++ class! We want to use the AttrDef
@@ -129,26 +142,32 @@ def IREECodegen_TranslationInfoAttr :
 
   let assemblyFormat = [{
     `<` `` $passPipeline
-    (`pipeline_depth` `=` $softwarePipelineDepth^)?
-    (`store_stage` `=` $softwarePipelineStoreStage^)?
-    (`codegen_spec` `=` $codegenSpec^)? `>`
+    (`codegen_spec` `=` $codegenSpec^)?
+    (`workgroup_size` `=` `[` $workgroupSize^ `]`)?
+    (`subgroup_size` `=` $subgroupSize^)?
+    (`,` $configuration^)? `>`
   }];
 
   let parameters = (ins
     AttrParameter<"IREE::Codegen::DispatchLoweringPassPipelineAttr",
         "Name of the pipeline to be invoked on the translation unit.">:$passPipeline,
-    OptionalParameter<"unsigned",
-        "The software pipeline depth to be used">:$softwarePipelineDepth,
-    DefaultValuedParameter<"unsigned", "1",
-        "The software pipeline stage to place stores">:$softwarePipelineStoreStage,
     OptionalParameter<"SymbolRefAttr",
-        "The symbol pointing to the transform dialect codegen spec to be used">:$codegenSpec
+        "The symbol pointing to the transform dialect codegen spec to be used">:$codegenSpec,
+    OptionalArrayRefParameter<"int64_t", "The workgroup size to use">:$workgroupSize,
+    OptionalParameter<"int64_t", "The subgroup size to use">:$subgroupSize,
+    OptionalParameter<"DictionaryAttr",
+        "Pipeline specific configuration">:$configuration
   );
   let builders = [
     AttrBuilder<(ins "DispatchLoweringPassPipeline":$passPipeline,
-        CArg<"unsigned", "0">:$softwarePipelineDepth,
-        CArg<"unsigned", "1">:$softwarePipelineStoreStage,
-        CArg<"SymbolRefAttr", "{}">:$codegenSpec)>
+        CArg<"SymbolRefAttr", "{}">:$codegenSpec,
+        CArg<"ArrayRef<int64_t>", "{}">:$workgroupSize,
+        CArg<"std::optional<int64_t>", "std::nullopt">:$subgroupSize,
+        CArg<"DictionaryAttr", "{}">:$configuration)>,
+    AttrBuilder<(ins "DispatchLoweringPassPipeline":$passPipeline,
+        "ArrayRef<int64_t>":$workgroupSize,
+        CArg<"std::optional<int64_t>", "std::nullopt">:$subgroupSize,
+        CArg<"DictionaryAttr", "{}">:$configuration)>
   ];
   let extraClassDeclaration = [{
     // Returns the lowering pass pipeline set.
@@ -264,23 +283,13 @@ def IREECodegen_CompilationInfoAttr :
   }];
   let parameters = (ins
     AttrParameter<"LoweringConfigAttr", "">:$loweringConfig,
-    AttrParameter<"TranslationInfoAttr", "">:$translationInfo,
-    OptionalArrayRefParameter<"int64_t", "The workgroup size to use during translation.">:$workgroupSize,
-    OptionalParameter<"std::optional<int64_t>",
-        "The subgroup size to use during translation.">:$subgroupSize
+    AttrParameter<"TranslationInfoAttr", "">:$translationInfo
   );
 
   let assemblyFormat = [{
-    `<` `lowering_config` `=` $loweringConfig `,` `translation_info` `=` $translationInfo
-    (`,` `workgroup_size` `=` `[` $workgroupSize^ `]`)?
-    (`,` `subgroup_size` `=` $subgroupSize^)? `>`
+    `<` `lowering_config` `=` $loweringConfig `,` `translation_info` `=` $translationInfo `>`
   }];
 
-  let extraClassDeclaration = [{
-    SmallVector<int64_t> getWorkgroupSizeVals() {
-      return SmallVector<int64_t>(getWorkgroupSize());
-    }
-  }];
   let genVerifyDecl = 1;
 }
 

@@ -48,8 +48,10 @@ iree_cc_library(
     LLVMSupport
     MLIRArithDialect
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRIR
     MLIRPass
+    iree::compiler::Dialect::HAL::Target
     iree::compiler::Pipelines
     iree::compiler::Utils
   PUBLIC
@@ -70,7 +72,6 @@ iree_cc_library(
     iree::hal
     iree::hal::drivers::local_task::registration
     iree::modules::hal
-    iree::tooling::vm_util
     iree::vm
     iree::vm::bytecode::module
   PUBLIC

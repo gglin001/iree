@@ -4,7 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 // TODO(benvanik): have a stream/upstream equivalent of the flow.dispatch.* ops.
 #include "iree/compiler/Dialect/Flow/IR/FlowDialect.h"
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
@@ -19,7 +19,6 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
@@ -653,8 +652,8 @@ struct EncodeBindingSubspanOp
 
     // Directly swap the type with the one, changing all uses in the IR.
     // This works because
-    rewriter.updateRootInPlace(op,
-                               [&]() { op.getResult().setType(alignedType); });
+    rewriter.modifyOpInPlace(op,
+                             [&]() { op.getResult().setType(alignedType); });
 
     return success();
   }
@@ -686,7 +685,7 @@ struct EncodeDispatchTensorLoadOp
     rewriter.setInsertionPointAfterValue(loadedValue);
     auto truncOp =
         rewriter.create<arith::TruncIOp>(op.getLoc(), targetType, loadedValue);
-    rewriter.updateRootInPlace(op, [&]() {
+    rewriter.modifyOpInPlace(op, [&]() {
       loadedValue.replaceAllUsesExcept(truncOp, truncOp);
       loadedValue.setType(alignedType);
     });
@@ -718,7 +717,7 @@ struct EncodeDispatchTensorStoreOp
     // Extend the sub-byte -> byte type; e.g. i1 -> i8.
     auto extOp = rewriter.create<arith::ExtUIOp>(op.getLoc(), alignedType,
                                                  op.getValue());
-    rewriter.updateRootInPlace(
+    rewriter.modifyOpInPlace(
         op, [&]() { op.getValueMutable().assign(extOp.getResult()); });
     return success();
   }

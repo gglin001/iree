@@ -91,5 +91,6 @@ llvm-external-projects/iree-dialects/.cache
 # pkgci artifacts
 artifacts/
 
-iree-build-*
-demos
+# Side effects of local patching/merging
+*.orig
+*.rej

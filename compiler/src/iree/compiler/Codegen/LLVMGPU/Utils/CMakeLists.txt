@@ -16,21 +16,33 @@ iree_cc_library(
   HDRS
     "LLVMGPUUtils.h"
   SRCS
+    "AMDGPUDistributionPatterns.cpp"
     "LLVMGPULayoutAnalysisAndDistribution.cpp"
     "LLVMGPUUtils.cpp"
+    "PrefetchSharedMemoryCopy.cpp"
   DEPS
+    IREEVectorExtDialect
     LLVMSupport
+    MLIRAMDGPUDialect
     MLIRAffineDialect
     MLIRArithDialect
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRGPUDialect
     MLIRIR
     MLIRMathDialect
     MLIRMemRefDialect
     MLIRNVGPUDialect
+    MLIRSCFDialect
+    MLIRSCFTransforms
+    MLIRSideEffectInterfaces
+    MLIRSupport
     MLIRVectorDialect
+    iree::compiler::Codegen::Common
+    iree::compiler::Codegen::Common::GPU::CommonGPUPasses
     iree::compiler::Codegen::Transforms
     iree::compiler::Codegen::Utils
+    iree::compiler::Dialect::HAL::IR
   PUBLIC
 )
 

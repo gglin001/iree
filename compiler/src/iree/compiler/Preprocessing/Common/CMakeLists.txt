@@ -26,10 +26,13 @@ iree_cc_library(
     "Passes.h"
     "Passes.h.inc"
   SRCS
+    "ApplyPDLPatterns.cpp"
     "ConvertConv2DToImg2Col.cpp"
+    "ConvertConvToChannelsLast.cpp"
+    "InterpreterPass.cpp"
     "MakeSingleDispatchForFunction.cpp"
     "PadLinalgOps.cpp"
-    "PassDetail.h"
+    "PadToIntrinsics.cpp"
     "Passes.cpp"
   DEPS
     ::PassesIncGen
@@ -40,12 +43,27 @@ iree_cc_library(
     MLIRIR
     MLIRLinalgDialect
     MLIRLinalgTransforms
+    MLIRMemRefDialect
+    MLIRPDLDialect
+    MLIRPDLInterpDialect
+    MLIRParser
     MLIRPass
+    MLIRSupport
     MLIRTensorDialect
     MLIRTensorUtils
+    MLIRTransformDialect
+    MLIRTransformDialectTransforms
+    MLIRTransformUtils
     MLIRTransforms
+    iree::compiler::Codegen::Common::GPU::GPUHeuristics
+    iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
+    iree::compiler::Codegen::Dialect::GPU::IR::IREEGPUDialect
+    iree::compiler::Codegen::Utils
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::Flow::Transforms
+    iree::compiler::Dialect::HAL::IR
+    iree::compiler::Dialect::Stream::IR
+    iree::compiler::Dialect::Util::IR
   PUBLIC
 )
 

@@ -258,7 +258,7 @@ def prepare_installation():
             "-DCMAKE_PLATFORM_NO_VERSIONED_SONAME=ON",
             "-DPython3_EXECUTABLE={}".format(sys.executable),
             "-DCMAKE_BUILD_TYPE={}".format(cfg),
-            # TODO(scotttodd): include IREE_TARGET_BACKEND_WEBGPU here (and in env)
+            # TODO(scotttodd): include IREE_TARGET_BACKEND_WEBGPU_SPIRV here (and in env)
             get_env_cmake_option("IREE_ENABLE_CPUINFO", "ON"),
             get_env_cmake_option("IREE_TARGET_BACKEND_ROCM", "ON"),
             get_env_cmake_option("IREE_ENABLE_LLD", "OFF"),
@@ -436,6 +436,7 @@ setup(
         # it also needs to be enabled on the build side.
         # CMakeExtension("iree.compiler._mlir_libs._mlirHlo"),
         CMakeExtension("iree.compiler._mlir_libs._mlirLinalgPasses"),
+        CMakeExtension("iree.compiler._mlir_libs._mlirGpuPasses"),
         CMakeExtension("iree.compiler._mlir_libs._site_initialize_0"),
     ],
     cmdclass={

@@ -31,6 +31,7 @@ iree_cc_library(
     MLIRLinalgTransforms
     MLIRMemRefDialect
     MLIRPass
+    MLIRTransformUtils
     MLIRTransforms
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Dialect::HAL::IR
@@ -56,7 +57,6 @@ iree_cc_library(
     "Passes.cpp"
     "SPIRVAnnotateWinogradLoops.cpp"
     "SPIRVBreakDownLargeVector.cpp"
-    "SPIRVCreateFastSlowPath.cpp"
     "SPIRVDistribute.cpp"
     "SPIRVEmulateI64.cpp"
     "SPIRVEraseStorageBufferStaticShape.cpp"
@@ -64,6 +64,7 @@ iree_cc_library(
     "SPIRVInitialVectorLowering.cpp"
     "SPIRVLinkExecutables.cpp"
     "SPIRVLowerExecutableTargetPass.cpp"
+    "SPIRVLowerExecutableUsingTransformDialect.cpp"
     "SPIRVMapMemRefStorageClass.cpp"
     "SPIRVMaterializeExecutableConditions.cpp"
     "SPIRVSelectLoweringStrategy.cpp"
@@ -79,9 +80,6 @@ iree_cc_library(
   DEPS
     ::PassHeaders
     ::PassesIncGen
-    IREELinalgExtDialect
-    IREELinalgExtPasses
-    IREELinalgExtTransforms
     IREELinalgTransformDialect
     IREELinalgTransformDialectPasses
     LLVMSupport
@@ -101,6 +99,7 @@ iree_cc_library(
     MLIRFuncDialect
     MLIRFuncToSPIRV
     MLIRFuncTransforms
+    MLIRFunctionInterfaces
     MLIRGPUDialect
     MLIRGPUToSPIRV
     MLIRGPUTransforms
@@ -130,6 +129,7 @@ iree_cc_library(
     MLIRTosaDialect
     MLIRTosaToArith
     MLIRTransformDialect
+    MLIRTransformUtils
     MLIRTransforms
     MLIRVectorDialect
     MLIRVectorInterfaces
@@ -138,6 +138,7 @@ iree_cc_library(
     MLIRVectorTransforms
     iree::compiler::Codegen::Common
     iree::compiler::Codegen::Common::GPU::CommonGPUPasses
+    iree::compiler::Codegen::Common::GPU::GPUHeuristics
     iree::compiler::Codegen::Common::TransformDialectInterpreterPass
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Codegen::TransformStrategies::GPU
@@ -146,6 +147,8 @@ iree_cc_library(
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::HAL::IR
     iree::compiler::Dialect::HAL::IR::HALDialect
+    iree::compiler::Dialect::LinalgExt::IR
+    iree::compiler::Dialect::LinalgExt::Transforms
     iree::compiler::Dialect::Util::IR
     iree::compiler::Dialect::Util::Transforms
     iree::compiler::Utils

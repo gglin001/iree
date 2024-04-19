@@ -10,26 +10,35 @@
 #include <numeric>
 #include <optional>
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
+#include "iree/compiler/Codegen/Common/GPU/GPUHeuristics.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
 #include "iree/compiler/Codegen/Interfaces/UKernelOpInterface.h"
 #include "iree/compiler/Codegen/TransformStrategies/GPU/Strategies.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/LinalgOpInfo.h"
-#include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
+#include "iree/compiler/Codegen/Utils/Utils.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/Debug.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 
 namespace mlir::iree_compiler {
+
+llvm::cl::opt<bool> clGPUEnableVectorDistribution(
+    "iree-codegen-llvmgpu-use-vector-distribution",
+    llvm::cl::desc("enable the usage of the vector distribution pipeline"),
+    llvm::cl::init(false));
 
 llvm::cl::opt<bool> clGPUEnableTransformDialectJit(
     "iree-codegen-llvmgpu-enable-transform-dialect-jit",
@@ -48,10 +57,20 @@ llvm::cl::opt<bool>
                     llvm::cl::desc("force use mma sync instead of wmma ops"),
                     llvm::cl::init(false));
 
+llvm::cl::opt<int> clGPUMatmulCThreshold(
+    "iree-codegen-llvmgpu-matmul-c-matrix-threshold",
+    llvm::cl::desc("matmul c matrix element count threshold to be considered "
+                   "as small vs. large when deciding MMA schedule"),
+    // TODO: We should get this value from the target's parallelism.
+    llvm::cl::init(512 * 512));
+
 namespace {
 
 constexpr StringLiteral kCudaTarget = "cuda";
 constexpr StringLiteral kRocmTarget = "rocm";
+
+// Threshold used to determine whether a matmul dimension is 'very skinny'.
+constexpr int64_t kVerySkinnyDimThreshold = 4;
 
 /// Structure to represent target features.
 struct TargetInfo {
@@ -61,6 +80,7 @@ struct TargetInfo {
   bool hasMmaSync = false;
   // These are listed in the order of preference, not necessarily monotonically.
   SmallVector<int64_t, 2> supportedSubgroupSizes = {32};
+  int64_t sharedMemoryLimitInBytes = 65536;
 };
 
 struct TileWorkgroupSizePair {
@@ -75,21 +95,35 @@ constexpr unsigned softwarePipelineDepthSimt = 0;
 
 } // namespace
 
+//====---------------------------------------------------------------------===//
+// Matmul Configuration Helpers
+//====---------------------------------------------------------------------===//
+
 /// Return the best combination of tile size and wg size. It will then used to
 /// pick the best size aligned with the shape dimension.
-static void getMatmulConfig(SmallVectorImpl<TileWorkgroupSizePair> &tileSizes) {
+static SmallVector<TileWorkgroupSizePair>
+getMatmulConfig(const TargetInfo &targetInfo) {
+  SmallVector<TileWorkgroupSizePair> tileSizes;
   // Pick tile size so that M*K and K*N dividible by wgSize * \*vecSize=*\4.
   // This way workgroup memory copy don't need to be masked. Once we support
   // masked load we can get performance out of more configuration.
-  tileSizes.push_back(TileWorkgroupSizePair({{32, 128, 32}, {32, 8, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{128, 64, 8}, {16, 8, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{16, 256, 32}, {64, 2, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{8, 32, 32}, {8, 8, 1}, 1}));
 
-  tileSizes.push_back(TileWorkgroupSizePair({{32, 128, 4}, {32, 8, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{8, 128, 4}, {32, 1, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{16, 64, 4}, {16, 2, 1}, 1}));
-  tileSizes.push_back(TileWorkgroupSizePair({{1, 128, 8}, {32, 1, 1}, 1}));
+  // Make use of the full subgroup when possible.
+  if (targetInfo.supportedSubgroupSizes.front() == 64) {
+    tileSizes.push_back(TileWorkgroupSizePair({{64, 128, 64}, {64, 16, 1}, 1}));
+  }
+
+  llvm::append_values(tileSizes,
+                      TileWorkgroupSizePair({{32, 128, 32}, {32, 8, 1}, 1}),
+                      TileWorkgroupSizePair({{128, 64, 8}, {16, 8, 1}, 1}),
+                      TileWorkgroupSizePair({{16, 256, 32}, {64, 2, 1}, 1}),
+                      TileWorkgroupSizePair({{8, 32, 32}, {8, 8, 1}, 1}),
+
+                      TileWorkgroupSizePair({{32, 128, 4}, {32, 8, 1}, 1}),
+                      TileWorkgroupSizePair({{8, 128, 4}, {32, 1, 1}, 1}),
+                      TileWorkgroupSizePair({{16, 64, 4}, {16, 2, 1}, 1}),
+                      TileWorkgroupSizePair({{1, 128, 8}, {32, 1, 1}, 1}));
+  return tileSizes;
 }
 
 /// Return the best combination of tile size and wg size when using tensorcore
@@ -115,17 +149,17 @@ getTensorCoreConfig(SmallVectorImpl<TileWorkgroupSizePair> &tileSizes,
       tileSizes.push_back(
           TileWorkgroupSizePair({{128, 256, 16}, {128, 2, 1}, 4}));
     }
-    tileSizes.push_back(TileWorkgroupSizePair({{32, 32, 16}, {64, 2, 1}, 4}));
-    tileSizes.push_back(TileWorkgroupSizePair({{16, 32, 16}, {64, 1, 1}, 4}));
-    tileSizes.push_back(TileWorkgroupSizePair({{32, 16, 16}, {32, 2, 1}, 4}));
-    tileSizes.push_back(TileWorkgroupSizePair({{16, 16, 16}, {32, 1, 1}, 4}));
+    llvm::append_values(tileSizes,
+                        TileWorkgroupSizePair({{32, 32, 16}, {64, 2, 1}, 4}),
+                        TileWorkgroupSizePair({{16, 32, 16}, {64, 1, 1}, 4}),
+                        TileWorkgroupSizePair({{32, 16, 16}, {32, 2, 1}, 4}),
+                        TileWorkgroupSizePair({{16, 16, 16}, {32, 1, 1}, 4}));
   }
 }
 
-static StringRef getTargetArch(func::FuncOp entryPoint) {
-  if (auto variantOp =
-          entryPoint->getParentOfType<IREE::HAL::ExecutableVariantOp>()) {
-    IREE::HAL::ExecutableTargetAttr targetAttr = variantOp.getTarget();
+// Get the target arch associated with the immediate parent.
+static StringRef getTargetArch(mlir::FunctionOpInterface entryPoint) {
+  if (auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(entryPoint)) {
     if (auto config = targetAttr.getConfiguration()) {
       if (auto attr = config.getAs<StringAttr>("target_arch")) {
         return attr.getValue();
@@ -135,10 +169,8 @@ static StringRef getTargetArch(func::FuncOp entryPoint) {
   return "";
 }
 
-bool isCudaTarget(func::FuncOp entryPoint) {
-  if (auto variantOp =
-          entryPoint->getParentOfType<IREE::HAL::ExecutableVariantOp>()) {
-    IREE::HAL::ExecutableTargetAttr targetAttr = variantOp.getTarget();
+bool isCudaTarget(mlir::FunctionOpInterface entryPoint) {
+  if (auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(entryPoint)) {
     if (auto backend = targetAttr.getBackend()) {
       return backend.getValue().str() == kCudaTarget;
     }
@@ -146,10 +178,8 @@ bool isCudaTarget(func::FuncOp entryPoint) {
   return false;
 }
 
-bool isRocmTarget(func::FuncOp entryPoint) {
-  if (auto variantOp =
-          entryPoint->getParentOfType<IREE::HAL::ExecutableVariantOp>()) {
-    IREE::HAL::ExecutableTargetAttr targetAttr = variantOp.getTarget();
+bool isRocmTarget(mlir::FunctionOpInterface entryPoint) {
+  if (auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(entryPoint)) {
     if (auto backend = targetAttr.getBackend()) {
       return backend.getValue().str() == kRocmTarget;
     }
@@ -157,11 +187,12 @@ bool isRocmTarget(func::FuncOp entryPoint) {
   return false;
 }
 
-static TargetInfo getCudaTargetInfo(func::FuncOp entryPoint) {
+static TargetInfo getCudaTargetInfo(mlir::FunctionOpInterface entryPoint) {
   TargetInfo info;
   // All the cuda target are assumed to have warp support.
   info.hasWarpShuffle = true;
   info.supportedSubgroupSizes = {32};
+  info.sharedMemoryLimitInBytes = 163 * 1024;
   StringRef targetName = getTargetArch(entryPoint);
   // If no target name is set assume all the features are off.
   if (targetName == "")
@@ -184,9 +215,10 @@ static TargetInfo getCudaTargetInfo(func::FuncOp entryPoint) {
 }
 
 // TODO: Plumb in WarpSize into TargetInfo for wave64 systems.
-static TargetInfo getRocmTargetInfo(func::FuncOp entryPoint) {
+static TargetInfo getRocmTargetInfo(mlir::FunctionOpInterface entryPoint) {
   TargetInfo info;
   StringRef targetName = getTargetArch(entryPoint);
+  info.sharedMemoryLimitInBytes = 65536;
   // If no target name is set assume all the features are off.
   if (targetName.empty())
     return info;
@@ -209,7 +241,7 @@ static TargetInfo getRocmTargetInfo(func::FuncOp entryPoint) {
   return info;
 }
 
-static TargetInfo getTargetInfo(func::FuncOp entryPoint) {
+static TargetInfo getTargetInfo(mlir::FunctionOpInterface entryPoint) {
   // TODO: fill out target info for other vendors.
   if (isCudaTarget(entryPoint))
     return getCudaTargetInfo(entryPoint);
@@ -218,7 +250,8 @@ static TargetInfo getTargetInfo(func::FuncOp entryPoint) {
   return {};
 }
 
-static bool supportsTensorCore(func::FuncOp entryPoint, linalg::LinalgOp op,
+static bool supportsTensorCore(mlir::FunctionOpInterface entryPoint,
+                               linalg::LinalgOp op,
                                const TargetInfo &targetInfo) {
   // Limit tensor core pipeline to matmul as not all combinations of transpose
   // are supported upstream.
@@ -276,7 +309,347 @@ getTensorCorePipeline(Type elementType) {
   return codegenPipeline;
 }
 
-static LogicalResult setContractConfig(func::FuncOp entryPoint,
+//====---------------------------------------------------------------------===//
+// Vector Distribution Contraction/Convolution Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
+static LogicalResult
+setConvolutionVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
+                                       linalg::LinalgOp op,
+                                       const TargetInfo &targetInfo) {
+  FailureOr<ArrayAttr> mmaKinds = getSupportedMmaTypes(entryPoint);
+  if (failed(mmaKinds)) {
+    return failure();
+  }
+
+  // This pipeline needs to know the subgroup size for distributing to virtual
+  // lane IDs.
+  if (targetInfo.supportedSubgroupSizes.empty()) {
+    return failure();
+  }
+  const int64_t targetSubgroupSize = targetInfo.supportedSubgroupSizes.front();
+
+  SmallVector<int64_t, 4> bounds = op.getStaticLoopRanges();
+  FailureOr<mlir::linalg::ConvolutionDimensions> convolutionDims =
+      mlir::linalg::inferConvolutionDims(op);
+  if (failed(convolutionDims)) {
+    return failure();
+  }
+
+  // This strategy turns non-strided/dilated convolution problems into matmul
+  // problems by tiling certain dimensions to 1:
+  //  - Batch dimensions (parallel shared by the image and output)
+  //  - Filter dimensions (reduction on the filter, and convolved on the image)
+  //  - All output image dimensions except the outermost one
+  //
+  // After this, the remaining non-unit dimensions are:
+  //  - One output image dimension corresponding to the M dimension of a matmul.
+  //  - The output channel dimension, corresponding to the N dimension.
+  //  - The input channel dimension, corresponding to the K dimension.
+
+  // TODO: Relax this condition to strictly alignment requirements.
+  if (convolutionDims->outputChannel.size() < 1 ||
+      convolutionDims->inputChannel.size() < 1 ||
+      convolutionDims->filterLoop.size() < 1 ||
+      convolutionDims->outputImage.size() < 1 ||
+      convolutionDims->depth.size() != 0) {
+    return failure();
+  }
+
+  auto isAllOnesList = [](ArrayRef<int64_t> list) {
+    return llvm::all_of(list, [](int64_t i) { return i == 1; });
+  };
+
+  // TODO: Support non-unit strides/dilations.
+  if (!isAllOnesList(convolutionDims->strides) ||
+      !isAllOnesList(convolutionDims->dilations)) {
+    return failure();
+  }
+
+  int64_t mDim = convolutionDims->outputImage.back();
+  int64_t nDim = convolutionDims->outputChannel.back();
+  // TODO: Support NCHW convolutions. This is just a matmul_transpose_a, however
+  // the distribution patterns currently do not support that variant.
+  if (mDim > nDim) {
+    return failure();
+  }
+  int64_t kDim = convolutionDims->inputChannel.back();
+
+  Value lhs = op.getDpsInputOperand(0)->get();
+  Value rhs = op.getDpsInputOperand(1)->get();
+  Value init = op.getDpsInitOperand(0)->get();
+
+  Type lhsElemType = getElementTypeOrSelf(lhs);
+  Type rhsElemType = getElementTypeOrSelf(rhs);
+  Type initElemType = getElementTypeOrSelf(init);
+
+  GPUMatmulShapeType problem{bounds[mDim], bounds[nDim], bounds[kDim],
+                             lhsElemType,  rhsElemType,  initElemType};
+
+  auto mmaAttrs =
+      llvm::to_vector(mmaKinds->getAsRange<IREE::GPU::MmaInterfaceAttr>());
+  SmallVector<GPUMatmulShapeType> intrinsics;
+  intrinsics.reserve(mmaKinds->size());
+  for (auto mma : mmaAttrs) {
+    auto [mSize, nSize, kSize] = mma.getMNKShape();
+    auto [aType, bType, cType] = mma.getABCElementTypes();
+    if (mma.getSubgroupSize() != targetSubgroupSize)
+      continue;
+    intrinsics.emplace_back(mSize, nSize, kSize, aType, bType, cType);
+  }
+  if (intrinsics.empty())
+    return failure();
+
+  // Note that the following heuristic seeds are just placeholder values.
+  // We need to clean it up and make it adjusting to different targets.
+  // See https://github.com/openxla/iree/issues/16341 for details.
+  GPUMMAHeuristicSeeds seeds{/*bestSubgroupCountPerWorkgroup=*/4,
+                             /*bestMNTileCountPerSubgroup=*/8,
+                             /*bestKTileCountPerSubgroup=*/2};
+
+  int64_t sharedMemoryLimitInBytes = targetInfo.sharedMemoryLimitInBytes;
+
+  // First try to find a schedule with an exactly matching intrinsic.
+  FailureOr<GPUMMASchedule> schedule =
+      deduceMMASchedule(problem, intrinsics, seeds, sharedMemoryLimitInBytes);
+  if (failed(schedule)) {
+    // Then try again by allowing upcasting accumulator.
+    schedule =
+        deduceMMASchedule(problem, intrinsics, seeds, sharedMemoryLimitInBytes,
+                          /*canUpcastAcc=*/true);
+  }
+  if (failed(schedule)) {
+    return failure();
+  }
+
+  std::array<int64_t, 3> workgroupSize{
+      schedule->nWarpCount * targetSubgroupSize, schedule->mWarpCount, 1};
+
+  SmallVector<int64_t> workgroupTileSizes(op.getNumLoops(), 0);
+  // Tile all batch dimensions with unit size.
+  for (int64_t batch : convolutionDims->batch) {
+    workgroupTileSizes[batch] = 1;
+  }
+  // Tile all output image dimensions with unit size except the last one.
+  for (int64_t oi : llvm::drop_end(convolutionDims->outputImage)) {
+    workgroupTileSizes[oi] = 1;
+  }
+  for (int64_t oc : llvm::drop_end(convolutionDims->outputChannel)) {
+    workgroupTileSizes[oc] = 1;
+  }
+  for (int64_t ic : llvm::drop_end(convolutionDims->inputChannel)) {
+    workgroupTileSizes[ic] = 1;
+  }
+  // Compute the M/N dimension tile size by multiply subgroup information.
+  workgroupTileSizes[mDim] =
+      schedule->mWarpCount * schedule->mTileCount * schedule->mSize;
+  workgroupTileSizes[nDim] =
+      schedule->nWarpCount * schedule->nTileCount * schedule->nSize;
+
+  // Follow the LLVMGPU convention of keeping all of the tile sizes in one list.
+  workgroupTileSizes[kDim] = schedule->kTileCount * schedule->kSize;
+
+  // Tile all filter loop dimensions to 1.
+  for (int64_t filterDim : convolutionDims->filterLoop) {
+    workgroupTileSizes[filterDim] = 1;
+  }
+
+  TileSizesListType tileSizes;
+  tileSizes.push_back(workgroupTileSizes);
+
+  // Attach the MMA schedule as an attribute to the entry point export function
+  // for later access in the pipeline.
+  MLIRContext *context = op.getContext();
+  auto scheduleAttr = IREE::GPU::MMAScheduleAttr::get(
+      context, mmaAttrs[schedule->index], schedule->mWarpCount,
+      schedule->nWarpCount, schedule->mTileCount, schedule->nTileCount,
+      schedule->kTileCount);
+  SmallVector<NamedAttribute, 1> attrs;
+  attrs.emplace_back(
+      StringAttr::get(context, IREE::GPU::MMAScheduleAttr::getMnemonic()),
+      scheduleAttr);
+  auto configDict = DictionaryAttr::get(context, attrs);
+
+  return setOpConfigAndEntryPointFnTranslation(
+      entryPoint, op, tileSizes,
+      IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUVectorDistribute,
+      workgroupSize, targetSubgroupSize, configDict);
+}
+
+static LogicalResult
+setMatmulVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
+                                  linalg::LinalgOp op,
+                                  const TargetInfo &targetInfo) {
+  FailureOr<ArrayAttr> mmaKinds = getSupportedMmaTypes(entryPoint);
+  if (failed(mmaKinds)) {
+    return failure();
+  }
+
+  // This pipeline needs to know the subgroup size for distributing to virtual
+  // lane IDs.
+  if (targetInfo.supportedSubgroupSizes.empty()) {
+    return failure();
+  }
+  const int64_t targetSubgroupSize = targetInfo.supportedSubgroupSizes.front();
+
+  SmallVector<int64_t, 4> bounds = op.getStaticLoopRanges();
+  FailureOr<mlir::linalg::ContractionDimensions> contractionDims =
+      mlir::linalg::inferContractionDims(op);
+  assert(succeeded(contractionDims) && "Could not infer contraction dims");
+
+  if (contractionDims->k.size() < 1 || contractionDims->m.size() < 1 ||
+      contractionDims->n.size() < 1) {
+    return failure();
+  }
+
+  // For now we are not being smart and trying to reshape dimensions to allow
+  // for better usage of intrinsics, and instead are tiling all dimensions
+  // except the inner most m, n, and k dimensions to 1.
+  int64_t mDim = contractionDims->m.back();
+  int64_t nDim = contractionDims->n.back();
+  int64_t kDim = contractionDims->k.back();
+
+  // Dynamic dims are expected to be taken care of earlier in the pipeline.
+  if (ShapedType::isDynamic(bounds[mDim]) ||
+      ShapedType::isDynamic(bounds[nDim]) ||
+      ShapedType::isDynamic(bounds[kDim])) {
+    return failure();
+  }
+
+  // Bail out on matvec-like cases.
+  if (bounds[mDim] == 1 || bounds[nDim] == 1) {
+    return failure();
+  }
+
+  Value lhs = op.getDpsInputOperand(0)->get();
+  Value rhs = op.getDpsInputOperand(1)->get();
+  Value init = op.getDpsInitOperand(0)->get();
+
+  Type lhsElemType = getElementTypeOrSelf(lhs);
+  Type rhsElemType = getElementTypeOrSelf(rhs);
+  Type initElemType = getElementTypeOrSelf(init);
+
+  GPUMatmulShapeType problem{bounds[mDim], bounds[nDim], bounds[kDim],
+                             lhsElemType,  rhsElemType,  initElemType};
+
+  auto mmaAttrs =
+      llvm::to_vector(mmaKinds->getAsRange<IREE::GPU::MmaInterfaceAttr>());
+  SmallVector<GPUMatmulShapeType> intrinsics;
+  intrinsics.reserve(mmaKinds->size());
+  for (auto mma : mmaAttrs) {
+    auto [mSize, nSize, kSize] = mma.getMNKShape();
+    auto [aType, bType, cType] = mma.getABCElementTypes();
+    if (mma.getSubgroupSize() != targetSubgroupSize)
+      continue;
+    intrinsics.emplace_back(mSize, nSize, kSize, aType, bType, cType);
+  }
+  if (intrinsics.empty())
+    return failure();
+
+  GPUMMAHeuristicSeeds seeds;
+
+  // Note that the following heuristic seeds are just placeholder values.
+  // We need to clean it up and make it adjusting to different targets.
+  // See https://github.com/openxla/iree/issues/16341 for details.
+  if (problem.mSize * problem.nSize <= clGPUMatmulCThreshold) {
+    // For matmuls with small M*N size, we want to distribute M*N onto more
+    // workgroups to fill the GPU. Use a smaller bestMNTileCountPerSubgroup
+    // and a larger bestKTileCountPerSubgroup.
+    seeds = {/*bestSubgroupCountPerWorkgroup=*/4,
+             /*bestMNTileCountPerSubgroup=*/4,
+             /*bestKTileCountPerSubgroup=*/8};
+  } else {
+    seeds = {/*bestSubgroupCountPerWorkgroup=*/4,
+             /*bestMNTileCountPerSubgroup=*/8,
+             /*bestKTileCountPerSubgroup=*/4};
+  }
+
+  int64_t sharedMemoryLimitInBytes = targetInfo.sharedMemoryLimitInBytes;
+
+  // First try to find a schedule with an exactly matching intrinsic.
+  std::optional<GPUMMASchedule> schedule =
+      deduceMMASchedule(problem, intrinsics, seeds, sharedMemoryLimitInBytes);
+  if (!schedule) {
+    // Then try again by allowing upcasting accumulator.
+    schedule =
+        deduceMMASchedule(problem, intrinsics, seeds, sharedMemoryLimitInBytes,
+                          /*canUpcastAcc=*/true);
+  }
+  if (!schedule) {
+    return failure();
+  }
+
+  std::array<int64_t, 3> workgroupSize{
+      schedule->nWarpCount * targetSubgroupSize, schedule->mWarpCount, 1};
+
+  SmallVector<int64_t> workgroupTileSizes(op.getNumLoops(), 0);
+  // Tile all batch dimensions with unit size.
+  for (int64_t batch : contractionDims->batch) {
+    workgroupTileSizes[batch] = 1;
+  }
+
+  // Tile all m, n, and k dimensions to 1 except the innermost. Unit dims
+  // from this tiling are folded before vectorization.
+  for (int64_t m : llvm::drop_end(contractionDims->m)) {
+    workgroupTileSizes[m] = 1;
+  }
+  for (int64_t n : llvm::drop_end(contractionDims->n)) {
+    workgroupTileSizes[n] = 1;
+  }
+  for (int64_t k : llvm::drop_end(contractionDims->k)) {
+    workgroupTileSizes[k] = 1;
+  }
+
+  // Compute the M/N dimension tile size by multiply subgroup information.
+  workgroupTileSizes[mDim] =
+      schedule->mWarpCount * schedule->mTileCount * schedule->mSize;
+  workgroupTileSizes[nDim] =
+      schedule->nWarpCount * schedule->nTileCount * schedule->nSize;
+
+  // Follow the LLVMGPU convention of keeping all of the tile sizes in one list.
+  workgroupTileSizes[kDim] = schedule->kTileCount * schedule->kSize;
+
+  TileSizesListType tileSizes;
+  tileSizes.push_back(workgroupTileSizes);
+
+  // Attach the MMA schedule as an attribute to the entry point export function
+  // for later access in the pipeline.
+  MLIRContext *context = op.getContext();
+  auto scheduleAttr = IREE::GPU::MMAScheduleAttr::get(
+      context, mmaAttrs[schedule->index], schedule->mWarpCount,
+      schedule->nWarpCount, schedule->mTileCount, schedule->nTileCount,
+      schedule->kTileCount);
+  SmallVector<NamedAttribute, 1> attrs;
+  attrs.emplace_back(
+      StringAttr::get(context, IREE::GPU::MMAScheduleAttr::getMnemonic()),
+      scheduleAttr);
+  auto configDict = DictionaryAttr::get(context, attrs);
+
+  return setOpConfigAndEntryPointFnTranslation(
+      entryPoint, op, tileSizes,
+      IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUVectorDistribute,
+      workgroupSize, targetSubgroupSize, configDict);
+}
+
+static LogicalResult
+setVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
+                            linalg::LinalgOp linalgOp,
+                            const TargetInfo &targetInfo) {
+  if (linalg::isaContractionOpInterface(linalgOp)) {
+    return setMatmulVectorDistributionConfig(entryPoint, linalgOp, targetInfo);
+  }
+  if (linalg::isaConvolutionOpInterface(linalgOp)) {
+    return setConvolutionVectorDistributionConfig(entryPoint, linalgOp,
+                                                  targetInfo);
+  }
+  return failure();
+}
+
+//====---------------------------------------------------------------------===//
+// Contraction Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
+static LogicalResult setContractConfig(mlir::FunctionOpInterface entryPoint,
                                        linalg::LinalgOp op,
                                        const TargetInfo &targetInfo) {
   if (!linalg::isaContractionOpInterface(op) || op.getNumParallelLoops() < 2) {
@@ -307,6 +680,24 @@ static LogicalResult setContractConfig(func::FuncOp entryPoint,
   if (llvm::any_of(op.getIndexingMapsArray(),
                    [](AffineMap m) { return m.isPermutation(); })) {
     return failure();
+  }
+
+  // Send very skinny, {2-4}xNxK and Mx{2-4}xK, matmuls to the vector reduction
+  // pipeline, similar to matvec. Note: Because of reassociation in the vector
+  // reduction pipeline, this may lead to precission loss. If this ever becomes
+  // an issue, we can hide this behind a flag.
+  if (llvm::all_equal({contractionDims->m.size(), contractionDims->n.size(),
+                       contractionDims->k.size(), size_t{1}}) &&
+      contractionDims->batch.empty()) {
+    int64_t mSize = bounds[contractionDims->m.front()];
+    int64_t nSize = bounds[contractionDims->n.front()];
+    int64_t preferredSubgroupSize = targetInfo.supportedSubgroupSizes.front();
+    if ((mSize <= kVerySkinnyDimThreshold &&
+         (nSize > preferredSubgroupSize || ShapedType::isDynamic(nSize))) ||
+        (nSize <= kVerySkinnyDimThreshold &&
+         (mSize > preferredSubgroupSize || ShapedType::isDynamic(mSize)))) {
+      return failure();
+    }
   }
 
   // TODO: Properly rematerialize leading elementwise with shared memory
@@ -347,8 +738,9 @@ static LogicalResult setContractConfig(func::FuncOp entryPoint,
 
         return setOpConfigAndEntryPointFnTranslation(
             entryPoint, op, tileSizes, pipeline, workgroupSize, subgroupSize,
-            softwarePipelineDepth,
-            /*softwarePipelineStoreStage=*/1);
+            getSoftwarePipeliningAttrDict(op->getContext(),
+                                          softwarePipelineDepth,
+                                          /*softwarePipelineStoreStage=*/1));
       };
   // Infer the MxN size of the matmul based on operands and indexing maps.
   auto lhsShape =
@@ -421,10 +813,10 @@ static LogicalResult setContractConfig(func::FuncOp entryPoint,
           softwarePipelineDepthSimt,
           IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUMatmulSimt);
     }
-    // simt matmul case
-    SmallVector<TileWorkgroupSizePair> tileSizeConfig;
-    // Query the best configuration.
-    getMatmulConfig(tileSizeConfig);
+
+    // SIMT matmul case. Query the best configuration.
+    SmallVector<TileWorkgroupSizePair> tileSizeConfig =
+        getMatmulConfig(targetInfo);
     // Pick the best configuration where the original shape is aligned on the
     // tile size.
     for (TileWorkgroupSizePair &config : tileSizeConfig) {
@@ -440,9 +832,8 @@ static LogicalResult setContractConfig(func::FuncOp entryPoint,
   }
   // If we haven't found any config, use the best tile size hoping that
   // the workgroup specialization handles the main tile path efficiently.
-  SmallVector<TileWorkgroupSizePair> tileSizeConfig;
-  // Query the best configuration.
-  getMatmulConfig(tileSizeConfig);
+  SmallVector<TileWorkgroupSizePair> tileSizeConfig =
+      getMatmulConfig(targetInfo);
   constexpr size_t configIndex = 0;
   const TileWorkgroupSizePair &config = tileSizeConfig[configIndex];
   const int64_t tileX = config.tileSize[0];
@@ -464,7 +855,11 @@ static LogicalResult setContractConfig(func::FuncOp entryPoint,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUMatmulSimt);
 }
 
-static LogicalResult setFftConfig(func::FuncOp entryPoint,
+//====---------------------------------------------------------------------===//
+// FFT Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
+static LogicalResult setFftConfig(mlir::FunctionOpInterface entryPoint,
                                   IREE::LinalgExt::FftOp op,
                                   const TargetInfo &targetInfo) {
   auto interfaceOp = cast<PartitionableLoopsInterface>(*op);
@@ -496,7 +891,12 @@ static LogicalResult setFftConfig(func::FuncOp entryPoint,
       workgroupSize);
 }
 
-static LogicalResult setSortConfig(func::FuncOp entryPoint, Operation *op,
+//====---------------------------------------------------------------------===//
+// Sort Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
+static LogicalResult setSortConfig(mlir::FunctionOpInterface entryPoint,
+                                   Operation *op,
                                    const TargetInfo &targetInfo) {
   TileSizesListType tileSizes;
   auto interfaceOp = cast<PartitionableLoopsInterface>(*op);
@@ -537,6 +937,10 @@ static LogicalResult setSortConfig(func::FuncOp entryPoint, Operation *op,
       workgroupSize);
 }
 
+//====---------------------------------------------------------------------===//
+// Pack/Unpack Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 static SmallVector<int64_t>
 getDefaultWorkgroupTileSizesForPackUnPack(TilingInterface op,
                                           int64_t defaultSize) {
@@ -555,7 +959,7 @@ getDefaultWorkgroupTileSizesForPackUnPack(TilingInterface op,
   return workgroupTileSizes;
 }
 
-static LogicalResult setPackConfig(func::FuncOp entryPoint,
+static LogicalResult setPackConfig(mlir::FunctionOpInterface entryPoint,
                                    tensor::PackOp packOp,
                                    const TargetInfo &targetInfo) {
   SmallVector<int64_t> tileSizes = getDefaultWorkgroupTileSizesForPackUnPack(
@@ -583,8 +987,12 @@ static LogicalResult setPackConfig(func::FuncOp entryPoint,
       workgroupSizes);
 }
 
+//====---------------------------------------------------------------------===//
+// Default Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 // Basic default properties for linalg ops that haven't been tuned.
-static LogicalResult setRootDefaultConfig(func::FuncOp entryPoint,
+static LogicalResult setRootDefaultConfig(mlir::FunctionOpInterface entryPoint,
                                           Operation *op,
                                           const TargetInfo &targetInfo) {
   IREE::Codegen::DispatchLoweringPassPipeline passPipeline =
@@ -715,10 +1123,14 @@ static LogicalResult setRootDefaultConfig(func::FuncOp entryPoint,
       targetInfo.supportedSubgroupSizes.front());
 }
 
+//====---------------------------------------------------------------------===//
+// Transform Dialect Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 /// Set configuration for transform dialect based strategies.
-static LogicalResult setTransformDialectConfig(func::FuncOp entryPoint,
-                                               Operation *op,
-                                               const TargetInfo &targetInfo) {
+static LogicalResult
+setTransformDialectConfig(mlir::FunctionOpInterface entryPoint, Operation *op,
+                          const TargetInfo &targetInfo) {
   if (!clGPUEnableTransformDialectJit) {
     return failure();
   }
@@ -794,10 +1206,14 @@ static bool isMatvecLike(linalg::LinalgOp linalgOp) {
   return true;
 }
 
+//====---------------------------------------------------------------------===//
+// Warp Reduction Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 /// Set the configuration for reductions that can be mapped to warp reductions.
-static LogicalResult setWarpReductionConfig(func::FuncOp entryPoint,
-                                            linalg::LinalgOp op,
-                                            const TargetInfo &targetInfo) {
+static LogicalResult
+setWarpReductionConfig(mlir::FunctionOpInterface entryPoint,
+                       linalg::LinalgOp op, const TargetInfo &targetInfo) {
   if (!targetInfo.hasWarpShuffle)
     return failure();
 
@@ -1007,7 +1423,11 @@ static bool hasTwoOrThreeLoopsInfo(linalg::LinalgOp linalgOp) {
          linalgOp.getNumParallelLoops() <= 3;
 }
 
-static LogicalResult setTransposeConfig(func::FuncOp entryPoint,
+//====---------------------------------------------------------------------===//
+// Transpose Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
+static LogicalResult setTransposeConfig(mlir::FunctionOpInterface entryPoint,
                                         linalg::LinalgOp linalgOp) {
   LinalgOpInfo opInfo(linalgOp, sharedMemTransposeFilter);
 
@@ -1062,17 +1482,18 @@ static LogicalResult setTransposeConfig(func::FuncOp entryPoint,
       workgroupSize);
 }
 
+//====---------------------------------------------------------------------===//
+// UKernel Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
 /// Set the configuration for argmax that can be mapped to argmax uKernel.
 /// Distribute all parallel dim across different workgroups, and only use single
 /// subgroup per workgroup.
-static LogicalResult setArgmaxUkernelConfig(func::FuncOp entryPoint,
-                                            linalg::GenericOp op,
-                                            const TargetInfo &targetInfo) {
-
+static LogicalResult
+setArgmaxUkernelConfig(mlir::FunctionOpInterface entryPoint,
+                       linalg::GenericOp op, const TargetInfo &targetInfo) {
   // Checks if UKernels are enabled.
-  if (auto variantOp =
-          entryPoint->getParentOfType<IREE::HAL::ExecutableVariantOp>()) {
-    auto target = variantOp.getTarget();
+  if (auto target = IREE::HAL::ExecutableTargetAttr::lookup(entryPoint)) {
     const char ukernelName[] = "argmax";
     if (!hasUkernel(target, ukernelName) ||
         !hasUkernelSupportedGpuArch(target)) {
@@ -1141,7 +1562,7 @@ static LogicalResult setArgmaxUkernelConfig(func::FuncOp entryPoint,
 
 /// Make UKernels take the LLVMGPUDefault lowering pipeline.
 static LogicalResult
-setUKernelConfig(func::FuncOp entryPoint,
+setUKernelConfig(mlir::FunctionOpInterface entryPoint,
                  IREE::Codegen::UKernelOpInterface ukernelOp) {
   auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
       entryPoint->getContext(),
@@ -1217,6 +1638,10 @@ static bool distributeToSquare(const int64_t oh, const int64_t ow,
   }
   return false;
 }
+
+//====---------------------------------------------------------------------===//
+// Convolution Pipeline Configuration
+//====---------------------------------------------------------------------===//
 
 static LogicalResult setConvolutionConfig(linalg::LinalgOp linalgOp,
                                           const int64_t subgroupSize,
@@ -1306,12 +1731,16 @@ static LogicalResult setConvolutionConfig(linalg::LinalgOp linalgOp,
   SmallVector<int64_t> windowTileSizes(4, 0);
   windowTileSizes[ohIndex] = 1;
   tileSizes.push_back(windowTileSizes);
-  auto funcOp = linalgOp->getParentOfType<func::FuncOp>();
+  auto funcOp = linalgOp->getParentOfType<mlir::FunctionOpInterface>();
   return setOpConfigAndEntryPointFnTranslation(funcOp, linalgOp, tileSizes,
                                                pipeline, workgroupSize);
 }
 
-static LogicalResult setRootConfig(func::FuncOp entryPointFn,
+//====---------------------------------------------------------------------===//
+// Pipeline Configuration
+//====---------------------------------------------------------------------===//
+
+static LogicalResult setRootConfig(mlir::FunctionOpInterface entryPointFn,
                                    Operation *computeOp) {
   TargetInfo targetInfo = getTargetInfo(entryPointFn);
   // First try to see if there is a transform dialect configuration existing.
@@ -1320,6 +1749,12 @@ static LogicalResult setRootConfig(func::FuncOp entryPointFn,
     return success();
   }
   if (auto linalgOp = dyn_cast<linalg::LinalgOp>(computeOp)) {
+    if (clGPUEnableVectorDistribution) {
+      if (succeeded(setVectorDistributionConfig(entryPointFn, linalgOp,
+                                                targetInfo))) {
+        return success();
+      }
+    }
     if (succeeded(setContractConfig(entryPointFn, linalgOp, targetInfo))) {
       return success();
     }
@@ -1373,69 +1808,92 @@ static void propagateLoweringConfig(Operation *rootOperation,
   }
 }
 
-LogicalResult initGPULaunchConfig(ModuleOp moduleOp) {
-  llvm::StringMap<IREE::HAL::ExecutableExportOp> exportOps =
-      getAllEntryPoints(moduleOp);
+int64_t getTargetSharedMemoryLimitInBytes(FunctionOpInterface entryPoint) {
+  return getTargetInfo(entryPoint).sharedMemoryLimitInBytes;
+}
 
-  for (auto funcOp : moduleOp.getOps<func::FuncOp>()) {
-    auto exportOp = exportOps.lookup(funcOp.getName());
-    if (!exportOp)
-      continue;
-    SmallVector<Operation *> computeOps = getComputeOps(funcOp);
-    if (getTranslationInfo(exportOp)) {
-      // Currently LLVMGPU requires propagation of user lowering configs.
-      for (auto op : computeOps) {
-        if (getLoweringConfig(op)) {
-          propagateLoweringConfig(op, computeOps);
-          break;
+//===----------------------------------------------------------------------===//
+// Entry Point
+//===----------------------------------------------------------------------===//
+LogicalResult initGPULaunchConfig(FunctionOpInterface funcOp) {
+
+  auto exportOp = getEntryPoint(funcOp);
+  if (!getTranslationInfo(funcOp) && exportOp) {
+    // If no translation info set, first check whether we already have
+    // workgroup count set--it's a "contract" to indicate that we should
+    // bypass all tiling and distribution to go down just the most basic
+    // lowering flow.
+    if (Block *body = exportOp->getWorkgroupCountBody()) {
+      auto retOp = cast<IREE::HAL::ReturnOp>(body->getTerminator());
+      // For scalar dispatch cases--using just one thread of one workgroup.
+      auto isOne = [](Value value) { return matchPattern(value, m_One()); };
+      if (llvm::all_of(retOp.getOperands(), isOne)) {
+        SmallVector<int64_t, 3> workgroupSize = {1, 1, 1};
+        auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
+            funcOp.getContext(),
+            IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUBaseLowering,
+            workgroupSize);
+        if (failed(setTranslationInfo(funcOp, translationInfo))) {
+          return failure();
         }
+        return success();
       }
-      continue;
     }
+  }
 
-    Operation *rootOperation = nullptr;
+  SmallVector<Operation *> computeOps = getComputeOps(funcOp);
+  if (getTranslationInfo(funcOp)) {
+    // Currently LLVMGPU requires propagation of user lowering configs.
+    for (auto op : computeOps) {
+      if (getLoweringConfig(op)) {
+        propagateLoweringConfig(op, computeOps);
+        break;
+      }
+    }
+    return success();
+  }
 
-    // Find the root operation. linalg.generic and linalg.fill are not root
-    // operations if there are other compute operations present.
-    for (Operation *op : llvm::reverse(computeOps)) {
-      if (!isa<linalg::GenericOp, linalg::FillOp>(op)) {
+  Operation *rootOperation = nullptr;
+
+  // Find the root operation. linalg.generic and linalg.fill are not root
+  // operations if there are other compute operations present.
+  for (Operation *op : llvm::reverse(computeOps)) {
+    if (!isa<linalg::GenericOp, linalg::FillOp>(op)) {
+      rootOperation = op;
+      break;
+    }
+    if (auto genericOp = dyn_cast<linalg::GenericOp>(op)) {
+      // linalg.generic with `reduction` iterator types are roots as well.
+      if (genericOp.getNumLoops() != genericOp.getNumParallelLoops()) {
         rootOperation = op;
         break;
       }
-      if (auto genericOp = dyn_cast<linalg::GenericOp>(op)) {
-        // linalg.generic with `reduction` iterator types are roots as well.
-        if (genericOp.getNumLoops() != genericOp.getNumParallelLoops()) {
-          rootOperation = op;
-          break;
-        }
-      }
     }
-
-    if (!rootOperation) {
-      for (Operation *op : llvm::reverse(computeOps)) {
-        if (isa<linalg::GenericOp, linalg::FillOp>(op)) {
-          rootOperation = op;
-          break;
-        }
-      }
-    }
-
-    if (!rootOperation) {
-      // No root operation found, set it to none.
-      auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
-          funcOp.getContext(),
-          IREE::Codegen::DispatchLoweringPassPipeline::None);
-      if (failed(setTranslationInfo(funcOp, translationInfo))) {
-        return failure();
-      }
-      continue;
-    }
-
-    if (failed(setRootConfig(funcOp, rootOperation)))
-      continue;
-
-    propagateLoweringConfig(rootOperation, computeOps);
   }
+
+  if (!rootOperation) {
+    for (Operation *op : llvm::reverse(computeOps)) {
+      if (isa<linalg::GenericOp, linalg::FillOp>(op)) {
+        rootOperation = op;
+        break;
+      }
+    }
+  }
+
+  if (!rootOperation) {
+    // No root operation found, set it to none.
+    auto translationInfo = IREE::Codegen::TranslationInfoAttr::get(
+        funcOp.getContext(), IREE::Codegen::DispatchLoweringPassPipeline::None);
+    if (failed(setTranslationInfo(funcOp, translationInfo))) {
+      return failure();
+    }
+    return success();
+  }
+
+  if (failed(setRootConfig(funcOp, rootOperation)))
+    return funcOp.emitOpError("failed to set root config");
+
+  propagateLoweringConfig(rootOperation, computeOps);
   return success();
 }
 

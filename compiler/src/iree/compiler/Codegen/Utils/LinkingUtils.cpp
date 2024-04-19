@@ -204,8 +204,9 @@ LogicalResult linkExecutablesInto(
   auto linkedTargetBuilder =
       OpBuilder::atBlockBegin(&linkedTargetOp.getBlock());
 
-  // Aggregation of all external objects specified on variants used.
+  // Aggregation of all external objects and sources specified on variants used.
   SetVector<Attribute> objectAttrs;
+  NamedAttrList linkedSourceAttrs;
 
   // Iterate over all source executable ops, linking as many as we can.
   for (auto sourceExecutableOp : sourceExecutableOps) {
@@ -228,6 +229,12 @@ LogicalResult linkExecutablesInto(
         objectAttrs.insert(objectsAttr.begin(), objectsAttr.end());
       }
 
+      // Merge sources into the linked source listing.
+      if (auto sourcesAttr = variantOp.getSourcesAttr()) {
+        for (auto sourceAttr : sourcesAttr.getValue())
+          linkedSourceAttrs.set(sourceAttr.getName(), sourceAttr.getValue());
+      }
+
       // Remap variant refs.
       auto oldVariantRefAttr =
           SymbolRefAttr::get(context, sourceExecutableOp.getName(),
@@ -241,15 +248,15 @@ LogicalResult linkExecutablesInto(
       // op has the same content.
       auto targetConditionOps =
           linkedTargetOp.getOps<IREE::HAL::ExecutableConditionOp>();
-      if (auto sourceCoditionOp = variantOp.getConditionOp()) {
+      if (auto sourceConditionOp = variantOp.getConditionOp()) {
         if (targetConditionOps.empty()) {
-          sourceCoditionOp->moveBefore(
+          sourceConditionOp->moveBefore(
               &*linkedTargetBuilder.getInsertionPoint());
         } else {
           assert(llvm::hasSingleElement(targetConditionOps));
           IREE::HAL::ExecutableConditionOp referenceOp =
               *targetConditionOps.begin();
-          if (!isStructurallyEquivalentTo(*sourceCoditionOp.getOperation(),
+          if (!isStructurallyEquivalentTo(*sourceConditionOp.getOperation(),
                                           *referenceOp.getOperation())) {
             return variantOp.emitError("contains incompatible condition op");
           }
@@ -266,7 +273,6 @@ LogicalResult linkExecutablesInto(
       for (auto constantBlockOp :
            llvm::make_early_inc_range(variantOp.getConstantBlockOps())) {
         constantBlockOp->moveBefore(&*linkedTargetBuilder.getInsertionPoint());
-        // linkedTargetBuilder.clone(constantBlockOp);
       }
 
       // Clone export ops and queue remapping ordinals and updating
@@ -318,6 +324,12 @@ LogicalResult linkExecutablesInto(
   if (!objectAttrs.empty()) {
     linkedTargetOp.setObjectsAttr(
         linkedTargetBuilder.getArrayAttr(objectAttrs.takeVector()));
+  }
+
+  // Attach all source files from the source variants.
+  if (!linkedSourceAttrs.empty()) {
+    linkedTargetOp.setSourcesAttr(
+        linkedTargetBuilder.getDictionaryAttr(linkedSourceAttrs));
   }
 
   // Update references to @executable::@target::@entry symbols.

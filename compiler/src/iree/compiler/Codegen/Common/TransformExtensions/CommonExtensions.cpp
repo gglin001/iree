@@ -6,8 +6,6 @@
 
 #include "CommonExtensions.h"
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
-#include "iree-dialects/Dialect/LinalgTransform/SimplePatternRewriter.h"
 #include "iree-dialects/Dialect/LinalgTransform/StructuredTransformOpsExt.h"
 #include "iree-dialects/Transforms/TransformMatchers.h"
 #include "iree/compiler/Codegen/Common/GPU/GPUPatterns.h"
@@ -23,6 +21,7 @@
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "mlir/Conversion/VectorToGPU/VectorToGPU.h"
@@ -42,7 +41,7 @@
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/Transforms.h"
-#include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
+#include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
@@ -264,7 +263,7 @@ transform_dialect::ApplyLoopIndependentCodeMotionOp::applyToOne(
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
   ErrorCheckingTrackingListener listener(state, *this);
-  target->walk([&](func::FuncOp funcOp) {
+  target->walk([&](mlir::FunctionOpInterface funcOp) {
     // This assumes LICM never removes operations so we don't need tracking.
     // TODO: confirm / revisit this assumption and plumb a rewriter through
     // upstream moveLoopInvariantCode if necessary.
@@ -303,7 +302,7 @@ void transform_dialect::ApplyLoopIndependentCodeMotionOp::getEffects(
 //===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure transform_dialect::HoistStaticAllocOp::applyToOne(
-    transform::TransformRewriter &rewriter, func::FuncOp target,
+    transform::TransformRewriter &rewriter, mlir::FunctionOpInterface target,
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
   mlir::iree_compiler::hoistStaticallyBoundAllocationsInFunc<memref::AllocOp>(
@@ -357,7 +356,7 @@ transform_dialect::ShareForallOperandsOp::applyToOne(
       continue;
     }
     // Get the corresponding bbArg.
-    BlockArgument bbArg = forallOp.getOutputBlockArguments()[outputIdx];
+    BlockArgument bbArg = forallOp.getRegionIterArgs()[outputIdx];
 
     // Check if the extract_slice has a matching parallel_insert_slice
     // (i.e., same source/target, offsets, sizes and strides).
@@ -380,7 +379,7 @@ transform_dialect::ShareForallOperandsOp::applyToOne(
     }
 
     // Promote extract_slice source to bbArg.
-    rewriter.updateRootInPlace(extractSliceOp, [&]() {
+    rewriter.modifyOpInPlace(extractSliceOp, [&]() {
       extractSliceOp.getSourceMutable().assign(bbArg);
     });
   }
@@ -394,8 +393,7 @@ transform_dialect::ShareForallOperandsOp::applyToOne(
 //===---------------------------------------------------------------------===//
 
 LogicalResult rewriteForallToWorkgroup(RewriterBase &rewriter,
-                                       scf::ForallOp forallOp,
-                                       IREE::HAL::ExecutableExportOp exportOp) {
+                                       scf::ForallOp forallOp) {
   // Step 0. Target-specific verifications. There is no good place to anchor
   // those right now: the ForallOp is target-independent and the
   // transform op does not apply to individual ForallOp.
@@ -475,7 +473,7 @@ LogicalResult rewriteForallToWorkgroup(RewriterBase &rewriter,
   // Step 6. RAUW thread indices to thread ops.
   for (Value blockIdx : forallOp.getInductionVars()) {
     for (Operation *user : llvm::make_early_inc_range(blockIdx.getUsers())) {
-      rewriter.updateRootInPlace(user, [&]() {
+      rewriter.modifyOpInPlace(user, [&]() {
         user->replaceUsesOfWith(blockIdx, bvm.lookup(blockIdx));
       });
     }
@@ -494,26 +492,9 @@ LogicalResult rewriteForallToWorkgroup(RewriterBase &rewriter,
 //===---------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure transform_dialect::ForallToWorkgroupOp::applyToOne(
-    transform::TransformRewriter &rewriter, func::FuncOp target,
+    transform::TransformRewriter &rewriter, mlir::FunctionOpInterface target,
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
-  if (!isa<HAL::ExecutableOp, HAL::ExecutableVariantOp>(state.getTopLevel())) {
-    return mlir::emitDefiniteFailure(
-        state.getTopLevel(),
-        "requires HAL::ExecutableOp or HAL::ExecutableVariantOp toplevel "
-        "to attach the workgroup size information to a nested "
-        "ExecutableExportOp");
-  }
-
-  IREE::HAL::ExecutableExportOp exportOp;
-  state.getTopLevel()->walk([&](IREE::HAL::ExecutableExportOp op) {
-    if (op.getSymName() == target.getName())
-      exportOp = op;
-  });
-  if (!exportOp) {
-    return mlir::emitSilenceableFailure(
-        target, "no IREE::HAL::ExecutableExportOp found");
-  }
 
   scf::ForallOp topLevelForallOp;
   auto walkResult = target->walk([&](scf::ForallOp forallOp) {
@@ -531,7 +512,7 @@ DiagnosedSilenceableFailure transform_dialect::ForallToWorkgroupOp::applyToOne(
   }
 
   rewriter.setInsertionPoint(topLevelForallOp);
-  if (failed(rewriteForallToWorkgroup(rewriter, topLevelForallOp, exportOp)))
+  if (failed(rewriteForallToWorkgroup(rewriter, topLevelForallOp)))
     return mlir::emitDefiniteFailure(target, "rewriteForallToWorkgroup failed");
 
   return DiagnosedSilenceableFailure::success();
@@ -593,7 +574,7 @@ transform_dialect::IREEPopulateWorkgroupCountRegionUsingNumThreadsSliceOp::
     workgroupCount = workgroupCountOrdered;
   }
 
-  auto funcOp = forAllOp->getParentOfType<func::FuncOp>();
+  auto funcOp = forAllOp->getParentOfType<mlir::FunctionOpInterface>();
   if (failed(
           lowerWorkgroupCountFromSliceOp(rewriter, funcOp, workgroupCount))) {
     return mlir::emitDefiniteFailure(state.getTopLevel(),
@@ -761,19 +742,7 @@ DiagnosedSilenceableFailure transform_dialect::IREEBufferizeOp::apply(
     transform::TransformRewriter &rewriter,
     transform::TransformResults &results, transform::TransformState &state) {
   auto payload = state.getPayloadOps(getTarget());
-  if (!llvm::hasSingleElement(payload) ||
-      !isa<ModuleOp, HAL::ExecutableOp, HAL::ExecutableVariantOp>(
-          *payload.begin())) {
-    return mlir::emitDefiniteFailure(
-        state.getTopLevel(), "requires exactly a single HAL::ExecutableOp or "
-                             "HAL::ExecutableVariantOp target op.");
-  }
 
-  //===-------------------------------------------------------------------===//
-  // DO NOT JUST CALL `addIREEComprehensiveBufferizePasses` as this results in
-  // a lot of registration issues due to nested pass pipeline mess.
-  // Instead, take what we need from it.
-  //===-------------------------------------------------------------------===//
   // Bufferize the dispatch.
   using mlir::bufferization::BufferizationOptions;
   BufferizationOptions::AllocationFn allocationFn =
@@ -794,15 +763,10 @@ DiagnosedSilenceableFailure transform_dialect::IREEBufferizeOp::apply(
     config.listener = &listener;
     // Manually gather list of ops because the other GreedyPatternRewriteDriver
     // overloads only accepts ops that are isolated from above.
-    SmallVector<Operation *> ops;
-    state.getTopLevel()->walk([&](Operation *nestedOp) {
-      if (state.getTopLevel() != nestedOp)
-        ops.push_back(nestedOp);
-    });
     LogicalResult result =
-        applyOpPatternsAndFold(ops, std::move(patterns), config);
+        applyOpPatternsAndFold(target, std::move(patterns), config);
     if (failed(result)) {
-      return mlir::emitDefiniteFailure(state.getTopLevel(),
+      return mlir::emitDefiniteFailure(target,
                                        "greedy pattern application failed");
     }
     if (listener.failed())
@@ -815,9 +779,18 @@ DiagnosedSilenceableFailure transform_dialect::IREEBufferizeOp::apply(
   options.memCpyFn = memCpyFn;
   options.testAnalysisOnly = getTestAnalysisOnly();
   options.printConflicts = getPrintConflicts();
-  if (failed(runIREEOneShotBufferize(state.getTopLevel(), options)))
-    return mlir::emitDefiniteFailure(state.getTopLevel(),
-                                     "bufferization failed");
+
+  if (getTargetGpu()) {
+    options.defaultMemorySpaceFn =
+        [&](TensorType t) -> std::optional<Attribute> {
+      Attribute addressSpaceAttr = gpu::AddressSpaceAttr::get(
+          t.getContext(), gpu::GPUDialect::getWorkgroupAddressSpace());
+      return addressSpaceAttr;
+    };
+  }
+  if (failed(runIREEOneShotBufferize(target, options))) {
+    return mlir::emitDefiniteFailure(target, "bufferization failed");
+  }
 
   // Early exit if test_analysis_only is set.
   if (getTestAnalysisOnly()) {
@@ -828,21 +801,12 @@ DiagnosedSilenceableFailure transform_dialect::IREEBufferizeOp::apply(
   //   3. Post-bufferization passes are fine.
   PassManager pm(getContext());
   addIREEPostBufferizationPasses(pm);
-  WalkResult res = state.getTopLevel()->walk([&](ModuleOp moduleOp) {
-    if (failed(pm.run(moduleOp))) {
-      getOperation()->emitError()
-          << "failed to post-bufferization passes on module:\n"
-          << *(moduleOp.getOperation()) << "\nunder top-level:\n"
-          << *state.getTopLevel();
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  if (res.wasInterrupted())
+  if (failed(pm.run(target))) {
     return mlir::emitDefiniteFailure(target)
            << "post-bufferization passes failed";
+  }
 
-  results.set(getOperation()->getOpResult(0), {*payload.begin()});
+  results.set(getOperation()->getOpResult(0), {target});
   return listener.checkAndResetError();
 }
 
@@ -873,7 +837,7 @@ void transform_dialect::IREEEliminateEmptyTensorsOp::getEffects(
 //===----------------------------------------------------------------------===//
 
 DiagnosedSilenceableFailure transform_dialect::WorkgroupSwizzleOp::applyToOne(
-    transform::TransformRewriter &rewriter, func::FuncOp target,
+    transform::TransformRewriter &rewriter, mlir::FunctionOpInterface target,
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
   (void)swizzleWorkgroupsInFunc(target, getLogTile());
@@ -887,37 +851,33 @@ void transform_dialect::WorkgroupSwizzleOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
+// ReduceSharedMemoryBankConclitsOp
+//===----------------------------------------------------------------------===//
+
+DiagnosedSilenceableFailure
+transform_dialect::ReduceSharedMemoryBankConflictsOp::applyToOne(
+    transform::TransformRewriter &rewriter, mlir::FunctionOpInterface target,
+    transform::ApplyToEachResultList &results,
+    transform::TransformState &state) {
+  if (failed(reduceSharedMemoryBankConflicts(target, getPaddingSizeBits()))) {
+    return emitDefaultDefiniteFailure(target)
+           << "failed to reduce shared memory bank conflicts";
+  }
+  return DiagnosedSilenceableFailure::success();
+}
+
+void transform_dialect::ReduceSharedMemoryBankConflictsOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  transform::onlyReadsHandle(getTarget(), effects);
+  transform::modifiesPayload(effects);
+}
+
+//===----------------------------------------------------------------------===//
 // TestVectorLayoutAnalysisOp
 //===----------------------------------------------------------------------===//
 
-static void setAnchorOpsFromAttributes(VectorLayoutAnalysis &analysis,
-                                       Operation *root) {
-  root->walk([&](Operation *op) {
-    for (NamedAttribute attr : op->getAttrs()) {
-      StringRef name = attr.getName().strref();
-      if (name.find("__vector_layout_test_anchor_operand_") !=
-          std::string::npos) {
-        int operandNum;
-        name.substr(name.find_last_of("_") + 1)
-            .getAsInteger(/*Radix=*/10, operandNum);
-        assert(operandNum < op->getNumOperands() &&
-               "operand number out of range");
-        analysis.setAnchor(op->getOperand(operandNum), attr.getValue());
-      }
-      if (name.find("__vector_layout_test_anchor_result_") !=
-          std::string::npos) {
-        int resultNum;
-        name.substr(name.find_last_of("_") + 1)
-            .getAsInteger(/*Radix=*/10, resultNum);
-        assert(resultNum < op->getNumResults() && "result number out of range");
-        analysis.setAnchor(op->getResult(resultNum), attr.getValue());
-      }
-    }
-  });
-}
-
 static void emitLayoutRemarks(VectorLayoutAnalysis &analysis,
-                              func::FuncOp funcOp) {
+                              mlir::FunctionOpInterface funcOp) {
   funcOp.walk([&](Operation *op) {
     // Do not emit remarks for conflict operations.
     if (isa<VectorExt::LayoutConflictResolutionOp>(op)) {
@@ -940,11 +900,13 @@ static void emitLayoutRemarks(VectorLayoutAnalysis &analysis,
 
 DiagnosedSilenceableFailure
 transform_dialect::TestVectorLayoutAnalysisOp::applyToOne(
-    transform::TransformRewriter &rewriter, func::FuncOp target,
+    transform::TransformRewriter &rewriter, mlir::FunctionOpInterface target,
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
   VectorLayoutAnalysis analysis(target);
-  setAnchorOpsFromAttributes(analysis, target);
+  if (setAnchorOpsFromAttributes(analysis, target).failed()) {
+    return emitDefaultSilenceableFailure(target);
+  }
   if (failed(analysis.run())) {
     target.emitError("layout analysis failed");
     return emitDefaultSilenceableFailure(target);
@@ -965,31 +927,41 @@ void transform_dialect::TestVectorLayoutAnalysisOp::getEffects(
 
 class TestVectorLayoutOptions : public VectorLayoutOptions {
 public:
-  TestVectorLayoutOptions(Operation *root) : VectorLayoutOptions(root) {}
+  TestVectorLayoutOptions(Operation *root)
+      : VectorLayoutOptions(root, /*fullConversion=*/false) {}
 
-  void setAnchorOps(VectorLayoutAnalysis &analysis) override {
-    setAnchorOpsFromAttributes(analysis, root);
+  LogicalResult setAnchorOps(VectorLayoutAnalysis &analysis) override {
+    return setAnchorOpsFromAttributes(analysis, root);
   }
 };
 
 DiagnosedSilenceableFailure
 transform_dialect::TestGpuVectorDistribution::applyToOne(
-    transform::TransformRewriter &rewriter, func::FuncOp target,
+    transform::TransformRewriter &rewriter, mlir::FunctionOpInterface target,
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
   TestVectorLayoutOptions options(target);
   RewritePatternSet patterns(target.getContext());
 
-  rewriter.setInsertionPointToStart(&target.getBody().front());
-  SmallVector<Value> threadGrid = {
-      rewriter.create<gpu::ThreadIdOp>(target.getLoc(), gpu::Dimension::x),
-      rewriter.create<gpu::ThreadIdOp>(target.getLoc(), gpu::Dimension::y),
-      rewriter.create<gpu::ThreadIdOp>(target.getLoc(), gpu::Dimension::z),
-  };
+  rewriter.setInsertionPointToStart(&target.getFunctionBody().front());
+  // This is a test op so we unsafely use thread_id x as the lane ID. In
+  // general this should linearize the thread IDs based on the workgroup size
+  // and divide by the subgroup size. i.e.
+  //
+  // lane_id = (tid_x + tid_y * dim_x + tid_z * dim_y * dim_x) / subgroup_size;
+  Value laneId =
+      rewriter.create<gpu::ThreadIdOp>(target.getLoc(), gpu::Dimension::x);
 
   populateGPUDistributionPatterns(patterns);
-  populateGPUDistributionLayoutAttrPatterns(threadGrid, patterns);
-  distributeVectorOps(target, patterns, options);
+  populateGPUDistributionLayoutAttrPatterns(laneId, patterns);
+  populateGPUReductionDistributionPatterns(patterns);
+  populateGPUDistributeNestedLayoutAttrPatterns(laneId, patterns);
+  populateGPUDistributeNestedLayoutContractAMDGPUPatterns(patterns);
+  if (getExperimental())
+    populateGPULayoutResolutionDistributionPatterns(patterns);
+  if (failed(distributeVectorOps(target, patterns, options))) {
+    return emitDefaultDefiniteFailure(target);
+  }
   return DiagnosedSilenceableFailure::success();
 }
 
@@ -1005,7 +977,7 @@ void transform_dialect::TestGpuVectorDistribution::getEffects(
 
 DiagnosedSilenceableFailure
 transform_dialect::GpuDistributeSharedMemoryCopyOp::applyToOne(
-    transform::TransformRewriter &rewriter, func::FuncOp target,
+    transform::TransformRewriter &rewriter, mlir::FunctionOpInterface target,
     transform::ApplyToEachResultList &results,
     transform::TransformState &state) {
 

@@ -18,14 +18,14 @@ iree_cc_library(
   SRCS
     "Interfaces.cpp"
   DEPS
-    ::HoistableTypeInterface
+    ::HoistableInterfaces
     MLIRIR
   PUBLIC
 )
 
 iree_cc_library(
   NAME
-    HoistableTypeInterface
+    HoistableInterfaces
   HDRS
     "HoistableTypeInterface.h"
   SRCS

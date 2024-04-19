@@ -23,6 +23,7 @@ iree_cc_library(
     "CombineInitializers.cpp"
     "ConvertPrimitiveType.cpp"
     "DropCompilerHints.cpp"
+    "DumpModule.cpp"
     "FixedPointIterator.cpp"
     "FoldGlobals.cpp"
     "FuseGlobals.cpp"
@@ -46,8 +47,10 @@ iree_cc_library(
     MLIRAnalysis
     MLIRArithDialect
     MLIRArithTransforms
+    MLIRBytecodeWriter
     MLIRControlFlowDialect
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRIR
     MLIRLinalgDialect
     MLIRMathDialect
@@ -55,6 +58,7 @@ iree_cc_library(
     MLIRPass
     MLIRSCFDialect
     MLIRSupport
+    MLIRTransformUtils
     MLIRTransforms
     MLIRVectorDialect
     iree::compiler::Dialect::Util::Analysis

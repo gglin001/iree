@@ -29,6 +29,7 @@ iree_cc_library(
   DEPS
     ::PassesIncGen
     MLIRPass
+    MLIRTransformUtils
     MLIRTransforms
   PUBLIC
 )
@@ -42,6 +43,7 @@ iree_cc_library(
   SRCS
     "CleanupNumericNarrowing.cpp"
     "Convert1X1FilterConv2DToMatmul.cpp"
+    "DataLayoutPropagation.cpp"
     "DecomposeConcat.cpp"
     "DemoteContractionInputsToBF16.cpp"
     "DetachElementwiseFromNamedOps.cpp"
@@ -50,8 +52,8 @@ iree_cc_library(
     "FuseDequantizationMatmul.cpp"
     "FuseSiluHorizontalMatmul.cpp"
     "GeneralizeLinalgNamedOps.cpp"
+    "GlobalLoopInvariantCodeMotion.cpp"
     "InferNumericNarrowing.cpp"
-    "LiftGenericToTransposeBatchMatmul.cpp"
     "MaterializeHomogeneousEncodings.cpp"
     "OptimizeNumerics.cpp"
     "Passes.cpp"
@@ -65,16 +67,12 @@ iree_cc_library(
     ::PassHeaders
     ::PassesIncGen
     IREEDialectsTransforms
-    IREELinalgExtDialect
-    IREELinalgExtTransforms
-    IREELinalgExtUtils
     IREELinalgTransformDialect
     LLVMSupport
     MLIRAffineDialect
     MLIRArithDialect
     MLIRArithUtils
     MLIRControlFlowDialect
-    MLIRFuncDialect
     MLIRFunctionInterfaces
     MLIRIR
     MLIRLinalgDialect
@@ -85,10 +83,12 @@ iree_cc_library(
     MLIRMemRefTransforms
     MLIRPass
     MLIRSCFDialect
+    MLIRSCFTransforms
     MLIRSupport
     MLIRTensorDialect
     MLIRTensorTransforms
     MLIRTensorUtils
+    MLIRTransformUtils
     MLIRTransforms
     iree::compiler::Codegen::Common
     iree::compiler::Codegen::Common::CPU::CommonCPUPasses
@@ -98,11 +98,15 @@ iree_cc_library(
     iree::compiler::Dialect::Flow::Transforms
     iree::compiler::Dialect::HAL::IR
     iree::compiler::Dialect::HAL::IR::HALDialect
+    iree::compiler::Dialect::LinalgExt::IR
+    iree::compiler::Dialect::LinalgExt::Transforms
+    iree::compiler::Dialect::LinalgExt::Utils
     iree::compiler::Dialect::Util::Analysis
     iree::compiler::Dialect::Util::Analysis::Attributes
     iree::compiler::Dialect::Util::Analysis::DFX
     iree::compiler::Dialect::Util::IR
     iree::compiler::Dialect::Util::Transforms
+    iree::compiler::Modules::IO::Parameters::Transforms
     iree::compiler::Pipelines::Options
     iree::compiler::Utils
   PUBLIC

@@ -4,15 +4,12 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtDialect.h"
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree-dialects/Dialect/LinalgTransform/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
@@ -22,7 +19,7 @@
 #include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
-#include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
+#include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.h"
 #include "mlir/Dialect/Transform/Transforms/TransformInterpreterPassBase.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/BufferizableOpInterfaceImpl.h"
@@ -53,11 +50,9 @@ public:
     // nested pass manager and this will go away.
 
     // clang-format off
-    registry.insert<mlir::iree_compiler::IREE::LinalgExt::IREELinalgExtDialect,
-                    arith::ArithDialect,
+    registry.insert<arith::ArithDialect,
                     affine::AffineDialect,
                     bufferization::BufferizationDialect,
-                    func::FuncDialect,
                     linalg::LinalgDialect,
                     LLVM::LLVMDialect,
                     pdl::PDLDialect,
@@ -144,9 +139,7 @@ struct DropSchedulePass : public PassWrapper<DropSchedulePass, Pass> {
   void runOnOperation() override {
     SmallVector<Operation *> toDelete;
     getOperation()->walk<WalkOrder::PreOrder>([&](Operation *nestedOp) {
-      if (isa<iree_compiler::IREE::LinalgExt::DoNotDCEOperandsOp>(nestedOp)) {
-        toDelete.push_back(nestedOp);
-      } else if (isa<::mlir::transform::TransformOpInterface>(nestedOp)) {
+      if (isa<::mlir::transform::TransformOpInterface>(nestedOp)) {
         toDelete.push_back(nestedOp);
         return WalkResult::skip();
       }

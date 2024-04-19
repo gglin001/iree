@@ -12,10 +12,10 @@ from e2e_test_framework.definitions import common_definitions
 import e2e_test_framework.models.utils as model_utils
 
 # Implementations of the models listed below can be found in
-# https://github.com/iree-org/iree-samples/tree/main/iree-torch/importer.
+# https://github.com/iree-org/iree-experimental/tree/main/iree-torch/library/models.
 # We import the PyTorch models offline and make the .mlir available here for benchmarking.
 # If the mlir artifacts need to be updated, please run
-# https://github.com/iree-org/iree-samples/blob/main/iree-torch/importer/update_torch_models.sh
+# https://github.com/iree-org/iree-experimental/blob/main/iree-torch/library/import_torch_models.sh
 # Then update the `source_url` below with the new paths.
 
 # `ClipTextModel` encodes text into an embedding.
@@ -92,7 +92,7 @@ EFFICIENTNET_B7_FP32_TORCH = common_definitions.Model(
 ID_FORMAT = string.Template("${model_id}-batch-${batch_size}")
 NAME_FORMAT = string.Template("${name}Batch${batch_size}")
 BERT_LARGE_FP32_URL = string.Template(
-    "https://storage.googleapis.com/iree-model-artifacts/pytorch/pt_models_20231010.987_1696982151/BERT_LARGE_FP32_PT_384XI32_BATCH${batch_size}/linalg.mlirbc"
+    "https://storage.googleapis.com/iree-model-artifacts/pytorch/pt_models_20240124.1093_1706139741/BERT_LARGE_FP32_PT_384XI32_BATCH${batch_size}/linalg.mlirbc"
 )
 BERT_LARGE_FP16_URL = string.Template(
     "https://storage.googleapis.com/iree-model-artifacts/pytorch/pt_models_20230816.932_1692245822/BERT_LARGE_FP16_PT_384XI32_BATCH${batch_size}/linalg.mlirbc"

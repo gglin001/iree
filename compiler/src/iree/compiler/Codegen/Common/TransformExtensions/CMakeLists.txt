@@ -32,7 +32,6 @@ iree_cc_library(
   DEPS
     ::CommonExtensionsOpGen
     IREEDialectsTransforms
-    IREELinalgExtDialect
     IREELinalgTransformDialect
     IREEVectorExtDialect
     LLVMSupport
@@ -60,6 +59,8 @@ iree_cc_library(
     MLIRTensorTransformOps
     MLIRTensorTransforms
     MLIRTransformDialect
+    MLIRTransformDialectInterfaces
+    MLIRTransformUtils
     MLIRTransforms
     MLIRVectorDialect
     MLIRVectorToGPU
@@ -71,6 +72,7 @@ iree_cc_library(
     iree::compiler::Codegen::Utils
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::HAL::IR
+    iree::compiler::Dialect::LinalgExt::IR
   PUBLIC
 )
 

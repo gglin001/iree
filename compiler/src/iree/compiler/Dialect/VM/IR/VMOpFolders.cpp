@@ -96,7 +96,7 @@ struct InlineConstGlobalInitializer : public OpRewritePattern<InitializerOp> {
       auto globalOp =
           SymbolTable::lookupNearestSymbolFrom<IREE::Util::GlobalOpInterface>(
               op, globalRefAttr);
-      rewriter.updateRootInPlace(
+      rewriter.modifyOpInPlace(
           globalOp, [&]() { globalOp.setGlobalInitialValue(valueAttr); });
       deadOps.push_back(op);
     });
@@ -109,11 +109,9 @@ struct InlineConstGlobalInitializer : public OpRewritePattern<InitializerOp> {
 
   bool isGlobalStoreOp(Operation *op) const {
     // TODO(benvanik): trait/interface to make this more generic?
-    return isa<IREE::VM::GlobalStoreI32Op>(op) ||
-           isa<IREE::VM::GlobalStoreI64Op>(op) ||
-           isa<IREE::VM::GlobalStoreF32Op>(op) ||
-           isa<IREE::VM::GlobalStoreF64Op>(op) ||
-           isa<IREE::VM::GlobalStoreRefOp>(op);
+    return isa<IREE::VM::GlobalStoreI32Op, IREE::VM::GlobalStoreI64Op,
+               IREE::VM::GlobalStoreF32Op, IREE::VM::GlobalStoreF64Op,
+               IREE::VM::GlobalStoreRefOp>(op);
   }
 };
 
@@ -202,8 +200,9 @@ struct PropagateGlobalLoadAddress : public OpRewritePattern<INDIRECT> {
                                 PatternRewriter &rewriter) const override {
     if (auto addressOp = dyn_cast_or_null<IREE::Util::GlobalAddressOpInterface>(
             op.getGlobal().getDefiningOp())) {
-      rewriter.replaceOpWithNewOp<DIRECT>(op, op.getValue().getType(),
-                                          addressOp.getGlobalAttr());
+      rewriter.replaceOpWithNewOp<DIRECT>(
+          op, op.getValue().getType(), addressOp.getGlobalAttr(),
+          addressOp.isGlobalImmutable() ? rewriter.getUnitAttr() : UnitAttr{});
       return success();
     }
     return failure();

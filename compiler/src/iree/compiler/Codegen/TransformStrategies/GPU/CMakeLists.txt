@@ -37,8 +37,6 @@ iree_cc_library(
     "Strategies.cpp"
   DEPS
     IREEDialectsTransforms
-    IREELinalgExtDialect
-    IREELinalgExtTransformOps
     IREELinalgTransformDialect
     LLVMSupport
     MLIRAffineDialect
@@ -50,6 +48,7 @@ iree_cc_library(
     MLIRBufferizationDialect
     MLIRBufferizationTransforms
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRGPUDialect
     MLIRIR
     MLIRLLVMDialect
@@ -75,6 +74,8 @@ iree_cc_library(
     iree::compiler::Codegen::Common::TransformExtensions::CommonExtensions
     iree::compiler::Codegen::LLVMGPU::TransformExtensions::LLVMGPUExtensions
     iree::compiler::Codegen::TransformStrategies::Common::TransformStrategies
+    iree::compiler::Dialect::LinalgExt::IR
+    iree::compiler::Dialect::LinalgExt::TransformExtensions::LinalgExtExtensions
   PUBLIC
 )
 

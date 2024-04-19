@@ -20,8 +20,6 @@ iree_cc_library(
     "Common.cpp"
   DEPS
     IREEDialectsTransforms
-    IREELinalgExtDialect
-    IREELinalgExtTransformOps
     IREELinalgTransformDialect
     LLVMSupport
     MLIRAffineDialect
@@ -34,6 +32,7 @@ iree_cc_library(
     MLIRBufferizationDialect
     MLIRBufferizationTransforms
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRGPUDialect
     MLIRIR
     MLIRLLVMDialect
@@ -60,6 +59,8 @@ iree_cc_library(
     MLIRVectorTransforms
     iree::compiler::Codegen::Common::TransformExtensions::CommonExtensions
     iree::compiler::Dialect::Flow::IR
+    iree::compiler::Dialect::LinalgExt::IR
+    iree::compiler::Dialect::LinalgExt::TransformExtensions::LinalgExtExtensions
   PUBLIC
 )
 

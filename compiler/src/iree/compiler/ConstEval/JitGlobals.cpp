@@ -28,9 +28,9 @@ using llvm::dbgs;
 
 namespace mlir::iree_compiler::ConstEval {
 
-static llvm::cl::opt<std::string> clJitTargetBackend(
-    "iree-consteval-jit-target-backend",
-    llvm::cl::desc("Overrides the target backend used for JIT'ing."),
+static llvm::cl::opt<std::string> clJitTargetDevice(
+    "iree-consteval-jit-target-device",
+    llvm::cl::desc("Overrides the target device used for JIT'ing."),
     llvm::cl::init(""));
 
 static llvm::cl::opt<bool> clEnableDebug(
@@ -104,7 +104,7 @@ public:
 
   ArgumentBinding(ElementsAttr attr)
       : type(Type::ElementsAttr), elementsAttr(attr) {}
-  ArgumentBinding(IREE::Util::GlobalOp globalOp)
+  ArgumentBinding(IREE::Util::GlobalOpInterface globalOp)
       : type(Type::GlobalOp), globalOp(globalOp) {}
 
   Type getType() { return type; }
@@ -114,7 +114,7 @@ public:
     return elementsAttr;
   }
 
-  IREE::Util::GlobalOp getGlobalOp() {
+  IREE::Util::GlobalOpInterface getGlobalOp() {
     assert(type == Type::GlobalOp);
     return globalOp;
   }
@@ -122,7 +122,7 @@ public:
 private:
   Type type;
   ElementsAttr elementsAttr;
-  IREE::Util::GlobalOp globalOp;
+  IREE::Util::GlobalOpInterface globalOp;
 };
 
 // How to bind results to the original program.
@@ -133,12 +133,12 @@ public:
     GlobalOp,
   };
 
-  ResultBinding(IREE::Util::GlobalOp globalOp)
+  ResultBinding(IREE::Util::GlobalOpInterface globalOp)
       : type(Type::GlobalOp), globalOp(globalOp) {}
 
   Type getType() { return type; }
 
-  IREE::Util::GlobalOp getGlobalOp() {
+  IREE::Util::GlobalOpInterface getGlobalOp() {
     assert(type == Type::GlobalOp);
     return globalOp;
   }
@@ -146,7 +146,7 @@ public:
 private:
   Type type;
   ElementsAttr elementsAttr;
-  IREE::Util::GlobalOp globalOp;
+  IREE::Util::GlobalOpInterface globalOp;
 };
 
 // Description of a JIT function that we have created for doing some
@@ -222,15 +222,15 @@ private:
     Block *entryBlock = &funcOp.getBody().front();
 
     // Find immutable loads.
-    for (auto loadOp : funcOp.getOps<IREE::Util::GlobalLoadOp>()) {
-      auto globalOp = llvm::dyn_cast_or_null<IREE::Util::GlobalOp>(
+    for (auto loadOp : funcOp.getOps<IREE::Util::GlobalLoadOpInterface>()) {
+      auto globalOp = llvm::dyn_cast_or_null<IREE::Util::GlobalOpInterface>(
           sourceSymbolTable.lookup(loadOp.getGlobalAttr().getAttr()));
-      if (!globalOp || globalOp.getIsMutable()) {
+      if (!globalOp || globalOp.isGlobalMutable()) {
         emitWarning(loadOp.getLoc()) << "skipping consteval initializer: load "
                                         "from mutable globals not supported";
         return failure();
       }
-      Type t = loadOp.getResult().getType();
+      Type t = loadOp.getLoadedGlobalValue().getType();
       if (!supportedFeatures.isSupportedAbiType(t)) {
         emitWarning(funcOp.getLoc())
             << "skipping consteval initializer: unsupported type for current "
@@ -240,7 +240,7 @@ private:
       }
       argumentTypes.push_back(t);
       BlockArgument entryArg = entryBlock->addArgument(t, loadOp.getLoc());
-      loadOp.getResult().replaceAllUsesWith(entryArg);
+      loadOp.getLoadedGlobalValue().replaceAllUsesWith(entryArg);
       eraseOps.push_back(loadOp);
       desc.argumentBindings.emplace_back(globalOp);
     }
@@ -268,15 +268,15 @@ private:
 
     // Find immutable stores, early exiting if not supported.
     // The consumers must come after rewrites of the producers above.
-    for (auto storeOp : funcOp.getOps<IREE::Util::GlobalStoreOp>()) {
-      auto globalOp = llvm::dyn_cast_or_null<IREE::Util::GlobalOp>(
+    for (auto storeOp : funcOp.getOps<IREE::Util::GlobalStoreOpInterface>()) {
+      auto globalOp = llvm::dyn_cast_or_null<IREE::Util::GlobalOpInterface>(
           sourceSymbolTable.lookup(storeOp.getGlobalAttr().getAttr()));
-      if (!globalOp || globalOp.getIsMutable()) {
+      if (!globalOp || globalOp.isGlobalMutable()) {
         emitWarning(storeOp.getLoc()) << "skipping consteval initializer: stor "
                                          "to mutable globals not supported";
         return failure();
       }
-      Type t = storeOp.getValue().getType();
+      Type t = storeOp.getStoredGlobalValue().getType();
       if (!supportedFeatures.isSupportedAbiType(t)) {
         emitWarning(funcOp.getLoc())
             << "skipping consteval initializer: unsupported type for current "
@@ -285,7 +285,7 @@ private:
         return failure();
       }
 
-      returns.push_back(storeOp.getValue());
+      returns.push_back(storeOp.getStoredGlobalValue());
       returnTypes.push_back(t);
       eraseOps.push_back(storeOp);
       desc.resultBindings.emplace_back(globalOp);
@@ -314,34 +314,37 @@ private:
 };
 
 struct JitGlobalsPass : public JitGlobalsBase<JitGlobalsPass> {
-  JitGlobalsPass(const IREE::HAL::TargetBackendRegistry &targetRegistry)
-      : options(std::make_shared<CompileOptions>()),
+  JitGlobalsPass(const JitGlobalsOptions &options)
+      : compileOptions(std::make_shared<CompileOptions>()),
         compilePipeline("builtin.module") {
+    targetRegistry = options.targetRegistry;
+
     // Detect backend.
-    requestedTargetBackend = resolveTargetBackend(targetRegistry);
-    hasRequestedTargetBackend =
-        targetRegistry.getTargetBackend(requestedTargetBackend) != nullptr;
-    options->executableOptions.targets.push_back(requestedTargetBackend);
-    options->targetOptions.f32Extension = true;
-    options->targetOptions.f64Extension = true;
-    options->targetOptions.truncateUnsupportedFloats = false;
-    if (requestedTargetBackend == "vmvx" || !hasRequestedTargetBackend) {
-      targetBackend = targetRegistry.getTargetBackend("vmvx");
+    requestedTargetDevice = resolveTargetDevice(*targetRegistry.value);
+    hasRequestedTargetDevice =
+        targetRegistry->getTargetDevice(requestedTargetDevice) != nullptr;
+    compileOptions->executableOptions.targets.push_back(requestedTargetDevice);
+    compileOptions->targetOptions.f32Extension = true;
+    compileOptions->targetOptions.f64Extension = true;
+    compileOptions->targetOptions.truncateUnsupportedFloats = false;
+    if (requestedTargetDevice == "vmvx" || !hasRequestedTargetDevice) {
+      targetDevice = targetRegistry->getTargetDevice("vmvx");
     } else {
-      targetBackend = targetRegistry.getTargetBackend(requestedTargetBackend);
+      targetDevice = targetRegistry->getTargetDevice(requestedTargetDevice);
     }
 
     // Disable constant evaluation for our Jit compilation pipeline.
     // It would make no sense to recursively do constant evaluation, and since
     // we omit the necessary hooks, it is unsupported anyway.
-    options->globalOptimizationOptions.constExprHoisting = false;
-    options->globalOptimizationOptions.constEval = false;
+    compileOptions->globalOptimizationOptions.constExprHoisting = false;
+    compileOptions->globalOptimizationOptions.constEval = false;
 
     buildIREEVMTransformPassPipeline(
-        targetRegistry, options->bindingOptions, options->inputOptions,
-        options->preprocessingOptions, options->globalOptimizationOptions,
-        options->schedulingOptions, options->executableOptions,
-        options->targetOptions, options->hooks, compilePipeline);
+        *targetRegistry.value, compileOptions->bindingOptions,
+        compileOptions->inputOptions, compileOptions->preprocessingOptions,
+        compileOptions->globalOptimizationOptions,
+        compileOptions->schedulingOptions, compileOptions->executableOptions,
+        compileOptions->targetOptions, compileOptions->hooks, compilePipeline);
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -349,23 +352,30 @@ struct JitGlobalsPass : public JitGlobalsBase<JitGlobalsPass> {
   }
 
   static std::string
-  resolveTargetBackend(const IREE::HAL::TargetBackendRegistry &targetRegistry) {
-    if (clJitTargetBackend.empty()) {
+  resolveTargetDevice(const IREE::HAL::TargetRegistry &targetRegistry) {
+    if (clJitTargetDevice.empty()) {
       // Default - choose something we have.
       // First llvm-cpu then vmvx.
-      if (targetRegistry.getTargetBackend("llvm-cpu")) {
+      if (targetRegistry.getTargetDevice("llvm-cpu")) {
         return std::string("llvm-cpu");
       } else {
         return std::string("vmvx");
       }
     }
 
-    return clJitTargetBackend;
+    return clJitTargetDevice;
   }
 
   const SupportedFeatures getSupportedFeatures(MLIRContext *context) {
     SupportedFeatures s;
     Builder b(context);
+
+    // Exclude vmvx backend since there is no i4 support there causing
+    // the `eval_i4_tensor` test in `jit_globals.mlir` to fail.
+    // TODO(#16321): Enable on other backends once this has been tested
+    // outside llvm-cpu.
+    if (requestedTargetDevice == "llvm-cpu" && hasRequestedTargetDevice)
+      s.addScalarType(b.getIntegerType(4));
     s.addScalarType(b.getIntegerType(8));
     s.addScalarType(b.getIntegerType(16));
     s.addScalarType(b.getIntegerType(32));
@@ -373,12 +383,17 @@ struct JitGlobalsPass : public JitGlobalsBase<JitGlobalsPass> {
     s.addScalarType(b.getF32Type());
 
     s.addElementType(b.getIntegerType(1));
+
+    // TODO(#16321): Enable on other backends once this has been tested outside
+    // llvm-cpu.
+    if (requestedTargetDevice == "llvm-cpu" && hasRequestedTargetDevice)
+      s.addElementType(b.getIntegerType(4));
     s.addElementType(b.getIntegerType(8));
     s.addElementType(b.getIntegerType(16));
     s.addElementType(b.getIntegerType(32));
     s.addElementType(b.getIntegerType(64));
     s.addElementType(b.getF32Type());
-    if (requestedTargetBackend != "vmvx" && hasRequestedTargetBackend) {
+    if (requestedTargetDevice != "vmvx" && hasRequestedTargetDevice) {
       // The full compilers support additional types.
       // TODO: Enable support for i4 once it is worked out how to
       // transfer to and from ElementsAttr.
@@ -417,15 +432,14 @@ struct JitGlobalsPass : public JitGlobalsBase<JitGlobalsPass> {
           break;
 
         case ArgumentBinding::Type::GlobalOp: {
-          auto globalValue = arg.getGlobalOp().getInitialValue();
+          auto globalValue = arg.getGlobalOp().getGlobalInitialValue();
           if (!globalValue) {
             return emitError(jitFunction.loc)
                    << "internal error: jit global source initialization order. "
                       "global "
-                   << arg.getGlobalOp().getSymName() << " has no value";
+                   << arg.getGlobalOp().getGlobalName() << " has no value";
           }
-          if (failed(
-                  call.addArgument(arg.getGlobalOp().getLoc(), *globalValue)))
+          if (failed(call.addArgument(arg.getGlobalOp().getLoc(), globalValue)))
             return failure();
         } break;
         }
@@ -443,9 +457,9 @@ struct JitGlobalsPass : public JitGlobalsBase<JitGlobalsPass> {
           TypedAttr attr;
           if (failed(call.getResultAsAttr(
                   resultBinding.getGlobalOp().getLoc(), it.index(),
-                  resultBinding.getGlobalOp().getType(), attr)))
+                  resultBinding.getGlobalOp().getGlobalType(), attr)))
             return failure();
-          resultBinding.getGlobalOp().setInitialValueAttr(attr);
+          resultBinding.getGlobalOp().setGlobalInitialValue(attr);
           break;
         }
         }
@@ -463,15 +477,15 @@ struct JitGlobalsPass : public JitGlobalsBase<JitGlobalsPass> {
     llvm::TimerGroup tg("iree-consteval-jit", "Consteval Jit");
     auto outerModule = getOperation();
     auto supportedFeatures = getSupportedFeatures(&getContext());
-    if (!hasRequestedTargetBackend) {
+    if (!hasRequestedTargetDevice) {
       emitWarning(UnknownLoc::get(&getContext()))
-          << "consteval jit requested with " << requestedTargetBackend
+          << "consteval jit requested with " << requestedTargetDevice
           << " backend, but it is not available. Falling back to vmvx";
     }
-    if (!targetBackend) {
+    if (!targetDevice) {
       emitError(UnknownLoc::get(&getContext()))
           << "consteval jit could not find a usable backend (requested '"
-          << requestedTargetBackend << "')";
+          << requestedTargetDevice << "')";
       signalPassFailure();
       return;
     }
@@ -487,11 +501,11 @@ struct JitGlobalsPass : public JitGlobalsBase<JitGlobalsPass> {
 
     // Set the target.
     std::optional<IREE::HAL::DeviceTargetAttr> targetAttr =
-        targetBackend->getHostDeviceTarget(&getContext());
+        targetDevice->getHostDeviceTarget(&getContext(), *targetRegistry.value);
     {
       if (!targetAttr) {
         emitError(UnknownLoc::get(&getContext()))
-            << "consteval requested backend " << requestedTargetBackend
+            << "consteval requested backend " << requestedTargetDevice
             << " cannot target the host";
         signalPassFailure();
         return;
@@ -520,7 +534,7 @@ struct JitGlobalsPass : public JitGlobalsBase<JitGlobalsPass> {
 
     std::optional<llvm::Timer> compileTimer;
     if (debugEnabled) {
-      dbgs() << "::: COMPILING JIT (" << requestedTargetBackend
+      dbgs() << "::: COMPILING JIT (" << requestedTargetDevice
              << "): " << programBuilder.getTargetModule() << "\n";
       compileTimer.emplace("iree-consteval-jit-compile", "Compiling", tg);
       compileTimer->startTimer();
@@ -557,24 +571,23 @@ struct JitGlobalsPass : public JitGlobalsBase<JitGlobalsPass> {
     }
   }
 
-  std::shared_ptr<CompileOptions> options;
+  std::shared_ptr<CompileOptions> compileOptions;
   OpPassManager compilePipeline;
-  std::string requestedTargetBackend;
-  std::shared_ptr<IREE::HAL::TargetBackend> targetBackend;
-  bool hasRequestedTargetBackend;
+  std::string requestedTargetDevice;
+  std::shared_ptr<IREE::HAL::TargetDevice> targetDevice;
+  bool hasRequestedTargetDevice;
   bool debugEnabled = isDebugEnabled();
 };
 
 } // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createJitGlobalsPass(const IREE::HAL::TargetBackendRegistry &targetRegistry) {
-  return std::make_unique<JitGlobalsPass>(targetRegistry);
+createJitGlobalsPass(const JitGlobalsOptions &options) {
+  return std::make_unique<JitGlobalsPass>(options);
 }
 
 std::unique_ptr<OperationPass<ModuleOp>> createJitGlobalsPass() {
-  return std::make_unique<JitGlobalsPass>(
-      IREE::HAL::TargetBackendRegistry::getGlobal());
+  return std::make_unique<JitGlobalsPass>(JitGlobalsOptions{});
 }
 
 } // namespace mlir::iree_compiler::ConstEval

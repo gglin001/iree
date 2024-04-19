@@ -16,11 +16,13 @@ iree_cc_library(
   DEPS
     IREEDialectsCAPI
     MLIRCAPIDebug
+    MLIRCAPIGPU
     MLIRCAPIIR
     MLIRCAPIInterfaces
     MLIRCAPILinalg
     MLIRCAPIPDL
     MLIRCAPITransformDialect
+    MLIRCAPITransformDialectTransforms
     iree::compiler::API::Internal::CompilerDriver
     iree::compiler::API::Internal::IREECompileToolEntryPoint
     iree::compiler::API::Internal::IREEMLIRLSPServerToolEntryPoint
@@ -65,9 +67,11 @@ set(_EXPORT_OBJECT_LIBS
   obj.MLIRCAPIDebug
   obj.MLIRCAPIIR
   obj.MLIRCAPIInterfaces
+  obj.MLIRCAPIGPU
   obj.MLIRCAPILinalg
   obj.MLIRCAPIPDL
   obj.MLIRCAPITransformDialect
+  obj.MLIRCAPITransformDialectTransforms
   iree_compiler_API_Internal_CompilerDriver.objects
   iree_compiler_API_Internal_IREECompileToolEntryPoint.objects
   iree_compiler_API_Internal_IREEMLIRLSPServerToolEntryPoint.objects
@@ -211,7 +215,7 @@ iree_install_targets(
 # dependent generator expressions are not legal, we guesstimate it with
 # platform specific logic.
 set(_target_linker_file_name "${CMAKE_SHARED_LIBRARY_PREFIX}IREECompiler${CMAKE_SHARED_LIBRARY_SUFFIX}")
-set_property(GLOBAL APPEND PROPERTY 
+set_property(GLOBAL APPEND PROPERTY
   IREE_COMPILER_DYLIB_RELPATHS "${_target_linker_file_name}")
 
 install(

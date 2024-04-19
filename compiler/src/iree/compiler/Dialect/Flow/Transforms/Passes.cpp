@@ -8,9 +8,10 @@
 
 #include <memory>
 
-#include "iree-dialects/Dialect/LinalgExt/Passes/Passes.h"
+#include "iree/compiler/Dialect/LinalgExt/Transforms/Passes.h"
 #include "iree/compiler/Dialect/Util/Transforms/Passes.h"
 #include "iree/compiler/Utils/PassUtils.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/Passes.h"
@@ -19,6 +20,8 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Transforms/Passes.h"
+
+#define DEBUG_TYPE "iree-flow-transforms-passes"
 
 // TODO(ravishankarm): Change to a pipeline option.
 static llvm::cl::opt<bool> clExportBenchmarkFuncs(
@@ -80,6 +83,11 @@ static llvm::cl::opt<bool>
                          llvm::cl::desc("Fuse multi-use ops."),
                          llvm::cl::init(false));
 
+static llvm::cl::opt<bool> clEnableElementWiseFuseMultiReduction(
+    "iree-flow-element-wise-fuse-multi-reduction",
+    llvm::cl::desc("Enable element-wise fusion of multi-reduction loop ops."),
+    llvm::cl::init(true));
+
 static llvm::cl::opt<bool> clDispatchGenerateWorkloadRegion(
     "iree-flow-dispatch-generate-workload-region",
     llvm::cl::desc("Generate the workload region."), llvm::cl::init(true));
@@ -113,33 +121,59 @@ static llvm::cl::opt<bool> clZeroFillEmptyTensors(
 
 namespace mlir::iree_compiler::IREE::Flow {
 
-using FunctionLikeNest = MultiOpNest<func::FuncOp, IREE::Util::InitializerOp>;
+using FunctionLikeNest =
+    MultiOpNest<func::FuncOp, IREE::Util::InitializerOp, IREE::Util::FuncOp>;
 
-void buildFlowTransformPassPipeline(OpPassManager &passManager,
-                                    const TransformOptions &transformOptions) {
-  // Start of Flow pipeline, verify input legality.
-  passManager.addPass(IREE::Flow::createVerifyInputLegalityPass());
+void addDispatchRegionCreationPreprocessingPasses(OpPassManager &passManager) {
+  // 1. Do some simple elementwise op fusion. This could be skipped,
+  //    but could reduce the surface area of ops to handle later.
+  FunctionLikeNest(passManager)
+      .addPass([]() {
+        return createElementwiseOpFusionPass(ElementwiseOpFusionPassOptions{
+            clEnableElementWiseFuseMultiReduction});
+      })
+      .addPass(mlir::createCanonicalizerPass)
+      .addPass(mlir::createCSEPass)
 
-  // Transform pad operations into linalg.fill + tensor.insert_slice.
-  // This is a WAR for not having native pad handling.
-  if (!clEnablePadHandling && !clEnableFusePaddingIntoLinalgProducerOps) {
-    passManager.addPass(IREE::Flow::createTensorPadToTensorInsertSlicePass(
-        /*skipSingleLinalgOpUses=*/clEnableFusePaddingIntoLinalgConsumerOps));
-  }
+      // 2. Bubble up expand_shape ops (or sink collapse_shape ops) to get
+      //    elementwise operation into higher dimensions for more fusion
+      //    opportunities.
+      .addPass(createBubbleUpExpandShapesPass)
+      .addPass(createCanonicalizerPass)
+      .addPass(createCSEPass)
 
+      // 3. Perform elementwise operation fusion again (now with higher
+      // dimensionality)
+      .addPass([]() {
+        return createElementwiseOpFusionPass(ElementwiseOpFusionPassOptions{
+            clEnableElementWiseFuseMultiReduction});
+      })
+      .addPass(mlir::createCanonicalizerPass)
+      .addPass(mlir::createCSEPass);
+}
+
+void addDispatchRegionCreationPasses(OpPassManager &passManager,
+                                     const TransformOptions &transformOptions) {
   FunctionLikeNest(passManager)
       // Preprocess the input to a form more amenable for fusion
       .addPass(createInterchangeGenericOpsPass)
       .addPass(memref::createResolveShapedTypeResultDimsPass)
       .addPass(mlir::createCanonicalizerPass)
-      .addPass(mlir::createCSEPass)
-      // Elementwise fusion.
-      .addPass(
-          []() { return createFusionOfTensorOpsPass(clEnableFuseMultiUse); })
-      .addPredicatedPass(clDetensoring, mlir::createLinalgDetensorizePass)
+      .addPass(mlir::createCSEPass);
+
+  addDispatchRegionCreationPreprocessingPasses(passManager);
+
+  FunctionLikeNest(passManager)
+      .addPass([]() {
+        return createFusionOfTensorOpsPass(FusionOfTensorOpsPassOptions{
+            clEnableFuseMultiUse, clEnableElementWiseFuseMultiReduction});
+      })
+      .addPredicatedPass(clDetensoring,
+                         [&]() { return mlir::createLinalgDetensorizePass(); })
       .addPass(mlir::createCanonicalizerPass)
       .addPass(mlir::createCSEPass)
-      .addPredicatedPass(clCollapseReductionDims, createCollapseDimsPass)
+      .addPredicatedPass(clCollapseReductionDims,
+                         createCollapseReductionDimensionsPass)
       // Split reduction operations into parallel and reduction.
       .addPass(createSplitReductionPass)
       // SplitReductionPass may create reduction dimension that are not the last
@@ -152,11 +186,13 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
                          createInterchangeTransposeGenericOpsPass)
       ////////////////////////////////////////////////////////////////////////
       // Dispatch region formation.
-      .addPredicatedPass(!clDispatchTransformFileName.empty(),
-                         [&]() {
-                           return createDispatchWithTransformDialect(
-                               clDispatchTransformFileName);
-                         })
+      .addPredicatedPass(
+          !clDispatchTransformFileName.empty(),
+          [&]() {
+            DispatchWithTransformDialectPassOptions options;
+            options.transformSpecPath = clDispatchTransformFileName;
+            return createDispatchWithTransformDialectPass(options);
+          })
 
       .addPass(createFormScalarDispatchesPass)
       // Only want use the transform dialect for some dispatch regions and let
@@ -165,7 +201,7 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
       // transformations afterwards with a simple region and without bothering
       // producers.
       .addPass([&]() {
-        return createFormDispatchRegionsPass(FormDispatchRegionsOptions{
+        return createFormDispatchRegionsPass(FormDispatchRegionsPassOptions{
             clEnableFuseMultiUse, clDispatchGenerateWorkloadRegion,
             clEnableFusePaddingIntoLinalgConsumerOps,
             clEnableFusePaddingIntoLinalgProducerOps});
@@ -181,16 +217,41 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
       // Form dispatch region into dispatch workgroups
       .addPass([&]() {
         return createFormDispatchWorkgroupsPass(
-            clDispatchGenerateWorkloadRegion);
-      })
-      ////////////////////////////////////////////////////////////////////////
-      .addPass(createCaptureDispatchDynamicDimsPass)
+            FormDispatchWorkgroupsPassOptions{
+                clDispatchGenerateWorkloadRegion});
+      });
+}
+
+void buildFlowTransformPassPipeline(OpPassManager &passManager,
+                                    const TransformOptions &transformOptions) {
+  // Start of Flow pipeline, verify input legality.
+  passManager.addPass(IREE::Flow::createVerifyInputLegalityPass());
+
+  // Inject tensor tracing early as we need to have the tracers in the IR
+  // prior to dispatch region formation where we may lose access to them.
+  FunctionLikeNest(passManager)
+      .addPass(IREE::Flow::createInjectTensorTracingPass);
+
+  // Transform pad operations into linalg.fill + tensor.insert_slice.
+  // This is a WAR for not having native pad handling.
+  if (!clEnablePadHandling && !clEnableFusePaddingIntoLinalgProducerOps) {
+    passManager.addPass(IREE::Flow::createTensorPadToTensorInsertSlicePass(
+        TensorPadToTensorInsertSlicePassOptions{
+            /*skipSingleLinalgOpUses=*/
+            clEnableFusePaddingIntoLinalgConsumerOps}));
+  }
+
+  addDispatchRegionCreationPasses(passManager, transformOptions);
+
+  FunctionLikeNest(passManager)
+      .addPass(createCaptureDynamicDimsPass)
       .addPass(mlir::createCanonicalizerPass)
       .addPass(createCSEPass)
 
       // Initialize any empty tensors to zero.
       .addPass([&]() {
-        return createInitializeEmptyTensorsPass(clZeroFillEmptyTensors);
+        return createInitializeEmptyTensorsPass(
+            InitializeEmptyTensorsPassOptions{clZeroFillEmptyTensors});
       });
 
   // Module pass to outline dispatch regions (and similar ops) into their own
@@ -215,7 +276,8 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
                                                             : std::string("");
   if (!dispatchBreakOrdinalStr.empty() || !dispatchTraceOrdinalStr.empty()) {
     passManager.addPass(IREE::Flow::createInsertDebugTargetAtOrdinalPass(
-        dispatchBreakOrdinalStr, dispatchTraceOrdinalStr));
+        InsertDebugTargetAtOrdinalPassOptions{dispatchBreakOrdinalStr,
+                                              dispatchTraceOrdinalStr}));
   }
 
   // Strip assertions from executables. We could support them with a bunch of
@@ -252,7 +314,8 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
                                                             : std::string("");
   if (!dispatchBreakSymbolStr.empty() || !dispatchTraceSymbolStr.empty()) {
     passManager.addPass(IREE::Flow::createInsertDebugTargetAtSymbolPass(
-        dispatchBreakSymbolStr, dispatchTraceSymbolStr));
+        InsertDebugTargetAtSymbolPassOptions{dispatchBreakSymbolStr,
+                                             dispatchTraceSymbolStr}));
   }
 
   FunctionLikeNest(passManager)
@@ -261,6 +324,9 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
       // match later stages.
       .addPredicatedPass(clTraceDispatchTensors,
                          IREE::Flow::createInjectDispatchTracingPass)
+      // Inject tensor tracing late for any attributes that were added by the
+      // passes above after we've formed dispatch regions.
+      .addPass(IREE::Flow::createInjectTensorTracingPass)
       // Cleanup the IR after we are done.
       .addPass(IREE::Flow::createCleanupTensorShapesPass)
       .addPass(mlir::createCanonicalizerPass)
@@ -276,16 +342,9 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
 
   /// Print the dispatch graph in the Graphviz format.
   if (clDumpDispatchGraph) {
-    std::string errorMessage;
-    static auto dotFile =
-        openOutputFile(clDumpDispatchGraphOutputFile, &errorMessage);
-    if (!dotFile) {
-      llvm::errs() << errorMessage << "\n";
-    } else {
-      passManager.addPass(
-          IREE::Flow::createDumpDispatchGraphPass(dotFile->os()));
-      dotFile->keep();
-    }
+    DumpDispatchGraphPassOptions options;
+    options.outputFile = clDumpDispatchGraphOutputFile;
+    passManager.addPass(IREE::Flow::createDumpDispatchGraphPass(options));
   }
 }
 
@@ -295,6 +354,18 @@ void registerFlowTransformPassPipeline() {
       "Runs the full IREE flow dialect transformation pipeline",
       [](OpPassManager &passManager, const TransformOptions &transformOptions) {
         buildFlowTransformPassPipeline(passManager, transformOptions);
+      });
+
+  PassPipelineRegistration<> flowDispatchRegionFormationPreprocessingPipeline(
+      "iree-flow-dispatch-region-formation-preprocessing-pipeline",
+      "Flag used to run preprocessing passes that run passes before dispatch "
+      "region formation. Used only for testing",
+      [](OpPassManager &passManager) {
+        addDispatchRegionCreationPreprocessingPasses(passManager);
+        LLVM_DEBUG({
+          llvm::dbgs() << "Dispatch preprocessing pass pipeline : ";
+          passManager.dump();
+        });
       });
 }
 

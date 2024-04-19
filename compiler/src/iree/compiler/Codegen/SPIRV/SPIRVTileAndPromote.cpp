@@ -11,7 +11,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "iree-dialects/Dialect/LinalgExt/Transforms/Transforms.h"
 #include "iree/compiler/Codegen/Common/GPU/GPUPatterns.h"
 #include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/SPIRV/KernelConfig.h"
@@ -35,8 +34,6 @@
 
 #define DEBUG_TYPE "iree-spirv-tile-and-promote"
 
-constexpr int kMaxVectorNumBits = 128;
-
 namespace mlir::iree_compiler {
 
 //====---------------------------------------------------------------------===//
@@ -44,8 +41,8 @@ namespace mlir::iree_compiler {
 //====---------------------------------------------------------------------===//
 
 static LogicalResult
-tileReductionLoops(func::FuncOp funcOp,
-                   IREE::LinalgExt::LinalgTransformationFilter filter,
+tileReductionLoops(mlir::FunctionOpInterface funcOp,
+                   LinalgTransformationFilter filter,
                    const scf::SCFTileSizeComputationFunction &computeFn) {
   auto options =
       scf::SCFTilingOptions().setTileSizeComputationFunction(computeFn);
@@ -57,8 +54,8 @@ tileReductionLoops(func::FuncOp funcOp,
 //===----------------------------------------------------------------------===//
 
 static LogicalResult
-tileToInvocation(func::FuncOp funcOp,
-                 IREE::LinalgExt::LinalgTransformationFilter filter,
+tileToInvocation(mlir::FunctionOpInterface funcOp,
+                 LinalgTransformationFilter filter,
                  const linalg::TileSizeComputationFunction &computeFn) {
   auto getThreadProcInfoFn = [](OpBuilder &builder, Location loc,
                                 ArrayRef<Range> parallelLoopRanges) {
@@ -82,10 +79,6 @@ tileToInvocation(func::FuncOp funcOp,
 
 static const char promoteBothMarker[] = "promote_lhs_and_rhs";
 
-template <typename T>
-using LinalgPromotionPattern =
-    mlir::iree_compiler::IREE::LinalgExt::LinalgPromotionPattern<T>;
-
 static void populatePromotionPatterns(RewritePatternSet &patterns,
                                       StringAttr replaceMarker) {
   MLIRContext *context = patterns.getContext();
@@ -97,7 +90,7 @@ static void populatePromotionPatterns(RewritePatternSet &patterns,
           .setUseFullTileBuffers({false, false});
   auto promoteBothOptions = baseOptions.setOperandsToPromote({0, 1});
 
-  IREE::LinalgExt::LinalgTransformationFilter promoteBothFilter(
+  LinalgTransformationFilter promoteBothFilter(
       {StringAttr::get(context, promoteBothMarker)}, replaceMarker);
 
   patterns.insert<LinalgPromotionPattern<linalg::MatmulOp>,
@@ -122,8 +115,10 @@ public:
     registry.insert<gpu::GPUDialect>();
   }
 
-  LogicalResult initializeOptions(StringRef options) override {
-    if (failed(Pass::initializeOptions(options)))
+  LogicalResult initializeOptions(
+      StringRef options,
+      function_ref<LogicalResult(const Twine &)> errorHandler) override {
+    if (failed(Pass::initializeOptions(options, errorHandler)))
       return failure();
     // Consider pass option too
     promoteCMatrix |= this->promoteC;
@@ -136,7 +131,7 @@ public:
 private:
   /// Promotes C matrix to shared memory when necessary and returns success if
   /// no error happens.
-  LogicalResult doPromoteCMatrix(func::FuncOp funcOp) const;
+  LogicalResult doPromoteCMatrix(mlir::FunctionOpInterface funcOp) const;
 
   // Whether to promote C matrix to use shared memory.
   bool promoteCMatrix = false;
@@ -148,10 +143,7 @@ private:
 
 void SPIRVTileAndPromotePass::runOnOperation() {
   MLIRContext *context = &getContext();
-  func::FuncOp funcOp = getOperation();
-  FailureOr<IREE::HAL::ExecutableExportOp> exportOp = getEntryPoint(funcOp);
-  if (failed(exportOp))
-    return;
+  auto funcOp = getOperation();
 
   auto threadTileComputeFn = getSPIRVTileSizeComputeFn(funcOp, 1);
   if (failed(threadTileComputeFn))
@@ -165,14 +157,13 @@ void SPIRVTileAndPromotePass::runOnOperation() {
   if (failed(doPromoteCMatrix(funcOp)))
     return signalPassFailure();
 
-  StringLiteral markerAttrName =
-      IREE::LinalgExt::LinalgTransforms::kLinalgTransformMarker;
+  StringLiteral markerAttrName = LinalgTransforms::kLinalgTransformMarker;
   auto workgroupMarker = StringAttr::get(context, getWorkgroupMemoryMarker());
   auto kTiledMarker = StringAttr::get(context, getWorkgroupKTiledMarker());
 
   { // Tile reduction dimensions.
     RewritePatternSet patterns(context);
-    IREE::LinalgExt::LinalgTransformationFilter filter(
+    LinalgTransformationFilter filter(
         // Going through C matrix promotion we will have the marker..
         {workgroupMarker}, kTiledMarker);
     // Not going through C matrix promotion we will have no marker..
@@ -197,9 +188,15 @@ void SPIRVTileAndPromotePass::runOnOperation() {
     llvm::dbgs() << "\n\n";
   });
 
-  auto workgroupSize = llvm::map_to_vector(
-      exportOp->getWorkgroupSize().value(),
-      [&](Attribute attr) { return llvm::cast<IntegerAttr>(attr).getInt(); });
+  std::optional<SmallVector<int64_t>> maybeWorkgroupSize =
+      getWorkgroupSize(funcOp);
+  if (!maybeWorkgroupSize) {
+    funcOp.emitOpError(
+        "failed to get workgroup size for tile and promote pass");
+    return signalPassFailure();
+  }
+
+  SmallVector<int64_t> &workgroupSize = maybeWorkgroupSize.value();
   int64_t totalThreads = workgroupSize[0] * workgroupSize[1] * workgroupSize[2];
   std::optional<int> subgroupSize = getSPIRVSubgroupSize(funcOp);
   if (!subgroupSize) {
@@ -260,8 +257,7 @@ void SPIRVTileAndPromotePass::runOnOperation() {
   });
 
   if (!skipThreadLevel) { // Tile and distribute to invocations.
-    IREE::LinalgExt::LinalgTransformationFilter filter({workgroupMarker},
-                                                       std::nullopt);
+    LinalgTransformationFilter filter({workgroupMarker}, std::nullopt);
     if (failed(tileToInvocation(funcOp, filter, *threadTileComputeFn))) {
       funcOp.emitOpError() << "failed tiling and distributing to invocations";
       return signalPassFailure();
@@ -287,8 +283,8 @@ void SPIRVTileAndPromotePass::runOnOperation() {
   }
 }
 
-LogicalResult
-SPIRVTileAndPromotePass::doPromoteCMatrix(func::FuncOp funcOp) const {
+LogicalResult SPIRVTileAndPromotePass::doPromoteCMatrix(
+    mlir::FunctionOpInterface funcOp) const {
   MLIRContext *context = funcOp.getContext();
   if (!promoteCMatrix)
     return success();
@@ -354,7 +350,7 @@ SPIRVTileAndPromotePass::doPromoteCMatrix(func::FuncOp funcOp) const {
   return success();
 }
 
-std::unique_ptr<OperationPass<func::FuncOp>>
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
 createSPIRVTileAndPromotePass(bool promoteCMatrix, bool skipThreadLevel) {
   return std::make_unique<SPIRVTileAndPromotePass>(promoteCMatrix,
                                                    skipThreadLevel);

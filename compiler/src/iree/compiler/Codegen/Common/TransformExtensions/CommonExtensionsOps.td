@@ -9,8 +9,8 @@
 
 include "mlir/Dialect/Transform/IR/TransformAttrs.td"
 include "mlir/Dialect/Transform/IR/TransformDialect.td"
-include "mlir/Dialect/Transform/IR/TransformInterfaces.td"
 include "mlir/Dialect/Transform/IR/TransformTypes.td"
+include "mlir/Dialect/Transform/Interfaces/TransformInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Dialect/SCF/IR/DeviceMappingInterface.td"
 include "mlir/IR/EnumAttr.td"
@@ -220,7 +220,7 @@ def HoistStaticAllocOp :  Op<Transform_Dialect, "iree.hoist_static_alloc",
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
         ::mlir::transform::TransformRewriter &rewriter,
-        ::mlir::func::FuncOp funcOp,
+        ::mlir::FunctionOpInterface funcOp,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
@@ -356,7 +356,7 @@ def ForallToWorkgroupOp : Op<Transform_Dialect,
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
         ::mlir::transform::TransformRewriter &rewriter,
-        ::mlir::func::FuncOp target,
+        ::mlir::FunctionOpInterface target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
@@ -505,7 +505,43 @@ def WorkgroupSwizzleOp :  Op<Transform_Dialect, "iree.workgroup_swizzle",
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
         ::mlir::transform::TransformRewriter &rewriter,
-        ::mlir::func::FuncOp funcOp,
+        ::mlir::FunctionOpInterface funcOp,
+        ::mlir::transform::ApplyToEachResultList &results,
+        ::mlir::transform::TransformState &state);
+  }];
+}
+
+def ReduceSharedMemoryBankConflictsOp :  Op<Transform_Dialect, "iree.reduce_shared_memory_bank_conflicts",
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     TransformEachOpTrait,
+     TransformOpInterface,
+     ReportTrackingListenerFailuresOpTrait]> {
+  let summary = "Add padding to 'memref.alloc' ops reduce shared memory bank conflicts";
+  let description = [{
+    The `paddingSizeBits` argument should be picked based on the target
+    architecture, striking balance between minimizing bank conflicts and keeping
+    the data aligned. Smaller values (close to the bank bitwidth) achieve the
+    former, while larger (~= widest load size) the latter. We want to **misalign**
+    the rows, but not too much. For gfx942, 64 is a good default.
+
+    #### Return modes
+
+    This transform does not consume the target handle and always return success.
+  }];
+
+  let arguments = (
+      ins TransformHandleTypeInterface:$target,
+          DefaultValuedOptionalAttr<I64Attr, "64">:$padding_size_bits
+  );
+  let results = (outs);
+
+  let assemblyFormat = "$target attr-dict `:` functional-type(operands, results)";
+  let cppNamespace = "mlir::iree_compiler::IREE::transform_dialect";
+
+  let extraClassDeclaration = [{
+    ::mlir::DiagnosedSilenceableFailure applyToOne(
+        ::mlir::transform::TransformRewriter &rewriter,
+        ::mlir::FunctionOpInterface funcOp,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];
@@ -542,7 +578,7 @@ def TestVectorLayoutAnalysisOp :
     let extraClassDeclaration = [{
       ::mlir::DiagnosedSilenceableFailure applyToOne(
           ::mlir::transform::TransformRewriter &rewriter,
-          ::mlir::func::FuncOp funcOp,
+          ::mlir::FunctionOpInterface funcOp,
           ::mlir::transform::ApplyToEachResultList &results,
           ::mlir::transform::TransformState &state);
     }];
@@ -562,15 +598,17 @@ def TestGpuVectorDistribution :
     "__vector_layout_test_anchor_result_x", where "x" is the operand/result
     number.
 
-    The distribution is done over a 3D thread grid, using the 
-    gpu.thread x, y, z thread grid.
+    The distribution is done for a single warp using gpu.thread x as the lane
+    ID. The optional experimental attribute enabled experimental distribution
+    patterns.
 
     #### Return modes
 
     This transform does not consume the target handle and always return success.
     }];
 
-    let arguments = (ins TransformHandleTypeInterface:$target);
+    let arguments = (ins TransformHandleTypeInterface:$target,
+                         DefaultValuedOptionalAttr<BoolAttr, "false">:$experimental);
     let results = (outs);
 
     let assemblyFormat = [{ $target attr-dict `:` type($target)}];
@@ -579,7 +617,7 @@ def TestGpuVectorDistribution :
     let extraClassDeclaration = [{
       ::mlir::DiagnosedSilenceableFailure applyToOne(
           ::mlir::transform::TransformRewriter &rewriter,
-          ::mlir::func::FuncOp funcOp,
+          ::mlir::FunctionOpInterface funcOp,
           ::mlir::transform::ApplyToEachResultList &results,
           ::mlir::transform::TransformState &state);
     }];
@@ -608,7 +646,7 @@ def GpuDistributeSharedMemoryCopyOp :
   let extraClassDeclaration = [{
     ::mlir::DiagnosedSilenceableFailure applyToOne(
         ::mlir::transform::TransformRewriter &rewriter,
-        ::mlir::func::FuncOp target,
+        ::mlir::FunctionOpInterface target,
         ::mlir::transform::ApplyToEachResultList &results,
         ::mlir::transform::TransformState &state);
   }];

@@ -18,7 +18,6 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Attributes.h"
@@ -345,7 +344,7 @@ struct ElideRedundantOperandsOfWorkgroupCountFromSliceOp
           rewriter.getIndexAttr(
               oldOrdinalPosToNewOrdinalPos.lookup(oldOrdinalPos)));
     }
-    rewriter.updateRootInPlace(op, []() {});
+    rewriter.modifyOpInPlace(op, []() {});
     return success();
   }
 };
@@ -459,7 +458,7 @@ static bool updateTensorOpDims(RewriterBase &rewriter, Operation *op,
   auto oldValues = llvm::to_vector(oldValueRange);
   for (unsigned i = 0; i < dynamicDims.size(); ++i) {
     if (oldValues[i] != dynamicDims[i]) {
-      rewriter.updateRootInPlace(
+      rewriter.modifyOpInPlace(
           op, [&]() { mutableDimValues.slice(i, 1).assign(dynamicDims[i]); });
       anyChanged = true;
     }
@@ -712,8 +711,8 @@ struct DeduplicateDispatchEntryRefs final
     auto newAttr = deduplicateArrayElements(originalAttr);
     if (newAttr == originalAttr)
       return failure();
-    rewriter.updateRootInPlace(
-        dispatchOp, [&]() { dispatchOp.setEntryPointsAttr(newAttr); });
+    rewriter.modifyOpInPlace(dispatchOp,
+                             [&]() { dispatchOp.setEntryPointsAttr(newAttr); });
     return success();
   }
 };
@@ -780,7 +779,13 @@ static bool compareShapesEqual(ShapedType lhsType, ValueRange lhsDynamicDims,
 // flow.tensor.constant
 //===----------------------------------------------------------------------===//
 
-OpFoldResult TensorConstantOp::fold(FoldAdaptor operands) {
+OpFoldResult TensorConstantOp::fold(FoldAdaptor operands) { return getValue(); }
+
+//===----------------------------------------------------------------------===//
+// flow.tensor.dynamic_constant
+//===----------------------------------------------------------------------===//
+
+OpFoldResult TensorDynamicConstantOp::fold(FoldAdaptor operands) {
   auto dynamicType = getType();
   if (dynamicType.getNumDynamicDims() == 0) {
     return getValue();
@@ -790,24 +795,27 @@ OpFoldResult TensorConstantOp::fold(FoldAdaptor operands) {
 
 namespace {
 
-struct ExpandDynamicShapeConstant : public OpRewritePattern<TensorConstantOp> {
-  using OpRewritePattern<TensorConstantOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(TensorConstantOp op,
+struct ExpandDynamicShapeConstant
+    : public OpRewritePattern<TensorDynamicConstantOp> {
+  using OpRewritePattern<TensorDynamicConstantOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(TensorDynamicConstantOp op,
                                 PatternRewriter &rewriter) const override {
-    auto constantOp =
-        rewriter.create<arith::ConstantOp>(op.getLoc(), op.getValue());
+    auto constantOp = rewriter.create<IREE::Flow::TensorConstantOp>(
+        op.getLoc(), op.getValue());
     auto dynamicType = op.getType();
-    auto staticType = llvm::cast<ShapedType>(constantOp.getType());
+    auto staticType = cast<ShapedType>(op.getValue().getType());
     SmallVector<Value> dynamicDims;
-    for (int64_t i = 0; i < dynamicType.getNumDynamicDims(); ++i) {
-      auto dimValue = rewriter
-                          .create<arith::ConstantIndexOp>(
-                              op.getLoc(), staticType.getDimSize(i))
-                          .getResult();
-      dynamicDims.push_back(
-          rewriter
-              .create<IREE::Util::OptimizationBarrierOp>(op.getLoc(), dimValue)
-              .getResult(0));
+    for (int64_t i = 0; i < dynamicType.getRank(); ++i) {
+      if (dynamicType.isDynamicDim(i)) {
+        auto dimValue = rewriter
+                            .create<arith::ConstantIndexOp>(
+                                op.getLoc(), staticType.getDimSize(i))
+                            .getResult();
+        dynamicDims.push_back(rewriter
+                                  .create<IREE::Util::OptimizationBarrierOp>(
+                                      op.getLoc(), dimValue)
+                                  .getResult(0));
+      }
     }
     rewriter.replaceOpWithNewOp<IREE::Flow::TensorReshapeOp>(
         op, dynamicType, constantOp.getResult(), dynamicDims);
@@ -817,8 +825,8 @@ struct ExpandDynamicShapeConstant : public OpRewritePattern<TensorConstantOp> {
 
 } // namespace
 
-void TensorConstantOp::getCanonicalizationPatterns(RewritePatternSet &results,
-                                                   MLIRContext *context) {
+void TensorDynamicConstantOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
   results.insert<ExpandDynamicShapeConstant>(context);
 }
 
@@ -987,6 +995,7 @@ struct ResolveShapedDim : public OpRewritePattern<tensor::DimOp> {
     }
     auto idx = op.getConstantIndex().value();
 
+    // Fold static dims from the type.
     auto shapedType = llvm::cast<ShapedType>(op.getSource().getType());
     if (!shapedType.isDynamicDim(idx)) {
       rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(
@@ -994,19 +1003,20 @@ struct ResolveShapedDim : public OpRewritePattern<tensor::DimOp> {
       return success();
     }
 
+    // Find dims captured on shape-aware ops.
     auto dynamicDims = IREE::Util::findDynamicDims(
         op.getSource(), op->getBlock(), Block::iterator(op.getOperation()));
-    if (!dynamicDims.has_value()) {
-      return rewriter.notifyMatchFailure(op, "no dynamic dims found/usable");
+    if (dynamicDims.has_value()) {
+      unsigned dimOffset = 0;
+      for (unsigned i = 0; i < idx; ++i) {
+        if (shapedType.isDynamicDim(i))
+          ++dimOffset;
+      }
+      rewriter.replaceOp(op, dynamicDims.value()[dimOffset]);
+      return success();
     }
-    unsigned dimOffset = 0;
-    for (unsigned i = 0; i < idx; ++i) {
-      if (shapedType.isDynamicDim(i))
-        ++dimOffset;
-    }
-    rewriter.replaceOp(op, dynamicDims.value()[dimOffset]);
 
-    return success();
+    return rewriter.notifyMatchFailure(op, "no dynamic dims found/usable");
   }
 };
 
@@ -1032,8 +1042,6 @@ void TensorBitCastOp::getCanonicalizationPatterns(RewritePatternSet &results,
       context);
   results.insert<ReplaceOpIfTensorOperandEmpty<TensorBitCastOp, 0, 0>>(context);
   results.insert<FlattenTensorCastLikeChain<TensorBitCastOp>>(context);
-  results.insert<ResolveShapedRank>(context);
-  results.insert<ResolveShapedDim>(context);
 }
 
 //===----------------------------------------------------------------------===//

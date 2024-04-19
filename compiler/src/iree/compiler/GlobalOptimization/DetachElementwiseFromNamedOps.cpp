@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtInterfaces.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtInterfaces.h"
 #include "iree/compiler/GlobalOptimization/PassDetail.h"
 #include "iree/compiler/GlobalOptimization/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -79,8 +79,8 @@ struct DetachElementwisePattern
         rewriter.create<linalg::FillOp>(loc, zero, initOp.getResult()).result();
 
     // Update the contraction op to use the new zero tensor as output operand.
-    rewriter.updateRootInPlace(linalgOp,
-                               [&]() { linalgOp.setDpsInitOperand(0, fill); });
+    rewriter.modifyOpInPlace(linalgOp,
+                             [&]() { linalgOp.setDpsInitOperand(0, fill); });
 
     auto outputMap = mlir::compressUnusedDims(
         linalgOp.getMatchingIndexingMap(outputOperands.front()));
@@ -175,7 +175,7 @@ struct DetachSplatConstantOutsOperands
                          .create<linalg::FillOp>(
                              loc, resultType, scalarConstantOp, emptyTensorOp)
                          .getResult(0);
-      rewriter.updateRootInPlace(dpsInterfaceOp, [&]() {
+      rewriter.modifyOpInPlace(dpsInterfaceOp, [&]() {
         dpsInterfaceOp.setDpsInitOperand(outOperand.index(), fillOp);
       });
       madeChanges = true;

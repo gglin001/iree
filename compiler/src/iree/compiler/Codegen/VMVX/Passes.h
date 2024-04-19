@@ -13,7 +13,7 @@
 #define IREE_COMPILER_CODEGEN_VMVX_PASSES_H_
 
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir::iree_compiler {
@@ -28,21 +28,20 @@ std::unique_ptr<Pass> createVMVXLowerLinalgMicrokernelsPass();
 
 /// Materialize the encoding of operations. The layout to use for the encoded
 /// operations are VMVX specific.
-std::unique_ptr<OperationPass<func::FuncOp>>
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
 createVMVXMaterializeEncodingPass();
 
 /// Pass to select a lowering strategy for a hal.executable.variant operation.
-std::unique_ptr<OperationPass<IREE::HAL::ExecutableVariantOp>>
-createVMVXSelectLoweringStrategyPass();
+std::unique_ptr<OperationPass<ModuleOp>> createVMVXSelectLoweringStrategyPass();
 
 /// Pass to lower the module an hal.executable.variant operation to external
 /// dialect.
-std::unique_ptr<OperationPass<IREE::HAL::ExecutableVariantOp>>
+std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createVMVXLowerExecutableTargetPass();
 
 /// Populates the passes to lower to tiled/distributed/bufferized ops,
 /// suitable for library call dispatch and lowering to loops.
-void addVMVXDefaultPassPipeline(OpPassManager &passManager,
+void addVMVXDefaultPassPipeline(OpPassManager &funcPassManager,
                                 bool enableUKernels);
 
 //----------------------------------------------------------------------------//
@@ -57,7 +56,7 @@ createVMVXAssignConstantOrdinalsPass();
 std::unique_ptr<OperationPass<mlir::ModuleOp>> createVMVXLinkExecutablesPass();
 
 /// Populates passes needed to link HAL executables across VMVX targets.
-void buildVMVXLinkingPassPipeline(OpPassManager &passManager);
+void buildVMVXLinkingPassPipeline(OpPassManager &variantPassManager);
 
 //----------------------------------------------------------------------------//
 // Register VMVX Passes

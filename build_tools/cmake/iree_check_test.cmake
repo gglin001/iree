@@ -126,17 +126,9 @@ function(iree_check_test)
   if(DEFINED _RULE_DRIVER)
     string(TOUPPER ${_RULE_DRIVER} _UPPERCASE_DRIVER)
     string(REPLACE "-" "_" _NORMALIZED_DRIVER ${_UPPERCASE_DRIVER})
-    string(TOUPPER "${IREE_EXTERNAL_HAL_DRIVERS}" _UPPERCASE_EXTERNAL_DRIVERS)
-    string(REPLACE "-" "_" _NORMALIZED_EXTERNAL_DRIVERS "${_UPPERCASE_EXTERNAL_DRIVERS}")
-    if((NOT DEFINED IREE_HAL_DRIVER_${_NORMALIZED_DRIVER}) AND
-       (NOT ${_NORMALIZED_DRIVER} IN_LIST _NORMALIZED_EXTERNAL_DRIVERS))
-      message(SEND_ERROR "Unknown driver '${_RULE_DRIVER}'. Check IREE_HAL_DRIVER_*/IREE_EXTERNAL_HAL_DRIVERS options.")
-    endif()
     if((NOT IREE_HAL_DRIVER_${_NORMALIZED_DRIVER}) AND
        (NOT IREE_EXTERNAL_${_NORMALIZED_DRIVER}_HAL_DRIVER_FOUND))
       set(_TEST_DISABLED TRUE)
-      # We could also disable the bytecode module build here if we wanted to.
-      # set(_BYTECODE_MODULE_BUILD_ENABLED FALSE)
     endif()
   endif()
 
@@ -144,6 +136,10 @@ function(iree_check_test)
   iree_is_bytecode_module_test_excluded_by_labels(_EXCLUDED_BY_LABELS "${_RULE_LABELS}")
   if(_EXCLUDED_BY_LABELS)
     set(_TEST_DISABLED TRUE)
+  endif()
+
+  if((_TEST_DISABLED OR NOT _TEST_DEFINED) AND NOT IREE_BUILD_ALL_CHECK_TEST_MODULES)
+    set(_BYTECODE_MODULE_BUILD_ENABLED FALSE)
   endif()
   # ---------------------------------------------------------------------------
 
@@ -246,10 +242,6 @@ function(iree_check_single_backend_test_suite)
     return()
   endif()
 
-  # Note: we could check IREE_BUILD_COMPILER here, but cross compilation makes
-  # that a little tricky. Instead, we let iree_check_test handle the checks,
-  # meaning this function may run some configuration but generate no targets.
-
   cmake_parse_arguments(
     _RULE
     ""
@@ -261,30 +253,77 @@ function(iree_check_single_backend_test_suite)
   foreach(_SRC IN LISTS _RULE_SRCS)
     get_filename_component(_BASE_NAME ${_SRC} NAME)
     set(_TEST_NAME "${_RULE_NAME}_${_BASE_NAME}")
-    iree_check_test(
-      NAME
-        ${_TEST_NAME}
-      SRC
-        ${_SRC}
-      TARGET_BACKEND
-        ${_RULE_TARGET_BACKEND}
-      DRIVER
-        ${_RULE_DRIVER}
-      COMPILER_FLAGS
-        ${_RULE_COMPILER_FLAGS}
-      INPUT_TYPE
-        ${_RULE_INPUT_TYPE}
-      RUNNER_ARGS
-        ${_RULE_RUNNER_ARGS}
-      LABELS
-        ${_RULE_LABELS}
-      TARGET_CPU_FEATURES
-        ${_RULE_TARGET_CPU_FEATURES}
-      DEPENDS
-        ${_RULE_DEPENDS}
-      TIMEOUT
-        ${_RULE_TIMEOUT}
-    )
+
+    # When using the llvm-cpu backend, the runtime build config may need to
+    # match the compiled executable config using (`--iree-llvmcpu-sanitize=`):
+    #
+    # | Runtime type         | Compatible with these executable types |
+    # | -------------------- | -------------------------------------- |
+    # | Base (no sanitizers) | Base, ASan                             |
+    # | ASan                 | Base, ASan                             |
+    # | TSan                 | TSan (ABI break)                       |
+
+    # Define the regular test suite, unless the config is llvm-cpu + TSan.
+    if(NOT _RULE_TARGET_BACKEND STREQUAL "llvm-cpu" OR NOT IREE_ENABLE_TSAN)
+      iree_check_test(
+        NAME ${_TEST_NAME}
+        SRC ${_SRC}
+        TARGET_BACKEND ${_RULE_TARGET_BACKEND}
+        DRIVER ${_RULE_DRIVER}
+        COMPILER_FLAGS ${_RULE_COMPILER_FLAGS}
+        INPUT_TYPE ${_RULE_INPUT_TYPE}
+        RUNNER_ARGS ${_RULE_RUNNER_ARGS}
+        LABELS ${_RULE_LABELS}
+        TARGET_CPU_FEATURES ${_RULE_TARGET_CPU_FEATURES}
+        DEPENDS ${_RULE_DEPENDS}
+        TIMEOUT ${_RULE_TIMEOUT}
+      )
+    endif()
+
+    # Define tests for AddressSanitizer (ASan) and ThreadSanitizer (TSan).
+    # Normally test suites should do this sort of branching at the leaves rather
+    # than modify the base CMake function directly, but sanitizers are applied
+    # at the build system uniformly, so until we decouple the test suites from
+    # source builds further this felt like a reasonable compromise.
+    if(_RULE_TARGET_BACKEND STREQUAL "llvm-cpu")
+      if(IREE_ENABLE_ASAN)
+        set(_ASAN_COMPILER_FLAGS ${_RULE_COMPILER_FLAGS})
+        list(APPEND _ASAN_COMPILER_FLAGS "--iree-llvmcpu-link-embedded=false")
+        list(APPEND _ASAN_COMPILER_FLAGS "--iree-llvmcpu-sanitize=address")
+        iree_check_test(
+          NAME "${_TEST_NAME}_asan"
+          SRC ${_SRC}
+          TARGET_BACKEND ${_RULE_TARGET_BACKEND}
+          DRIVER ${_RULE_DRIVER}
+          COMPILER_FLAGS ${_ASAN_COMPILER_FLAGS}
+          INPUT_TYPE ${_RULE_INPUT_TYPE}
+          RUNNER_ARGS ${_RULE_RUNNER_ARGS}
+          LABELS ${_RULE_LABELS}
+          TARGET_CPU_FEATURES ${_RULE_TARGET_CPU_FEATURES}
+          DEPENDS ${_RULE_DEPENDS}
+          TIMEOUT ${_RULE_TIMEOUT}
+        )
+      endif()
+
+      if(IREE_ENABLE_TSAN)
+        set(_TSAN_COMPILER_FLAGS ${_RULE_COMPILER_FLAGS})
+        list(APPEND _TSAN_COMPILER_FLAGS "--iree-llvmcpu-link-embedded=false")
+        list(APPEND _TSAN_COMPILER_FLAGS "--iree-llvmcpu-sanitize=thread")
+        iree_check_test(
+          NAME "${_TEST_NAME}_tsan"
+          SRC ${_SRC}
+          TARGET_BACKEND ${_RULE_TARGET_BACKEND}
+          DRIVER ${_RULE_DRIVER}
+          COMPILER_FLAGS ${_TSAN_COMPILER_FLAGS}
+          INPUT_TYPE ${_RULE_INPUT_TYPE}
+          RUNNER_ARGS ${_RULE_RUNNER_ARGS}
+          LABELS ${_RULE_LABELS}
+          TARGET_CPU_FEATURES ${_RULE_TARGET_CPU_FEATURES}
+          DEPENDS ${_RULE_DEPENDS}
+          TIMEOUT ${_RULE_TIMEOUT}
+        )
+      endif()
+    endif()
   endforeach()
 endfunction()
 
@@ -371,6 +410,8 @@ endfunction()
 #       and cpu_features is a comma-separated list of LLVM target attributes
 #       to enable. Example:
 #         x86_64:avx2_fma:+avx,+avx2,+fma
+#   INPUT_TYPE: The value for the --iree-input-type= flag. Also disables tests
+#       if no compiled support for that configuration.
 function(iree_check_test_suite)
   if(NOT IREE_BUILD_TESTS)
     return()
@@ -379,7 +420,7 @@ function(iree_check_test_suite)
   cmake_parse_arguments(
     _RULE
     ""
-    "NAME"
+    "NAME;INPUT_TYPE"
     "SRCS;TARGET_BACKENDS;DRIVERS;RUNNER_ARGS;LABELS;TARGET_CPU_FEATURES_VARIANTS;TIMEOUT"
     ${ARGN}
   )
@@ -444,6 +485,8 @@ function(iree_check_test_suite)
           ${_TARGET_CPU_FEATURES}
         TIMEOUT
           ${_RULE_TIMEOUT}
+        INPUT_TYPE
+          ${_RULE_INPUT_TYPE}
       )
     endforeach()
   endforeach()

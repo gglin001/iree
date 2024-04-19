@@ -13,12 +13,12 @@
 #include "iree/compiler/Codegen/Transforms/Transforms.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/MarkerUtils.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
@@ -35,7 +35,7 @@ namespace mlir::iree_compiler {
 /// Tiles to workgroup level. Workgroup tiling is done at the flow level but we
 /// may have extra tiling for the reduction dimension. Therefore we tile again
 /// without distributing.
-static LogicalResult tileReductionLoops(func::FuncOp funcOp) {
+static LogicalResult tileReductionLoops(mlir::FunctionOpInterface funcOp) {
   auto tileSizesFn = [](OpBuilder &builder,
                         Operation *op) -> SmallVector<OpFoldResult> {
     auto interfaceOp = cast<PartitionableLoopsInterface>(*op);
@@ -59,7 +59,7 @@ static LogicalResult tileReductionLoops(func::FuncOp funcOp) {
       scf::SCFTilingOptions().setTileSizeComputationFunction(tileSizesFn);
 
   MLIRContext *context = funcOp.getContext();
-  IREE::LinalgExt::LinalgTransformationFilter filter(
+  LinalgTransformationFilter filter(
       ArrayRef<StringAttr>{
           StringAttr::get(context, getWorkgroupMemoryMarker())},
       StringAttr::get(context, getWorkgroupKTiledMarker()));
@@ -68,7 +68,7 @@ static LogicalResult tileReductionLoops(func::FuncOp funcOp) {
   return tileLinalgOpsWithFilter(funcOp, tilingOptions, filter);
 }
 
-static LogicalResult tileToSerialLoops(func::FuncOp funcOp) {
+static LogicalResult tileToSerialLoops(mlir::FunctionOpInterface funcOp) {
   {
     // Tile again at the workgroup level since redution dimension were
     // ignored. Dimensions already tiled will be ignore since we tile to the
@@ -131,7 +131,7 @@ calculateDistributedTileSize(ArrayRef<int64_t> numElements, OpBuilder &builder,
 }
 
 /// Tiles to warp.
-static LogicalResult tileToWarp(func::FuncOp funcOp,
+static LogicalResult tileToWarp(mlir::FunctionOpInterface funcOp,
                                 SmallVectorImpl<int64_t> &workgroupSize) {
   std::array<int64_t, 3> warpPerWorkgroup = {
       workgroupSize[0] / kWarpSize, workgroupSize[1], workgroupSize[2]};
@@ -155,7 +155,7 @@ static LogicalResult tileToWarp(func::FuncOp funcOp,
                            .setTileSizeComputationFunction(getInnerTileSizeFn)
                            .setDistributionOptions(warpDistributionOptions);
   MLIRContext *context = funcOp.getContext();
-  IREE::LinalgExt::LinalgTransformationFilter filter(
+  LinalgTransformationFilter filter(
       {StringAttr::get(context, getWorkgroupKTiledMarker()),
        StringAttr::get(context, getWorkgroupMemoryMarker())},
       StringAttr::get(context, getVectorizeMarker()));
@@ -164,7 +164,7 @@ static LogicalResult tileToWarp(func::FuncOp funcOp,
 }
 
 /// Patterns for thread level tiling.
-static LogicalResult tileToInvocation(func::FuncOp funcOp,
+static LogicalResult tileToInvocation(mlir::FunctionOpInterface funcOp,
                                       SmallVectorImpl<int64_t> &workgroupSize) {
   linalg::TileSizeComputationFunction getInnerTileSizeFn =
       [&](OpBuilder &builder, Operation *operation) {
@@ -186,7 +186,7 @@ static LogicalResult tileToInvocation(func::FuncOp funcOp,
           .setDistributionOptions(invocationDistributionOptions);
 
   MLIRContext *context = funcOp.getContext();
-  IREE::LinalgExt::LinalgTransformationFilter f(
+  LinalgTransformationFilter f(
       {StringAttr::get(context, getWorkgroupKTiledMarker()),
        StringAttr::get(context, getWorkgroupMemoryMarker())},
       StringAttr::get(context, getVectorizeMarker()));
@@ -214,8 +214,6 @@ public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     auto funcOp = getOperation();
-    if (!isEntryPoint(funcOp))
-      return;
 
     // Promote C matrix and propagate the potential  fill producer into the temp
     // allocation. This needs to be done before reduction tiling.
@@ -241,10 +239,15 @@ public:
       funcOp.dump();
     });
 
-    auto workgroupSize = llvm::map_to_vector(
-        getEntryPoint(funcOp)->getWorkgroupSize().value(),
-        [&](Attribute attr) { return llvm::cast<IntegerAttr>(attr).getInt(); });
+    std::optional<SmallVector<int64_t>> maybeWorkgroupSize =
+        getWorkgroupSize(funcOp);
+    if (!maybeWorkgroupSize) {
+      funcOp.emitOpError("expected workgroup size to be set on the lowering "
+                         "config for the function");
+      return signalPassFailure();
+    }
 
+    SmallVector<int64_t> workgroupSize = maybeWorkgroupSize.value();
     int64_t flatWorkgroupSize =
         workgroupSize[0] * workgroupSize[1] * workgroupSize[2];
     // Only promote to workgroup size if there are multiple warps.
@@ -307,7 +310,7 @@ public:
 };
 } // namespace
 
-std::unique_ptr<OperationPass<func::FuncOp>>
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
 createLLVMGPUTileAndDistribute(bool distributeToWarp) {
   return std::make_unique<LLVMGPUTileAndDistributePass>(distributeToWarp);
 }

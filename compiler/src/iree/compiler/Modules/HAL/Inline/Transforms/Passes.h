@@ -16,8 +16,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 
-namespace mlir::iree_compiler::IREE::HAL {
-namespace Inline {
+namespace mlir::iree_compiler::IREE::HAL::Inline {
 
 //===----------------------------------------------------------------------===//
 // Helpers
@@ -34,7 +33,7 @@ namespace Inline {
 //   buildHALInlineTransformPassPipeline & run
 //   <serialize VM module>
 void buildHALInlineStaticTransformPassPipeline(
-    OpPassManager &passManager, const TargetBackendRegistry &targetRegistry,
+    OpPassManager &passManager, const TargetRegistry &targetRegistry,
     const TargetOptions &targetOptions);
 
 //===----------------------------------------------------------------------===//
@@ -53,7 +52,6 @@ std::unique_ptr<OperationPass<mlir::ModuleOp>> createConversionPass();
 
 void registerHALInlinePasses();
 
-} // namespace Inline
-} // namespace mlir::iree_compiler::IREE::HAL
+} // namespace mlir::iree_compiler::IREE::HAL::Inline
 
 #endif // IREE_COMPILER_MODULES_HAL_INLINE_TRANSFORMS_PASSES_H_

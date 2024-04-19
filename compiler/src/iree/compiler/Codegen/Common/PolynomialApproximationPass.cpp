@@ -28,12 +28,13 @@ class PolynomialApproximationPass
   void runOnOperation() override {
     RewritePatternSet mathPatterns(&getContext());
     populateExpandTanPattern(mathPatterns);
-    populateExpandExp2FPattern(mathPatterns);
     populateExpandPowFPattern(mathPatterns);
+    populateExpandFPowIPattern(mathPatterns);
 
     if (clNativeMathPrecision) {
       mathPatterns.add<math::ErfPolynomialApproximation>(&getContext());
     } else {
+      populateExpandExp2FPattern(mathPatterns);
       populateMathPolynomialApproximationPatterns(mathPatterns);
       populateExpandRoundEvenPattern(mathPatterns);
     }

@@ -224,7 +224,7 @@ iree_check_single_backend_test_suite(
 
 iree_check_single_backend_test_suite(
   NAME
-    check_cuda2_graph
+    check_cuda_graph
   SRCS
     "abs.mlir"
     "add.mlir"
@@ -269,14 +269,13 @@ iree_check_single_backend_test_suite(
   TARGET_BACKEND
     "cuda"
   DRIVER
-    "cuda2"
+    "cuda"
   COMPILER_FLAGS
     "--iree-stream-emulate-memset"
-    "--iree-hal-cuda-enable-legacy-sync=false"
   INPUT_TYPE
     "tosa"
   RUNNER_ARGS
-    "--cuda2_use_streams=false"
+    "--cuda_use_streams=false"
   LABELS
     "noasan"
     "nomsan"
@@ -287,7 +286,7 @@ iree_check_single_backend_test_suite(
 
 iree_check_single_backend_test_suite(
   NAME
-    check_cuda2_stream
+    check_cuda_stream
   SRCS
     "abs.mlir"
     "add.mlir"
@@ -332,13 +331,11 @@ iree_check_single_backend_test_suite(
   TARGET_BACKEND
     "cuda"
   DRIVER
-    "cuda2"
-  COMPILER_FLAGS
-    "--iree-hal-cuda-enable-legacy-sync=false"
+    "cuda"
   INPUT_TYPE
     "tosa"
   RUNNER_ARGS
-    "--cuda2_use_streams=true"
+    "--cuda_use_streams=true"
   LABELS
     "noasan"
     "nomsan"
@@ -394,7 +391,7 @@ iree_check_single_backend_test_suite(
     "transpose.mlir"
     # "while.mlir"  # TODO(#12509): WebGPU SPIR-V broken
   TARGET_BACKEND
-    "webgpu"
+    "webgpu-spirv"
   # Only test compilation for now, the WebGPU driver is not stable/tested yet.
   # DRIVER
   #   "webgpu"
@@ -509,3 +506,75 @@ iree_check_single_backend_test_suite(
   COMPILER_FLAGS
     "--iree-input-type=tosa"
 )
+
+if(IREE_HIP_TEST_TARGET_CHIP MATCHES "^gfx")
+
+unset(IREE_HIP_TEST_COMPILER_FLAGS)
+list(APPEND IREE_HIP_TEST_COMPILER_FLAGS
+  "--iree-rocm-target-chip=${IREE_HIP_TEST_TARGET_CHIP}"
+)
+
+iree_check_single_backend_test_suite(
+  NAME
+    check_hip_stream
+  SRCS
+    "abs.mlir"
+    "add.mlir"
+    "arithmetic_right_shift.mlir"
+    "bitwise_and.mlir"
+    "bitwise_or.mlir"
+    "bitwise_xor.mlir"
+    "ceil.mlir"
+    "clamp.mlir"
+    "clz.mlir"
+    "const.mlir"
+    "equal.mlir"
+    "exp.mlir"
+    "floor.mlir"
+    "fully_connected.mlir"
+    "gather.mlir"
+    "greater.mlir"
+    "greater_equal.mlir"
+    "if.mlir"
+    "log.mlir"
+    "logical_left_shift.mlir"
+    "logical_right_shift.mlir"
+    "logical_right_shift_16.mlir"
+    "matmul.mlir"
+    "max_pool.mlir"
+    "maximum.mlir"
+    "minimum.mlir"
+    "mul.mlir"
+    #"mul_shift.mlir" (compilation failure)
+    "negate.mlir"
+    "pad.mlir"
+    "reciprocal.mlir"
+    #"reduce.mlir" (compilation failure)
+    "reshape.mlir"
+    "rsqrt.mlir"
+    "select.mlir"
+    "sigmoid.mlir"
+    "sub.mlir"
+    "table.mlir"
+    "tanh.mlir"
+    "transpose.mlir"
+    "while.mlir"
+  TARGET_BACKEND
+    "rocm"
+  DRIVER
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+  INPUT_TYPE
+    "tosa"
+  RUNNER_ARGS
+    "--hip_use_streams=true"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-amd"
+)
+
+endif(IREE_HIP_TEST_TARGET_CHIP MATCHES "^gfx")

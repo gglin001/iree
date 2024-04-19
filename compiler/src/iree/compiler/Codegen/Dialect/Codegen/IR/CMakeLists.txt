@@ -45,12 +45,15 @@ iree_cc_library(
     MLIRBufferizationDialect
     MLIRDestinationStyleOpInterface
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRIR
+    MLIRInferTypeOpInterface
     MLIRMemRefDialect
     MLIRParser
     MLIRSupport
     MLIRTransformDialect
     MLIRTransformDialectTransforms
+    MLIRViewLikeInterface
     iree::compiler::Codegen::Interfaces::UKernelOpInterface
     iree::compiler::Codegen::Utils
     iree::compiler::Dialect::HAL::IR

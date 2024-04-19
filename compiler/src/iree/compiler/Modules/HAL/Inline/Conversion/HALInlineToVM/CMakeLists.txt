@@ -20,8 +20,10 @@ iree_cc_library(
   DEPS
     MLIRArithDialect
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRIR
     MLIRPass
+    MLIRTransformUtils
     MLIRTransforms
     iree::compiler::Dialect::Util::IR
     iree::compiler::Dialect::VM::Conversion

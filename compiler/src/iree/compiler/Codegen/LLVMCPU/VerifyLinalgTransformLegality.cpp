@@ -4,7 +4,6 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree-dialects/Dialect/LinalgExt/Passes/Passes.h"
 #include "iree/compiler/Codegen/LLVMCPU/PassDetail.h"
 #include "iree/compiler/Codegen/LLVMCPU/Passes.h"
 #include "iree/compiler/Codegen/Utils/MarkerUtils.h"
@@ -22,11 +21,10 @@ struct VerifyLinalgTransformLegalityPass
 } // namespace
 
 void VerifyLinalgTransformLegalityPass::runOnOperation() {
-  auto moduleOp = getOperation();
+  auto funcOp = getOperation();
   // For now only check that there are no Linalg transform markers.
-  auto walkResult = moduleOp.walk([](linalg::LinalgOp op) -> WalkResult {
-    if (op->hasAttr(
-            IREE::LinalgExt::LinalgTransforms::kLinalgTransformMarker)) {
+  auto walkResult = funcOp.walk([](linalg::LinalgOp op) -> WalkResult {
+    if (op->hasAttr(LinalgTransforms::kLinalgTransformMarker)) {
       return op.emitError("expected no Linalg transform markers");
     }
     return WalkResult::advance();
@@ -36,7 +34,7 @@ void VerifyLinalgTransformLegalityPass::runOnOperation() {
   }
 }
 
-std::unique_ptr<OperationPass<ModuleOp>>
+std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createVerifyLinalgTransformLegalityPass() {
   return std::make_unique<VerifyLinalgTransformLegalityPass>();
 }

@@ -31,6 +31,7 @@ iree_cc_library(
     MLIRLinalgTransforms
     MLIRMemRefDialect
     MLIRPass
+    MLIRTransformUtils
     MLIRTransforms
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Dialect::HAL::IR
@@ -55,12 +56,11 @@ iree_cc_library(
   DEPS
     ::PassHeaders
     ::PassesIncGen
-    IREELinalgExtDialect
-    IREELinalgExtPasses
     LLVMSupport
     MLIRArithDialect
     MLIRBufferizationDialect
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRIR
     MLIRLinalgDialect
     MLIRMathDialect
@@ -69,6 +69,7 @@ iree_cc_library(
     MLIRPass
     MLIRTensorDialect
     MLIRTensorTransforms
+    MLIRTransformUtils
     MLIRTransforms
     MLIRVectorDialect
     iree::compiler::Codegen::Common
@@ -77,6 +78,8 @@ iree_cc_library(
     iree::compiler::Codegen::Utils
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::HAL::IR
+    iree::compiler::Dialect::LinalgExt::IR
+    iree::compiler::Dialect::LinalgExt::Transforms
     iree::compiler::Dialect::Util::IR
     iree::compiler::Dialect::VM::IR
     iree::compiler::Dialect::VMVX::IR

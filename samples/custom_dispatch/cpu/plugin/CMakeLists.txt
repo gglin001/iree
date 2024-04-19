@@ -30,7 +30,8 @@ set_target_properties(iree_samples_custom_dispatch_cpu_system_plugin
     OUTPUT_NAME "system_plugin"
 )
 
-add_dependencies(iree-sample-deps iree_samples_custom_dispatch_cpu_system_plugin)
+add_dependencies(iree-sample-deps
+  iree_samples_custom_dispatch_cpu_system_plugin)
 
 iree_lit_test_suite(
   NAME
@@ -66,7 +67,7 @@ endif(IREE_HAL_EXECUTABLE_PLUGIN_SYSTEM_LIBRARY)
 
 # embedded-elf plugin mechanism for standalone portable ELFs.
 # We use the same flags we do in the compiler for our embedded elfs found under
-# compiler/src/iree/compiler/Dialect/HAL/Target/LLVMCPU/internal/EmbeddedLinkerTool.cpp
+# compiler/plugins/target/LLVMCPU/internal/EmbeddedLinkerTool.cpp
 if(IREE_HAL_EXECUTABLE_PLUGIN_EMBEDDED_ELF)
 
 # This only builds for x86-64/arm_64/riscv_64 because that's all we have coded in here.

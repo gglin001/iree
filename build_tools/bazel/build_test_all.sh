@@ -13,6 +13,7 @@
 #
 # GPU / hardware-dependent tests can be enabled by setting any of these to 0:
 #   * IREE_CUDA_DISABLE
+#   * IREE_HIP_DISABLE
 #   * IREE_METAL_DISABLE
 #   * IREE_VULKAN_DISABLE
 #   * IREE_NVIDIA_GPU_TESTS_DISABLE
@@ -30,6 +31,7 @@ set -xeuo pipefail
 IREE_READ_REMOTE_BAZEL_CACHE="${IREE_READ_REMOTE_BAZEL_CACHE:-1}"
 IREE_WRITE_REMOTE_BAZEL_CACHE="${IREE_WRITE_REMOTE_BAZEL_CACHE:-0}"
 BAZEL_BIN="${BAZEL_BIN:-$(which bazel)}"
+SANDBOX_BASE="${SANDBOX_BASE:-}"
 
 if (( ${IREE_WRITE_REMOTE_BAZEL_CACHE} == 1 && ${IREE_READ_REMOTE_BAZEL_CACHE} != 1 )); then
   echo "Can't have 'IREE_WRITE_REMOTE_BAZEL_CACHE' (${IREE_WRITE_REMOTE_BAZEL_CACHE}) set without 'IREE_READ_REMOTE_BAZEL_CACHE' (${IREE_READ_REMOTE_BAZEL_CACHE})"
@@ -38,6 +40,9 @@ fi
 # Use user-environment variables if set, otherwise use CI-friendly defaults.
 if ! [[ -v IREE_CUDA_DISABLE ]]; then
   IREE_CUDA_DISABLE=1
+fi
+if ! [[ -v IREE_HIP_DISABLE ]]; then
+  IREE_HIP_DISABLE=1
 fi
 if ! [[ -v IREE_METAL_DISABLE ]]; then
   IREE_METAL_DISABLE=1
@@ -55,6 +60,7 @@ fi
 declare -a test_env_args=(
   --test_env="LD_PRELOAD=libvulkan.so.1"
   --test_env=IREE_CUDA_DISABLE="${IREE_CUDA_DISABLE}"
+  --test_env=IREE_HIP_DISABLE="${IREE_HIP_DISABLE}"
   --test_env=IREE_METAL_DISABLE="${IREE_METAL_DISABLE}"
   --test_env=IREE_VULKAN_DISABLE="${IREE_VULKAN_DISABLE}"
   --test_env=IREE_NVIDIA_GPU_TESTS_DISABLE="${IREE_NVIDIA_GPU_TESTS_DISABLE}"
@@ -74,6 +80,9 @@ declare -a default_test_tag_filters=("-nodocker")
 
 if (( IREE_CUDA_DISABLE == 1 )); then
   default_test_tag_filters+=("-driver=cuda")
+fi
+if (( IREE_HIP_DISABLE == 1 )); then
+  default_test_tag_filters+=("-driver=hip")
 fi
 if (( IREE_METAL_DISABLE == 1 )); then
   default_test_tag_filters+=("-driver=metal")

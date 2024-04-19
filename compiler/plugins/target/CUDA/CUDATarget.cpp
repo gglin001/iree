@@ -30,7 +30,6 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/WithColor.h"
@@ -59,7 +58,6 @@ struct CUDAOptions {
   bool clUsePtxas = false;
   std::string clUsePtxasFrom;
   std::string clUsePtxasParams;
-  bool enableLegacySync = true;
 
   void bindOptions(OptionsBinder &binder) {
     static llvm::cl::OptionCategory category("CUDA HAL Target");
@@ -102,12 +100,6 @@ struct CUDAOptions {
         "iree-hal-cuda-use-ptxas-params", clUsePtxasParams,
         llvm::cl::cat(category),
         llvm::cl::desc("Passes the given additional parameters to ptxas."));
-
-    binder.opt<bool>(
-        "iree-hal-cuda-enable-legacy-sync", enableLegacySync,
-        llvm::cl::cat(category),
-        llvm::cl::desc(
-            "Enable legacy sync mode that handles semaphores synchronously."));
   }
 };
 } // namespace
@@ -370,11 +362,60 @@ static void optimizeModule(llvm::Module &module,
   mpm.run(module, mam);
 }
 
+class CUDATargetDevice final : public TargetDevice {
+public:
+  CUDATargetDevice(const CUDAOptions &options) : options(options) {}
+
+  IREE::HAL::DeviceTargetAttr
+  getDefaultDeviceTarget(MLIRContext *context,
+                         const TargetRegistry &targetRegistry) const override {
+    Builder b(context);
+    SmallVector<NamedAttribute> configItems;
+
+    // TODO: device configuration attrs.
+    auto configAttr = b.getDictionaryAttr(configItems);
+
+    // If we had multiple target environments we would generate one target attr
+    // per environment, with each setting its own environment attribute.
+    SmallVector<IREE::HAL::ExecutableTargetAttr> executableTargetAttrs;
+    targetRegistry.getTargetBackend("cuda")->getDefaultExecutableTargets(
+        context, "cuda", configAttr, executableTargetAttrs);
+
+    return IREE::HAL::DeviceTargetAttr::get(context, b.getStringAttr("cuda"),
+                                            configAttr, executableTargetAttrs);
+  }
+
+private:
+  const CUDAOptions &options;
+};
+
 class CUDATargetBackend final : public TargetBackend {
 public:
   CUDATargetBackend(const CUDAOptions &options) : options(options) {}
 
-  std::string name() const override { return "cuda"; }
+  std::string getLegacyDefaultDeviceID() const override { return "cuda"; }
+
+  void getDefaultExecutableTargets(
+      MLIRContext *context, StringRef deviceID, DictionaryAttr deviceConfigAttr,
+      SmallVectorImpl<IREE::HAL::ExecutableTargetAttr> &executableTargetAttrs)
+      const override {
+    executableTargetAttrs.push_back(getExecutableTarget(context));
+  }
+
+  IREE::HAL::ExecutableTargetAttr
+  getExecutableTarget(MLIRContext *context) const {
+    Builder b(context);
+    SmallVector<NamedAttribute> configItems;
+    auto addConfig = [&](StringRef name, Attribute value) {
+      configItems.emplace_back(b.getStringAttr(name), value);
+    };
+
+    addConfig("target_arch", b.getStringAttr(options.clTargetChip));
+
+    return b.getAttr<IREE::HAL::ExecutableTargetAttr>(
+        b.getStringAttr("cuda"), b.getStringAttr("cuda-nvptx-fb"),
+        b.getDictionaryAttr(configItems));
+  }
 
   void getDependentDialects(DialectRegistry &registry) const override {
     // TODO: Derive the use of TransformDialect from inner
@@ -385,25 +426,6 @@ public:
     mlir::registerBuiltinDialectTranslation(registry);
     mlir::registerLLVMDialectTranslation(registry);
     mlir::registerNVVMDialectTranslation(registry);
-  }
-
-  IREE::HAL::DeviceTargetAttr
-  getDefaultDeviceTarget(MLIRContext *context) const override {
-    Builder b(context);
-    SmallVector<NamedAttribute> configItems;
-
-    // Indicates that the runtime HAL driver operates only in the legacy
-    // synchronous mode.
-    if (options.enableLegacySync) {
-      configItems.emplace_back(b.getStringAttr("legacy_sync"), b.getUnitAttr());
-    }
-
-    configItems.emplace_back(b.getStringAttr("executable_targets"),
-                             getExecutableTargets(context));
-
-    auto configAttr = b.getDictionaryAttr(configItems);
-    return IREE::HAL::DeviceTargetAttr::get(
-        context, b.getStringAttr(deviceID()), configAttr);
   }
 
   void buildConfigurationPassPipeline(IREE::HAL::ExecutableVariantOp variantOp,
@@ -502,14 +524,6 @@ public:
       }
     } else {
       ModuleOp innerModuleOp = variantOp.getInnerModule();
-
-      // Remove all the functions that are not part of the CUDA kernel.
-      // TODO(thomasraoux): remove this? this should not be required.
-      auto illegalFuncOps =
-          llvm::to_vector<4>(innerModuleOp.getOps<func::FuncOp>());
-      for (auto funcOp : illegalFuncOps) {
-        funcOp.erase();
-      }
 
       auto llvmModule =
           mlir::translateModuleToLLVMIR(innerModuleOp, context, libraryName);
@@ -662,31 +676,6 @@ public:
   }
 
 private:
-  ArrayAttr getExecutableTargets(MLIRContext *context) const {
-    SmallVector<Attribute> targetAttrs;
-    // If we had multiple target environments we would generate one target attr
-    // per environment, with each setting its own environment attribute.
-    targetAttrs.push_back(getExecutableTarget(context));
-    return ArrayAttr::get(context, targetAttrs);
-  }
-
-  IREE::HAL::ExecutableTargetAttr
-  getExecutableTarget(MLIRContext *context) const {
-    Builder b(context);
-    SmallVector<NamedAttribute> configItems;
-    // Add some configurations to the `hal.executable.target` attribute.
-    auto addConfig = [&](StringRef name, Attribute value) {
-      configItems.emplace_back(StringAttr::get(context, name), value);
-    };
-    // Set target arch
-    addConfig("target_arch", StringAttr::get(context, options.clTargetChip));
-
-    auto configAttr = b.getDictionaryAttr(configItems);
-    return IREE::HAL::ExecutableTargetAttr::get(
-        context, b.getStringAttr("cuda"), b.getStringAttr("cuda-nvptx-fb"),
-        configAttr);
-  }
-
   const CUDAOptions &options;
 };
 
@@ -694,8 +683,12 @@ namespace {
 struct CUDASession
     : public PluginSession<CUDASession, CUDAOptions,
                            PluginActivationPolicy::DefaultActivated> {
-  void populateHALTargetBackends(IREE::HAL::TargetBackendList &targets) {
+  void populateHALTargetDevices(IREE::HAL::TargetDeviceList &targets) {
     // #hal.device.target<"cuda", ...
+    targets.add("cuda",
+                [&]() { return std::make_shared<CUDATargetDevice>(options); });
+  }
+  void populateHALTargetBackends(IREE::HAL::TargetBackendList &targets) {
     // #hal.executable.target<"cuda", ...
     targets.add("cuda", [&]() {
       LLVMInitializeNVPTXTarget();

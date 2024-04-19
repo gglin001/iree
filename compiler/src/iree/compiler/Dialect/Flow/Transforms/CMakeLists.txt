@@ -25,35 +25,39 @@ iree_cc_library(
   HDRS
     "ConvertRegionToWorkgroups.h"
     "FormDispatchRegions.h"
+    "FusionUtils.h"
     "Passes.h"
     "Passes.h.inc"
     "RegionOpUtils.h"
   SRCS
     "AnnotateDispatches.cpp"
-    "CaptureDispatchDynamicDims.cpp"
+    "BubbleUpExpandShapes.cpp"
+    "CaptureDynamicDims.cpp"
     "CleanupTensorShapes.cpp"
     "CloneProducersIntoDispatchRegions.cpp"
     "CollapseDimensions.cpp"
-    "CollapseReductionDims.cpp"
+    "CollapseReductionDimensions.cpp"
     "ConvertRegionToWorkgroups.cpp"
     "ConvertToFlow.cpp"
     "DeduplicateExecutables.cpp"
     "DispatchWithTransformDialect.cpp"
     "DumpDispatchGraph.cpp"
+    "ElementwiseOpFusion.cpp"
     "ExportBenchmarkFuncs.cpp"
     "FoldUnitExtentDims.cpp"
     "FormDispatchRegions.cpp"
     "FormDispatchWorkgroups.cpp"
     "FormScalarDispatches.cpp"
     "FusionOfTensorOps.cpp"
+    "FusionUtils.cpp"
     "InitializeEmptyTensors.cpp"
     "InjectDispatchTracing.cpp"
+    "InjectTensorTracing.cpp"
     "InsertDispatchDebugTargets.cpp"
     "InterchangeGenericOps.cpp"
     "InterchangeTransposeGenericOps.cpp"
     "OutlineDispatchExterns.cpp"
     "OutlineDispatchRegions.cpp"
-    "PassDetail.h"
     "Passes.cpp"
     "RegionOpUtils.cpp"
     "SplitReduction.cpp"
@@ -63,11 +67,6 @@ iree_cc_library(
   DEPS
     ::PassesIncGen
     IREEDialectsTransforms
-    IREELinalgExtDialect
-    IREELinalgExtPasses
-    IREELinalgExtTransformOps
-    IREELinalgExtTransforms
-    IREELinalgExtUtils
     IREELinalgTransformDialect
     LLVMSupport
     MLIRAffineDialect
@@ -104,6 +103,10 @@ iree_cc_library(
     iree::compiler::Dialect::Flow::Conversion::TensorToFlow
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::HAL::IR
+    iree::compiler::Dialect::LinalgExt::IR
+    iree::compiler::Dialect::LinalgExt::TransformExtensions::LinalgExtExtensions
+    iree::compiler::Dialect::LinalgExt::Transforms
+    iree::compiler::Dialect::LinalgExt::Utils
     iree::compiler::Dialect::Util::Analysis
     iree::compiler::Dialect::Util::IR
     iree::compiler::Dialect::Util::Transforms

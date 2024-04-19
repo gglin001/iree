@@ -18,6 +18,19 @@
 #include "nanobind/stl/string_view.h"
 #include "nanobind/stl/vector.h"
 
+// Uncomment the following to enable various noisy output to stderr for
+// verifying sequencing and reference counting.
+// #define IREE_PY_TRACE_ENABLED 1
+
+#if IREE_PY_TRACE_ENABLED
+#define IREE_PY_TRACEF(fmt, ...) \
+  fprintf(stderr, "[[IREE_PY_TRACE]]: " fmt "\n", __VA_ARGS__)
+#define IREE_PY_TRACE(msg) fprintf(stderr, "[[IREE_PY_TRACE]]: %s", msg)
+#else
+#define IREE_PY_TRACEF(...)
+#define IREE_PY_TRACE(...)
+#endif
+
 namespace iree {
 namespace python {
 
@@ -113,6 +126,39 @@ inline bool is_instance_of_type_object(py::handle inst,
 // tuple. Which is not really what one wants.
 inline py::object create_empty_tuple() {
   return py::steal(py::handle(PyTuple_New(0)));
+}
+
+// For a bound class, binds the buffer protocol. This will result in a call
+// to on the CppType:
+//   HandleBufferProtocol(Py_buffer *view, int flags)
+// This is a low level callback and must not raise any exceptions. If
+// error conditions are warranted the usual PyErr_SetString approach must be
+// used (and -1 returned). Return 0 on success.
+template <typename CppType>
+void BindBufferProtocol(py::handle clazz) {
+  PyBufferProcs buffer_procs;
+  memset(&buffer_procs, 0, sizeof(buffer_procs));
+  buffer_procs.bf_getbuffer =
+      // It is not legal to raise exceptions from these callbacks.
+      +[](PyObject* raw_self, Py_buffer* view, int flags) -> int {
+    if (view == NULL) {
+      PyErr_SetString(PyExc_ValueError, "NULL view in getbuffer");
+      return -1;
+    }
+
+    // Cast must succeed due to invariants.
+    auto self = py::cast<CppType*>(py::handle(raw_self));
+
+    Py_INCREF(raw_self);
+    view->obj = raw_self;
+    return self->HandleBufferProtocol(view, flags);
+  };
+  buffer_procs.bf_releasebuffer =
+      +[](PyObject* raw_self, Py_buffer* view) -> void {};
+  auto heap_type = reinterpret_cast<PyHeapTypeObject*>(clazz.ptr());
+  assert(heap_type->ht_type.tp_flags & Py_TPFLAGS_HEAPTYPE &&
+         "must be heap type");
+  heap_type->as_buffer = buffer_procs;
 }
 
 }  // namespace python

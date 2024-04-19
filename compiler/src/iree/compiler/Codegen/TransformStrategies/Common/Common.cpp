@@ -93,7 +93,7 @@ mlir::iree_compiler::maxDivisorOfValueBelowLimit(int64_t value, int64_t limit) {
 }
 
 void mlir::iree_compiler::createTransformRegion(
-    func::FuncOp entryPoint, StrategyBuilderFn buildStrategy) {
+    mlir::FunctionOpInterface entryPoint, StrategyBuilderFn buildStrategy) {
   MLIRContext *ctx = entryPoint.getContext();
   Location loc = entryPoint.getLoc();
   OpBuilder b(ctx);
@@ -279,10 +279,10 @@ Value mlir::iree_compiler::buildPad(
   SmallVector<Attribute> transposeAttrs;
   for (auto &transp : transposePaddings)
     transposeAttrs.push_back(b.getI64ArrayAttr(transp));
-  SmallVector<Type> resultTypes;
-  resultTypes.push_back(opH.getType());
-  resultTypes.push_back(transform::AnyOpType::get(b.getContext()));
-  resultTypes.push_back(transform::AnyOpType::get(b.getContext()));
+
+  Type resultTypes[] = {opH.getType(),
+                        transform::AnyOpType::get(b.getContext()),
+                        transform::AnyOpType::get(b.getContext())};
   return b
       .create<transform::PadOp>(resultTypes, opH, b.getArrayAttr(paddingValues),
                                 b.getI64ArrayAttr(paddingDimensions),
@@ -362,8 +362,8 @@ Value mlir::iree_compiler::buildBufferize(ImplicitLocOpBuilder &b,
         b.create<IREE::transform_dialect::
                      ApplyFoldTensorSliceIntoTransferPatternsOp>(loc);
       });
-  b.create<IREEEliminateEmptyTensorsOp>(variantH);
-  variantH = b.create<IREEBufferizeOp>(variantH, targetGpu);
+  b.create<IREEEliminateEmptyTensorsOp>(funcH);
+  variantH = b.create<IREEBufferizeOp>(funcH, targetGpu);
   return variantH;
 }
 

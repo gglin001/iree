@@ -9,14 +9,6 @@
 # Enable compiler targets based on options.
 set(IREE_COMPILER_TARGETS "")
 set(IREE_COMPILER_TARGET_COPTS "")
-if(IREE_TARGET_BACKEND_LLVM_CPU)
-  list(APPEND IREE_COMPILER_TARGETS iree::compiler::Dialect::HAL::Target::LLVMCPU)
-  list(APPEND IREE_COMPILER_TARGET_COPTS "-DIREE_HAVE_LLVM_CPU_TARGET")
-endif()
-if(IREE_TARGET_BACKEND_VULKAN_SPIRV)
-  list(APPEND IREE_COMPILER_TARGETS iree::compiler::Dialect::HAL::Target::VulkanSPIRV)
-  list(APPEND IREE_COMPILER_TARGET_COPTS "-DIREE_HAVE_VULKANSPIRV_TARGET")
-endif()
 
 set(IREE_VERSION_TARGET_COPTS "")
 if(IREE_EMBEDDED_RELEASE_INFO)
@@ -32,9 +24,6 @@ iree_cc_library(
     "init_iree_passes.h"
   DEPS
     IREEInputDialect
-    IREELinalgExtDialect
-    IREELinalgExtTransformOps
-    IREELinalgExtTransforms
     IREELinalgTransformDialect
     IREELinalgTransformDialectPasses
     IREEVectorExtDialect
@@ -42,16 +31,20 @@ iree_cc_library(
     iree::compiler::Bindings::Native::Transforms
     iree::compiler::Bindings::TFLite::Transforms
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
+    iree::compiler::Codegen::Dialect::GPU::IR::IREEGPUDialect
     iree::compiler::Codegen::Interfaces::Interfaces
     iree::compiler::ConstEval
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::Flow::Transforms
     iree::compiler::Dialect::HAL::IR::HALDialect
     iree::compiler::Dialect::HAL::Transforms
+    iree::compiler::Dialect::LinalgExt::IR
+    iree::compiler::Dialect::LinalgExt::TransformExtensions::LinalgExtExtensions
+    iree::compiler::Dialect::LinalgExt::Transforms
     iree::compiler::Dialect::Stream::IR
     iree::compiler::Dialect::Stream::Transforms
     iree::compiler::Dialect::Util::IR
-    iree::compiler::Dialect::Util::IR::ExternalModels
+    iree::compiler::Dialect::Util::TransformOps
     iree::compiler::Dialect::Util::Transforms
     iree::compiler::Dialect::VM::Analysis
     iree::compiler::Dialect::VM::IR
@@ -60,6 +53,7 @@ iree_cc_library(
     iree::compiler::Dialect::VMVX::IR::VMVXDialect
     iree::compiler::Dialect::VMVX::Transforms
     iree::compiler::Dialect::Vulkan::IR
+    iree::compiler::ExternalInterfaces::ExternalModels
     iree::compiler::GlobalOptimization::Interfaces::Interfaces
     iree::compiler::InputConversion::Common
     iree::compiler::Modules::HAL::Inline::IR::HALInlineDialect
@@ -67,8 +61,10 @@ iree_cc_library(
     iree::compiler::Modules::HAL::Loader::IR::HALLoaderDialect
     iree::compiler::Modules::HAL::Loader::Transforms
     iree::compiler::Modules::IO::Parameters::IR::IOParametersDialect
+    iree::compiler::Modules::IO::Parameters::Transforms
     iree::compiler::Pipelines
     iree::compiler::Preprocessing::Passes
+    iree::compiler::Preprocessing::TransformExtensions::PreprocessingExtensions
   PUBLIC
 )
 
@@ -86,6 +82,7 @@ iree_cc_library(
     MLIRBufferizationDialect
     MLIRComplexDialect
     MLIRControlFlowDialect
+    MLIRControlFlowTransforms
     MLIRFuncInlinerExtension
     MLIRGPUDialect
     MLIRGPUToSPIRV
@@ -104,9 +101,21 @@ iree_cc_library(
     MLIRFuncDialect
     MLIRFuncToSPIRV
     MLIRTensorInferTypeOpInterfaceImpl
+    MLIRTransformDialect
     MLIRTransforms
     MLIRVectorDialect
     iree::compiler::Dialect::VM::Target::init_targets
+
+    MLIRAffineTransformOps
+    MLIRBufferizationTransformOps
+    MLIRFuncTransformOps
+    MLIRGPUTransformOps
+    MLIRLinalgTransformOps
+    MLIRMemRefTransformOps
+    MLIRSCFTransformOps
+    MLIRTensorTransformOps
+    MLIRVectorTransformOps
+    MLIRTransformLoopExtension
   PUBLIC
 )
 
@@ -143,20 +152,6 @@ iree_cc_library(
     "init_compiler_modules.h"
   DEPS
     iree::compiler::Modules::Check::IR::CheckDialect
-)
-
-iree_cc_library(
-  NAME
-    init_targets
-  HDRS
-    "init_targets.h"
-  SRCS
-    "init_targets.cc"
-  DEPS
-    ${IREE_COMPILER_TARGETS}
-  COPTS
-    ${IREE_COMPILER_TARGET_COPTS}
-  PUBLIC
 )
 
 iree_cc_library(

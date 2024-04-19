@@ -21,11 +21,14 @@ iree_cc_library(
   NAME
     ROCM
   HDRS
+    "ROCMTargetFeatures.h"
     "ROCMTargetUtils.h"
   SRCS
     "ROCMTarget.cpp"
+    "ROCMTargetFeatures.cpp"
     "ROCMTargetUtils.cpp"
   DEPS
+    IREEVectorExtDialect
     LLVMAMDGPUCodeGen
     LLVMAnalysis
     LLVMBitWriter
@@ -43,6 +46,7 @@ iree_cc_library(
     MLIRAMDGPUTransforms
     MLIRAMDGPUUtils
     MLIRBuiltinToLLVMIRTranslation
+    MLIRIR
     MLIRLLVMDialect
     MLIRLLVMToLLVMIRTranslation
     MLIRPass
@@ -52,6 +56,7 @@ iree_cc_library(
     MLIRSupport
     MLIRTargetLLVMIRExport
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
+    iree::compiler::Codegen::Dialect::GPU::IR::IREEGPUDialect
     iree::compiler::Codegen::LLVMGPU
     iree::compiler::Codegen::Utils
     iree::compiler::Dialect::HAL::Target
@@ -69,7 +74,7 @@ iree_cc_library(
 # there. We default to downloading as it is a better use experience
 # by default.
 # See: https://github.com/shark-infra/amdgpu-device-libs
-set(_amd_required_libs "ocml.bc" "ockl.bc" "opencl.bc")
+set(_amd_required_libs "ocml.bc" "ockl.bc")
 set(_amd_device_bc_url
     "https://github.com/shark-infra/amdgpu-device-libs/releases/download/v20231101/amdgpu-device-libs-llvm-6086c272a3a59eb0b6b79dcbe00486bf4461856a.tgz")
 set(_amd_device_bc_sha256 "336362416c68fdd8bb80328f65ca7ebaa0c119ea19c95df6df30c832a4df39b9")

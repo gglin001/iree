@@ -18,6 +18,7 @@
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/PatternMatch.h"
@@ -42,8 +43,8 @@ static bool isIdentityPermutation(ArrayRef<int64_t> perm) {
 }
 
 // Constructs a transpose of the given tensor and permutation.
-static Value createTranspose(OpBuilder &builder, Value source,
-                             ArrayRef<int64_t> perm) {
+static Value createTransposeInit(OpBuilder &builder, Value source,
+                                 ArrayRef<int64_t> perm) {
   SmallVector<OpFoldResult> mixedSizes =
       tensor::getMixedSizes(builder, source.getLoc(), source);
   applyPermutationToVector(mixedSizes, perm);
@@ -51,6 +52,13 @@ static Value createTranspose(OpBuilder &builder, Value source,
   Value empty =
       builder.create<tensor::EmptyOp>(source.getLoc(), mixedSizes, elemType)
           .getResult();
+  return empty;
+}
+
+// Constructs a transpose of the given tensor and permutation.
+static Value createTranspose(OpBuilder &builder, Value source,
+                             ArrayRef<int64_t> perm) {
+  Value empty = createTransposeInit(builder, source, perm);
   return builder
       .create<linalg::TransposeOp>(source.getLoc(), source, empty, perm)
       ->getResult(0);
@@ -201,11 +209,17 @@ public:
     }
     llvm::SmallDenseSet<unsigned> rankReducingMask = *maybeRankReducingMask;
 
+    // Find rank reducing map in the pre-transposed domain.
     int64_t dim = 0;
     llvm::SmallDenseMap<int64_t, int64_t> rankReducedMap;
-    for (int64_t i = 0, e = perm.size(); i < e; ++i) {
-      if (!rankReducingMask.contains(i)) {
-        rankReducedMap[i] = dim++;
+    // Since `dim` is in the pre-transposed domain, and is incrementing each
+    // iteration, `idx` must also be in the pre-transposed domain.
+    for (int64_t idx = 0, e = perm.size(); idx < e; ++idx) {
+      // Get index in the transposed domain, since `rankReducingMask` is in
+      // the transposed domain.
+      if (!rankReducingMask.contains(perm[idx])) {
+        // Domain of `rankReducedMap` is in pre-transposed domain.
+        rankReducedMap[idx] = dim++;
       }
     }
 
@@ -334,8 +348,8 @@ public:
     OpOperand *transposeOperand = nullptr;
     linalg::TransposeOp transposeOp;
     for (OpOperand *input : genericOp.getDpsInputOperands()) {
-      if (auto maybeTransposeOp =
-              input->get().getDefiningOp<linalg::TransposeOp>()) {
+      auto maybeTransposeOp = input->get().getDefiningOp<linalg::TransposeOp>();
+      if (maybeTransposeOp && maybeTransposeOp->hasOneUse()) {
         transposeOp = maybeTransposeOp;
         transposeOperand = input;
         break;
@@ -352,7 +366,7 @@ public:
     // To do the fusion, we can simply apply the permutation of the transpose
     // to the results of the associated input's indexing map, and then forward
     // the input to the transpose to the consumer generic.
-    rewriter.startRootUpdate(genericOp);
+    rewriter.startOpModification(genericOp);
 
     SmallVector<AffineMap> newIndexingMaps = genericOp.getIndexingMapsArray();
     AffineMap inputMap = genericOp.getMatchingIndexingMap(transposeOperand);
@@ -366,7 +380,62 @@ public:
         rewriter.getAffineMapArrayAttr(newIndexingMaps));
 
     genericOp.setOperand(inputIndex, transposeOp.getInput());
-    rewriter.finalizeRootUpdate(genericOp);
+    rewriter.finalizeOpModification(genericOp);
+    return success();
+  }
+};
+
+// Propagates a transpose through the input of a unary elementwise operation.
+class PropagateTransposeThroughUnaryElementwiseInput
+    : public OpRewritePattern<linalg::GenericOp> {
+public:
+  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::GenericOp genericOp,
+                                PatternRewriter &rewriter) const override {
+    if (!IREE::Flow::isNonNullAndOutsideDispatch(genericOp)) {
+      return failure();
+    }
+
+    if (genericOp.getNumDpsInputs() != 1 || genericOp.getNumDpsInputs() != 1 ||
+        !linalg::isElementwise(genericOp)) {
+      return rewriter.notifyMatchFailure(genericOp, "not unary elementwise");
+    }
+
+    OpOperand *input = genericOp.getDpsInputOperand(0);
+    OpOperand *init = genericOp.getDpsInitOperand(0);
+
+    // Skip transposes and broadcasts. Transposes make more sense to fuse
+    // rather than propagate through, and broadcasts are cheaper to transpose
+    // before broadcasting.
+    if (genericOp.getMatchingIndexingMap(input) !=
+        genericOp.getMatchingIndexingMap(init)) {
+      return failure();
+    }
+
+    auto transposeOp = input->get().getDefiningOp<linalg::TransposeOp>();
+    if (!transposeOp) {
+      return rewriter.notifyMatchFailure(genericOp, "no transpose operand");
+    }
+
+    if (!transposeOp->hasOneUse()) {
+      return rewriter.notifyMatchFailure(
+          genericOp, "do not propagate multi-use transpose");
+    }
+
+    ArrayRef<int64_t> perm = transposeOp.getPermutation();
+    auto invPerm = invertPermutationVector(perm);
+
+    // Create a new empty init for the transposed generic.
+    Value newInit = createTransposeInit(rewriter, init->get(), invPerm);
+
+    // We do not need to update indexing maps because this is a unary
+    // elementwise op where the input and output maps are the same. Just
+    // replace the operands with transposed variants.
+    auto newGenericOp = mlir::clone(rewriter, genericOp, newInit.getType(),
+                                    {transposeOp.getInput(), newInit});
+    rewriter.replaceOp(
+        genericOp, createTranspose(rewriter, newGenericOp->getResult(0), perm));
     return success();
   }
 };
@@ -395,7 +464,8 @@ public:
     }
     bool hasTranspose = false;
     for (Value input : linalgOp.getDpsInputs()) {
-      if (input.getDefiningOp<linalg::TransposeOp>()) {
+      auto definingTranspose = input.getDefiningOp<linalg::TransposeOp>();
+      if (definingTranspose && definingTranspose->hasOneUse()) {
         hasTranspose = true;
         break;
       }
@@ -557,6 +627,8 @@ void PropagateLinalgTransposePass::runOnOperation() {
     sinkingPatterns.insert<SinkTransposeThroughExtractSlice>(context);
     sinkingPatterns.insert<SinkTransposeThroughExpandShape>(context);
     sinkingPatterns.insert<FuseTransposeWithGenericConsumer>(context);
+    sinkingPatterns.add<PropagateTransposeThroughUnaryElementwiseInput>(
+        context, /*benefit=*/2);
     if (enableAggressivePropagation) {
       sinkingPatterns.insert<GeneralizeInputTransposedNamedOp>(context);
     }

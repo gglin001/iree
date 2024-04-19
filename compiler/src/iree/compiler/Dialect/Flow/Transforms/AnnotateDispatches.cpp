@@ -4,30 +4,28 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include <utility>
-
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
-#include "iree/compiler/Dialect/Flow/Transforms/PassDetail.h"
-#include "iree/compiler/Dialect/Flow/Transforms/Passes.h"
-#include "iree/compiler/Dialect/Util/IR/UtilOps.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree/compiler/Utils/StringUtils.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Debug.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
-#include "mlir/IR/IRMapping.h"
-#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 
 #define DEBUG_TYPE "iree-dispatch"
 
 namespace mlir::iree_compiler::IREE::Flow {
+
+#define GEN_PASS_DEF_ANNOTATEDISPATCHESPASS
+#include "iree/compiler/Dialect/Flow/Transforms/Passes.h.inc"
+
 namespace {
 
 static int64_t costOfDomain(ArrayRef<int64_t> domain) {
@@ -159,6 +157,43 @@ static std::string getOpNameWithoutDialectName(Operation *op) {
   return opName.str();
 }
 
+static bool isMatvecLike(linalg::LinalgOp linalgOp) {
+  if (!linalg::isaContractionOpInterface(linalgOp))
+    return false;
+
+  FailureOr<linalg::ContractionDimensions> dims =
+      linalg::inferContractionDims(linalgOp);
+  if (failed(dims))
+    return false;
+
+  // One of the input should have all the parallel dimensions with size one.
+  SmallVector<int64_t, 4> bounds = linalgOp.getStaticLoopRanges();
+  SmallVector<AffineMap> maps = linalgOp.getIndexingMapsArray();
+  SmallVector<utils::IteratorType> iterators = linalgOp.getIteratorTypesArray();
+
+  auto areAllParallelDimsUnitSize = [&](AffineMap map) {
+    for (AffineExpr result : map.getResults()) {
+      // We have checked before that the affine map is projected permutation.
+      unsigned pos = cast<AffineDimExpr>(result).getPosition();
+      // For a parallel dim, the bounds can be non-one if it's batch dim.
+      if (iterators[pos] == utils::IteratorType::parallel && bounds[pos] != 1 &&
+          !llvm::is_contained(dims->batch, pos))
+        return false;
+    }
+    return true;
+  };
+
+  return areAllParallelDimsUnitSize(maps[0]) ||
+         areAllParallelDimsUnitSize(maps[1]);
+}
+
+static bool isMatmulLike(linalg::LinalgOp linalgOp) {
+  // Matmul should have at least 1 reduction, which is checked by the interface,
+  // and 2 parallel dimensions.
+  return linalg::isaContractionOpInterface(linalgOp) &&
+         linalgOp.getNumParallelLoops() >= 2;
+}
+
 static std::string summarizeLinalgOp(linalg::LinalgOp op) {
   std::string prefix;
 
@@ -177,6 +212,27 @@ static std::string summarizeLinalgOp(linalg::LinalgOp op) {
 
     if (hasOnlyYield && hasOnlyPermutation) {
       prefix = "transpose";
+    }
+  }
+
+  // Categorize linalg.generic ops better. The following checks more specific
+  // cases before more general ones.
+  if (prefix.empty() && isa<linalg::GenericOp>(op)) {
+    if (llvm::all_of(op.getIndexingMapsArray(),
+                     [](AffineMap m) { return m.isIdentity(); })) {
+      prefix = "elementwise";
+    } else if (llvm::all_of(op.getIndexingMapsArray(),
+                            [](AffineMap m) { return m.isMinorIdentity(); })) {
+      // We have checked that this is not pure elementwise in the above.
+      prefix = "broadcast";
+    } else if (isMatvecLike(op)) {
+      prefix = "matvec_like";
+    } else if (isMatmulLike(op)) {
+      prefix = "matmul_like";
+    } else if (linalg::isaContractionOpInterface(op)) {
+      prefix = "contract";
+    } else if (linalg::isaConvolutionOpInterface(op)) {
+      prefix = "conv";
     }
   }
 
@@ -314,11 +370,10 @@ static std::string summarizeDispatchRegion(Region &region) {
         auto encoding = op.getResultType()
                             .getEncoding()
                             .template cast<IREE::LinalgExt::EncodingAttr>();
-        auto user = stringifyEnum(encoding.getUser().getValue());
         auto role = stringifyEnum(encoding.getRole().getValue());
         ArrayRef<int64_t> shape = op.getSourceType().getShape();
-        bestSummary = opName + "_" + user.str() + "_" + role.str() + "_" +
-                      loopRangesToString(shape);
+        bestSummary =
+            opName + "_" + role.str() + "_" + loopRangesToString(shape);
         ;
       })
       .Case<IREE::LinalgExt::UnsetEncodingOp>([&](auto op) {
@@ -326,11 +381,10 @@ static std::string summarizeDispatchRegion(Region &region) {
         auto encoding = op.getSourceType()
                             .getEncoding()
                             .template cast<IREE::LinalgExt::EncodingAttr>();
-        auto user = stringifyEnum(encoding.getUser().getValue());
         auto role = stringifyEnum(encoding.getRole().getValue());
         ArrayRef<int64_t> shape = op.getResultType().getShape();
-        bestSummary = opName + "_" + user.str() + "_" + role.str() + "_" +
-                      loopRangesToString(shape);
+        bestSummary =
+            opName + "_" + role.str() + "_" + loopRangesToString(shape);
       })
       .Case<IREE::LinalgExt::LinalgExtOp>(
           [&](auto op) { bestSummary = summarizeLinalgExtOp(op); })
@@ -361,10 +415,9 @@ static std::string summarizeDispatchRegion(Region &region) {
 
 } // namespace
 
-class AnnotateDispatchesPass
-    : public AnnotateDispatchesBase<AnnotateDispatchesPass> {
-public:
-  AnnotateDispatchesPass() = default;
+struct AnnotateDispatchesPass
+    : public IREE::Flow::impl::AnnotateDispatchesPassBase<
+          AnnotateDispatchesPass> {
 
   void runOnOperation() override {
     DenseMap<Attribute, SymbolRefAttr> entryPointRefReplacements;
@@ -379,7 +432,7 @@ public:
             &getContext(), executableOp.getName(),
             {SymbolRefAttr::get(&getContext(), exportOp.getSymName())});
 
-        auto funcOp = innerModuleOp.lookupSymbol<FunctionOpInterface>(
+        auto funcOp = innerModuleOp.lookupSymbol<mlir::FunctionOpInterface>(
             exportOp.getFunctionRef());
         if (!funcOp)
           continue; // extern module, maybe
@@ -402,8 +455,8 @@ public:
 
     // Replace each usage of an entry point with its original symbol name with a
     // new symbol name.
-    for (auto funcLikeOp : getOperation().getOps<FunctionOpInterface>()) {
-      funcLikeOp->walk([&](IREE::Flow::DispatchOp dispatchOp) {
+    for (auto funcOp : getOperation().getOps<mlir::FunctionOpInterface>()) {
+      funcOp->walk([&](IREE::Flow::DispatchOp dispatchOp) {
         SmallVector<Attribute> replacementRefs;
         for (auto originalRef : dispatchOp.getEntryPointRefs()) {
           auto it = entryPointRefReplacements.find(originalRef);
@@ -419,9 +472,5 @@ public:
     }
   }
 };
-
-std::unique_ptr<OperationPass<mlir::ModuleOp>> createAnnotateDispatchesPass() {
-  return std::make_unique<AnnotateDispatchesPass>();
-}
 
 } // namespace mlir::iree_compiler::IREE::Flow

@@ -10,7 +10,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "iree-dialects/Dialect/LinalgExt/Transforms/Transforms.h"
 #include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/SPIRV/PassDetail.h"
@@ -43,7 +42,7 @@ namespace mlir::iree_compiler {
 
 /// Collects computation ops which we will use as anchor to tile and fuse.
 static FailureOr<IREE::Codegen::LoweringConfigAttr>
-collectComputeOps(func::FuncOp funcOp,
+collectComputeOps(mlir::FunctionOpInterface funcOp,
                   SmallVectorImpl<Operation *> &computeOps) {
   // If there are `scf.if` ops which have linalg ops, we have both a fast and
   // slow paths for padding handling. Then we need to scan both regions to
@@ -107,15 +106,15 @@ collectComputeOps(func::FuncOp funcOp,
   return configs.front();
 }
 
-static LogicalResult tileAndDistributeToThreads(linalg::LinalgOp consumerOp,
+static LogicalResult tileAndDistributeToThreads(TilingInterface consumerOp,
                                                 ArrayRef<int64_t> tileSizes) {
-  MLIRContext *context = consumerOp.getContext();
+  MLIRContext *context = consumerOp->getContext();
   IRRewriter rewriter(context);
   SmallVector<OpFoldResult> tileSizesOfr =
       getAsIndexOpFoldResult(context, tileSizes);
   FailureOr<scf::SCFTileAndFuseResult> tileAndFuseResult =
-      scf::tileConsumerAndFuseProducerGreedilyUsingSCFForOp(
-          rewriter, cast<TilingInterface>(consumerOp.getOperation()),
+      scf::tileConsumerAndFuseProducersUsingSCF(
+          rewriter, consumerOp,
           scf::SCFTileAndFuseOptions().setTilingOptions(
               scf::SCFTilingOptions().setTileSizes(tileSizesOfr)));
 
@@ -134,7 +133,7 @@ static LogicalResult tileAndDistributeToThreads(linalg::LinalgOp consumerOp,
   // We don't distribute here; instead, it will be done in a later step
   // after bufferization. So add attributes to the tiled loop nest to
   // indicate that they should be distributed to invocations.
-  ArrayRef<Operation *> loops = tileAndFuseResult.value().loops;
+  ArrayRef<LoopLikeOpInterface> loops = tileAndFuseResult.value().loops;
   const char *attrName = getSPIRVDistributeAttrName();
   // We can have more than 3 dimensions being tiled (e.g., for convolutions with
   // non-1 batch). But only the innermost 3 dimensions are distributed.
@@ -146,10 +145,9 @@ static LogicalResult tileAndDistributeToThreads(linalg::LinalgOp consumerOp,
 
 /// Tiles reduction dimensions.
 static LogicalResult
-tileReduction(func::FuncOp funcOp,
+tileReduction(mlir::FunctionOpInterface funcOp,
               const scf::SCFTileSizeComputationFunction &computeFn) {
-  auto filter =
-      IREE::LinalgExt::LinalgTransformationFilter().setMatchByDefault();
+  auto filter = LinalgTransformationFilter().setMatchByDefault();
   auto options =
       scf::SCFTilingOptions().setTileSizeComputationFunction(computeFn);
   auto result = tileLinalgOpsWithFilter(funcOp, options, filter);
@@ -164,7 +162,7 @@ tileReduction(func::FuncOp funcOp,
 
 /// Fuses `tensor.pad` ops into the the materalized loop nests containing
 /// their consumer ops.
-static void fusePadIntoConsumer(func::FuncOp funcOp) {
+static void fusePadIntoConsumer(mlir::FunctionOpInterface funcOp) {
   MLIRContext *context = funcOp.getContext();
   RewritePatternSet patterns(context);
   patterns.insert<linalg::ExtractSliceOfPadTensorSwapPattern>(
@@ -179,7 +177,7 @@ static void fusePadIntoConsumer(func::FuncOp funcOp) {
 };
 
 /// Concretizes `tensor.pad` ops' result shapes.
-static void concretizePadShape(func::FuncOp funcOp) {
+static void concretizePadShape(mlir::FunctionOpInterface funcOp) {
   MLIRContext *context = funcOp.getContext();
   RewritePatternSet patterns(context);
   SmallVector<int64_t> numWorkgroups = getStaticNumWorkgroups(funcOp);
@@ -196,7 +194,7 @@ static void concretizePadShape(func::FuncOp funcOp) {
 
 /// Tiles one of the convolution output window dimensions with size 1 to prepare
 /// for downsizing 2-D convolution ops into 1-D ones.
-static LogicalResult tileAndUnrollConvWindow(func::FuncOp funcOp,
+static LogicalResult tileAndUnrollConvWindow(mlir::FunctionOpInterface funcOp,
                                              ArrayRef<OpFoldResult> tileSizes) {
   SmallVector<linalg::ConvolutionOpInterface, 1> convOps;
   funcOp.walk([&convOps](linalg::ConvolutionOpInterface convOp) {
@@ -207,7 +205,7 @@ static LogicalResult tileAndUnrollConvWindow(func::FuncOp funcOp,
     auto consumerOp = cast<linalg::LinalgOp>(*convOp);
     IRRewriter rewriter(funcOp.getContext());
     FailureOr<scf::SCFTileAndFuseResult> tileAndFuseResult =
-        scf::tileConsumerAndFuseProducerGreedilyUsingSCFForOp(
+        scf::tileConsumerAndFuseProducersUsingSCF(
             rewriter, cast<TilingInterface>(consumerOp.getOperation()),
             scf::SCFTileAndFuseOptions().setTilingOptions(
                 scf::SCFTilingOptions().setTileSizes(tileSizes)));
@@ -228,7 +226,7 @@ static LogicalResult tileAndUnrollConvWindow(func::FuncOp funcOp,
     // for parallel output window dimension, so it helps future vector
     // transformations.
 
-    ArrayRef<Operation *> loops = tileAndFuseResult.value().loops;
+    ArrayRef<LoopLikeOpInterface> loops = tileAndFuseResult.value().loops;
     if (!loops.empty()) {
       assert(loops.size() == 1);
       scf::ForOp loopOp = cast<scf::ForOp>(loops.front());
@@ -264,7 +262,7 @@ public:
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
-    func::FuncOp funcOp = getOperation();
+    auto funcOp = getOperation();
 
     // Try to find computation ops which we will use as anchor to tile and fuse.
     SmallVector<Operation *> computeOps;
@@ -278,8 +276,9 @@ public:
     // computation ops into the materialized loop nest.
     auto threadTileSizes = loweringConfig->getTileSizeVals(1);
     for (Operation *computeOp : computeOps) {
-      auto consumerOp = dyn_cast<linalg::LinalgOp>(computeOp);
-      if (failed(tileAndDistributeToThreads(consumerOp, threadTileSizes)))
+      auto consumerOp = dyn_cast<TilingInterface>(computeOp);
+      if (!consumerOp ||
+          failed(tileAndDistributeToThreads(consumerOp, threadTileSizes)))
         return signalPassFailure();
     }
 
@@ -332,7 +331,8 @@ public:
 };
 } // namespace
 
-std::unique_ptr<OperationPass<func::FuncOp>> createSPIRVTilePass() {
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
+createSPIRVTilePass() {
   return std::make_unique<SPIRVTilePass>();
 }
 

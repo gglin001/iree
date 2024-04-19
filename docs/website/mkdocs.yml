@@ -61,7 +61,7 @@ extra:
       link: https://github.com/openxla/iree
       name: IREE on GitHub
     - icon: fontawesome/brands/discord
-      link: https://discord.gg/26P4xW4
+      link: https://discord.gg/wEWh6Z9nMU
       name: IREE Discord Server
     - icon: fontawesome/solid/users
       link: https://groups.google.com/forum/#!forum/iree-discuss
@@ -139,6 +139,8 @@ nav:
           - GPU - CUDA: "guides/deployment-configurations/gpu-cuda.md"
           - GPU - ROCm: "guides/deployment-configurations/gpu-rocm.md"
           - GPU - Metal: "guides/deployment-configurations/gpu-metal.md"
+      - "General topics":
+          - "guides/parameters.md"
   - "Reference":
       - "reference/index.md"
       - "API bindings":
@@ -155,6 +157,7 @@ nav:
               - HAL/Inline: "reference/mlir-dialects/HALInline.md"
               - HAL/Loader: "reference/mlir-dialects/HALLoader.md"
               - IO/Parameters: "reference/mlir-dialects/IOParameters.md"
+              - LinalgExt: "reference/mlir-dialects/LinalgExt.md"
               - Stream: "reference/mlir-dialects/Stream.md"
               - Util: "reference/mlir-dialects/Util.md"
               - VM: "reference/mlir-dialects/VM.md"
@@ -162,7 +165,6 @@ nav:
           # Dialects from llvm-external-projects/iree-dialects/
           - "Public dialects":
               - IREEInput: "reference/mlir-dialects/IREEInput.md"
-              - IREELinalgExt: "reference/mlir-dialects/IREELinalgExt.md"
               - IREEVectorExt: "reference/mlir-dialects/IREEVectorExt.md"
       - "Other topics":
           - Glossary: "reference/glossary.md"
@@ -196,10 +198,12 @@ nav:
           - "developers/performance/profiling-gpu-vulkan.md"
           - "developers/performance/profiling-with-tracy.md"
       - "Design docs":
-          - "developers/design-docs/cuda-backend.md"
           - "developers/design-docs/design-roadmap.md"
           - "developers/design-docs/function-abi.md"
           - "developers/design-docs/invocation-execution-model.md"
+          - "developers/design-docs/cuda-hal-driver.md"
+          - "developers/design-docs/hip-hal-driver.md"
+          - "developers/design-docs/metal-hal-driver.md"
       - "Other topics":
           - "developers/usage-best-practices.md"
           - "developers/vulkan-environment-setup.md"

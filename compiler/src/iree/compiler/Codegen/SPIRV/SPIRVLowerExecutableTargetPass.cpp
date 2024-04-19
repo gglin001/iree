@@ -4,7 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtDialect.h"
+#include "iree/compiler/Codegen/Common/PassUtils.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
 #include "iree/compiler/Codegen/SPIRV/KernelConfig.h"
@@ -12,9 +12,11 @@
 #include "iree/compiler/Codegen/SPIRV/Passes.h"
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/Transforms/Transforms.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
@@ -57,19 +59,24 @@ public:
 } // namespace
 
 void SPIRVLowerExecutableTargetPass::runOnOperation() {
-  IREE::HAL::ExecutableVariantOp variantOp = getOperation();
+  auto funcOp = getOperation();
 
-  std::optional<IREE::Codegen::TranslationInfoAttr> translationInfo =
-      getIdenticalTranslationInfo(variantOp);
+  IREE::Codegen::TranslationInfoAttr translationInfo =
+      getTranslationInfo(funcOp);
   if (!translationInfo) {
-    variantOp.emitOpError(
-        "unhandled compilation of entry point functions with different "
-        "translation info");
-    return signalPassFailure();
+    return;
   }
 
-  OpPassManager pipeline(IREE::HAL::ExecutableVariantOp::getOperationName());
-  switch (translationInfo.value().getDispatchLoweringPassPipeline()) {
+  std::optional<OpPassManager> maybePipeline =
+      getFunctionOpInterfacePassManager(funcOp);
+  if (!maybePipeline) {
+    funcOp.emitOpError(
+        "unhandled function-like container during executable lowering");
+    return signalPassFailure();
+  }
+  OpPassManager &pipeline = maybePipeline.value();
+
+  switch (translationInfo.getDispatchLoweringPassPipeline()) {
   case CodeGenPipeline::SPIRVBaseLowering:
     addSPIRVBaseLoweringPassPipeline(pipeline);
     break;
@@ -82,27 +89,42 @@ void SPIRVLowerExecutableTargetPass::runOnOperation() {
   case CodeGenPipeline::SPIRVSubgroupReduce:
     addSPIRVSubgroupReducePassPipeline(pipeline);
     break;
-  case CodeGenPipeline::SPIRVCooperativeMatrixVectorize:
-    addSPIRVCooperativeMatrixVectorizePassPipeline(
-        pipeline, translationInfo.value().getSoftwarePipelineDepth(),
-        translationInfo.value().getSoftwarePipelineStoreStage());
+  case CodeGenPipeline::SPIRVCooperativeMatrixVectorize: {
+    FailureOr<int64_t> maybeDepth =
+        getSoftwarePipelineDepth(translationInfo.getConfiguration());
+    FailureOr<int64_t> maybeStage =
+        getSoftwarePipelineStoreStage(translationInfo.getConfiguration());
+    if (failed(maybeDepth) || failed(maybeStage)) {
+      funcOp.emitOpError("invalid cooperative matrix pipeline without "
+                         "software pipelining configuration.");
+      return signalPassFailure();
+    }
+    addSPIRVCooperativeMatrixVectorizePassPipeline(pipeline, *maybeDepth,
+                                                   *maybeStage);
     break;
-  case CodeGenPipeline::SPIRVMatmulPromoteVectorize:
-    addSPIRVMatmulPromoteVectorizePassPipeline(
-        pipeline, translationInfo.value().getSoftwarePipelineDepth(),
-        translationInfo.value().getSoftwarePipelineStoreStage());
+  }
+  case CodeGenPipeline::SPIRVMatmulPromoteVectorize: {
+    FailureOr<int64_t> maybeDepth =
+        getSoftwarePipelineDepth(translationInfo.getConfiguration());
+    FailureOr<int64_t> maybeStage =
+        getSoftwarePipelineStoreStage(translationInfo.getConfiguration());
+    if (failed(maybeDepth) || failed(maybeStage)) {
+      funcOp.emitOpError("invalid matmul pipeline without software "
+                         "pipelining configuration.");
+      return signalPassFailure();
+    }
+    addSPIRVMatmulPromoteVectorizePassPipeline(pipeline, *maybeDepth,
+                                               *maybeStage);
     break;
+  }
   case CodeGenPipeline::SPIRVWinogradVectorize:
     addSPIRVWinogradVectorizePassPipeline(pipeline);
-    break;
-  case CodeGenPipeline::TransformDialectCodegen:
-    addSPIRVTransformDialectPassPipeline(pipeline);
     break;
   // No pipeline specified, nothing to do.
   case CodeGenPipeline::None:
     return;
   default:
-    variantOp.emitOpError("Unsupported pipeline on GPU target.");
+    funcOp.emitOpError("unsupported pipeline on GPU target.");
     return signalPassFailure();
   }
 
@@ -112,12 +134,12 @@ void SPIRVLowerExecutableTargetPass::runOnOperation() {
     llvm::dbgs() << "\n";
   });
 
-  if (failed(runPipeline(pipeline, variantOp))) {
+  if (failed(runPipeline(pipeline, funcOp))) {
     return signalPassFailure();
   }
 }
 
-std::unique_ptr<OperationPass<IREE::HAL::ExecutableVariantOp>>
+std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createSPIRVLowerExecutableTargetPass() {
   return std::make_unique<SPIRVLowerExecutableTargetPass>();
 }

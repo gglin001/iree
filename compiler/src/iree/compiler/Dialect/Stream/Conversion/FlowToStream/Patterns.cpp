@@ -12,9 +12,9 @@
 #include "iree/compiler/Dialect/Stream/IR/StreamDialect.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 
 namespace mlir::iree_compiler {
 
@@ -33,6 +33,81 @@ static Value buildResultSizeOf(Location loc, Value tensorValue,
       dynamicDims,
       IREE::Stream::AffinityAttr::lookup(tensorValue.getDefiningOp()));
 }
+
+struct ConvertTensorConstantOp
+    : public OpConversionPattern<IREE::Flow::TensorConstantOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(IREE::Flow::TensorConstantOp constantOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // Capture the tensor constant strongly typed with constant lifetime.
+    Type constantType = IREE::Stream::ResourceType::get(
+        getContext(), IREE::Stream::Lifetime::Constant);
+    auto affinityAttr = IREE::Stream::AffinityAttr::lookup(constantOp);
+    auto newOp = rewriter.create<IREE::Stream::TensorConstantOp>(
+        constantOp.getLoc(), constantType, constantOp.getValue(),
+        TypeAttr::get(constantOp.getType()), ValueRange{}, affinityAttr);
+
+    // Transfer to unknown lifetime.
+    Type unknownType = IREE::Stream::ResourceType::get(getContext());
+    auto constantSize = rewriter.createOrFold<IREE::Stream::ResourceSizeOp>(
+        constantOp.getLoc(), rewriter.getIndexType(), newOp.getResult());
+    rewriter.replaceOpWithNewOp<IREE::Stream::AsyncTransferOp>(
+        constantOp, unknownType, newOp.getResult(), constantSize, constantSize,
+        /*source_affinity=*/affinityAttr,
+        /*result_affinity=*/affinityAttr);
+    return success();
+  }
+};
+
+struct ConvertTensorDynamicConstantOp
+    : public OpConversionPattern<IREE::Flow::TensorDynamicConstantOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(IREE::Flow::TensorDynamicConstantOp constantOp,
+                  OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto attrType = dyn_cast<RankedTensorType>(constantOp.getValue().getType());
+    if (!attrType)
+      return failure();
+    auto resultType = constantOp.getType();
+
+    // If the op is acting as a dynamic value then preserve that behavior by
+    // calculating the shape through optimization barriers.
+    SmallVector<Value> dynamicDims;
+    for (unsigned i = 0; i < resultType.getRank(); ++i) {
+      if (resultType.isDynamicDim(i)) {
+        Value staticDim = rewriter.create<arith::ConstantIndexOp>(
+            constantOp.getLoc(), attrType.getDimSize(i));
+        Value dynamicDim = rewriter
+                               .create<IREE::Util::OptimizationBarrierOp>(
+                                   constantOp.getLoc(), staticDim)
+                               .getResult(0);
+        dynamicDims.push_back(dynamicDim);
+      }
+    }
+
+    // Capture the tensor constant strongly typed with constant lifetime.
+    Type constantType = IREE::Stream::ResourceType::get(
+        getContext(), IREE::Stream::Lifetime::Constant);
+    auto affinityAttr = IREE::Stream::AffinityAttr::lookup(constantOp);
+    auto newOp = rewriter.create<IREE::Stream::TensorConstantOp>(
+        constantOp.getLoc(), constantType, constantOp.getValue(),
+        TypeAttr::get(resultType), dynamicDims, affinityAttr);
+
+    // Transfer to unknown lifetime.
+    Type unknownType = IREE::Stream::ResourceType::get(getContext());
+    auto constantSize = rewriter.createOrFold<IREE::Stream::ResourceSizeOp>(
+        constantOp.getLoc(), rewriter.getIndexType(), newOp.getResult());
+    rewriter.replaceOpWithNewOp<IREE::Stream::AsyncTransferOp>(
+        constantOp, unknownType, newOp.getResult(), constantSize, constantSize,
+        /*source_affinity=*/affinityAttr,
+        /*result_affinity=*/affinityAttr);
+    return success();
+  }
+};
 
 // Reshapes and bitcasts become clones here to preserve shape/element type
 // information (which may become actual transfers depending on source/target
@@ -803,7 +878,7 @@ struct ConvertExecutableOp
       // Update the entry point signatures in the module.
       // Dispatch tensor arguments become bindings and all others are preserved
       // as adaptor. Note that we only touch public (exported) functions.
-      for (auto funcOp : moduleOp.getOps<mlir::func::FuncOp>()) {
+      for (auto funcOp : moduleOp.getOps<mlir::FunctionOpInterface>()) {
         if (!funcOp.isPublic())
           continue;
 
@@ -888,7 +963,8 @@ void populateFlowToStreamConversionPatterns(MLIRContext *context,
                                             TypeConverter &typeConverter,
                                             RewritePatternSet &patterns) {
   patterns
-      .insert<ConvertTensorCastLikeOp<IREE::Flow::TensorReshapeOp>,
+      .insert<ConvertTensorConstantOp, ConvertTensorDynamicConstantOp,
+              ConvertTensorCastLikeOp<IREE::Flow::TensorReshapeOp>,
               ConvertTensorCastLikeOp<IREE::Flow::TensorBitCastOp>,
               ConvertTensorAllocaOp, ConvertTensorEmptyOp, ConvertTensorSplatOp,
               ConvertTensorCloneOp, ConvertTensorSliceOp, ConvertTensorUpdateOp,

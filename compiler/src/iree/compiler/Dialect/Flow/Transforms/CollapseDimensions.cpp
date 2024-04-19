@@ -6,7 +6,6 @@
 
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/Flow/Transforms/FormDispatchRegions.h"
-#include "iree/compiler/Dialect/Flow/Transforms/PassDetail.h"
 #include "iree/compiler/Dialect/Flow/Transforms/Passes.h"
 #include "iree/compiler/Dialect/Flow/Transforms/RegionOpUtils.h"
 #include "llvm/Support/Casting.h"
@@ -35,14 +34,14 @@
 
 namespace mlir::iree_compiler::IREE::Flow {
 
+#define GEN_PASS_DEF_COLLAPSEDIMENSIONSPASS
+#include "iree/compiler/Dialect/Flow/Transforms/Passes.h.inc"
+
 namespace {
 /// Pass declaration.
 struct CollapseDimensionsPass
-    : public CollapseDimensionsBase<CollapseDimensionsPass> {
-  void getDependentDialects(DialectRegistry &registry) const override {}
-  CollapseDimensionsPass() {}
-  CollapseDimensionsPass(const CollapseDimensionsPass &pass)
-      : CollapseDimensionsPass() {}
+    : public IREE::Flow::impl::CollapseDimensionsPassBase<
+          CollapseDimensionsPass> {
   void runOnOperation() override;
 };
 } // namespace
@@ -420,12 +419,12 @@ static bool collapseDimensions(IRRewriter &rewriter,
   OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPoint(genericOp.value());
 
-  FailureOr<SmallVector<Value>> maybeReplacements =
+  FailureOr<linalg::CollapseResult> maybeReplacements =
       mlir::linalg::collapseOpIterationDims(genericOp.value(), collapseIndices,
                                             rewriter);
   if (failed(maybeReplacements))
     return false;
-  rewriter.replaceOp(genericOp.value(), maybeReplacements.value());
+  rewriter.replaceOp(genericOp.value(), maybeReplacements->results);
   return true;
 }
 
@@ -481,11 +480,6 @@ void CollapseDimensionsPass::runOnOperation() {
       return signalPassFailure();
     }
   }
-}
-
-std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createCollapseDimensionsPass() {
-  return std::make_unique<CollapseDimensionsPass>();
 }
 
 } // namespace mlir::iree_compiler::IREE::Flow

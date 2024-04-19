@@ -23,13 +23,14 @@ iree_cc_library(
     LLVMSupport
     MLIRArithDialect
     MLIRControlFlowDialect
-    MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRIR
     MLIRMemRefDialect
     MLIRPass
     MLIRSCFDialect
     MLIRShapeDialect
     MLIRTensorDialect
+    MLIRTransformUtils
     MLIRTransforms
     iree::compiler::Dialect::Stream::Conversion
     iree::compiler::Dialect::Stream::IR

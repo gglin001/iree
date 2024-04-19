@@ -17,6 +17,7 @@ iree_cc_library(
     "Passes.h"
   SRCS
     "AssignTargetDevices.cpp"
+    "CaptureExecutableSources.cpp"
     "ConfigureExecutables.cpp"
     "ConvertToHAL.cpp"
     "DumpExecutableBenchmarks.cpp"
@@ -31,6 +32,7 @@ iree_cc_library(
     "Passes.cpp"
     "Passes.h.inc"
     "PreprocessExecutables.cpp"
+    "PruneExecutables.cpp"
     "RepeatDispatches.cpp"
     "ResolveExportOrdinals.cpp"
     "SerializeExecutables.cpp"
@@ -42,10 +44,12 @@ iree_cc_library(
     ::PassesIncGen
     LLVMSupport
     MLIRAffineToStandard
+    MLIRAffineTransforms
     MLIRArithDialect
     MLIRBufferizationDialect
     MLIRControlFlowDialect
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRIR
     MLIRParser
     MLIRPass
@@ -53,6 +57,7 @@ iree_cc_library(
     MLIRSCFToControlFlow
     MLIRSupport
     MLIRTensorDialect
+    MLIRTransformUtils
     MLIRTransforms
     iree::compiler::Codegen::Common::CPU::CommonCPUPasses
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect

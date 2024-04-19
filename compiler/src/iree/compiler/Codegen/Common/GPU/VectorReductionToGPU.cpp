@@ -6,6 +6,7 @@
 
 #include "iree/compiler/Codegen/Common/GPU/PassDetail.h"
 #include "iree/compiler/Codegen/Common/GPU/Passes.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -23,10 +24,10 @@
 
 namespace mlir::iree_compiler {
 
-void debugPrint(func::FuncOp funcOp, const char *message) {
+static void debugPrint(Operation *op, const char *message) {
   LLVM_DEBUG({
     llvm::dbgs() << "//--- " << message << " ---//\n";
-    funcOp.print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+    op->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
     llvm::dbgs() << "\n\n";
   });
 }
@@ -194,7 +195,7 @@ class VectorReductionToGPUPass
 public:
   explicit VectorReductionToGPUPass(
       bool expandSubgroupReduction,
-      std::function<int(func::FuncOp)> getWarpSize)
+      std::function<int(mlir::FunctionOpInterface)> getWarpSize)
       : expandSubgroupReduction(expandSubgroupReduction),
         getWarpSize(getWarpSize) {}
 
@@ -204,7 +205,7 @@ public:
   }
 
   void runOnOperation() override {
-    func::FuncOp funcOp = getOperation();
+    auto funcOp = getOperation();
     MLIRContext *ctx = &getContext();
 
     debugPrint(funcOp, "after step #0: before vector reduction to gpu");
@@ -225,9 +226,14 @@ public:
 
     debugPrint(funcOp, "after step #1: preprocessing reduction ops");
 
-    auto workgroupSize = llvm::map_to_vector(
-        getEntryPoint(funcOp)->getWorkgroupSize().value(),
-        [&](Attribute attr) { return llvm::cast<IntegerAttr>(attr).getInt(); });
+    std::optional<SmallVector<int64_t>> maybeWorkgroupSize =
+        getWorkgroupSize(funcOp);
+    if (!maybeWorkgroupSize) {
+      funcOp->emitOpError(
+          "expected workgroup size to be set as part of `translation_info`");
+      return signalPassFailure();
+    }
+    SmallVector<int64_t> &workgroupSize = maybeWorkgroupSize.value();
     assert(workgroupSize[1] == 1 && workgroupSize[2] == 1);
     // 2. Create the warp op and move the function body into it.
     const int groupSize = workgroupSize[0];
@@ -269,13 +275,11 @@ public:
         auto vecType = llvm::dyn_cast<VectorType>(val.getType());
         if (!vecType)
           return AffineMap::get(val.getContext());
-        // Create a map (d0, d1) -> (d1) to distribute along the inner
-        // dimension. Once we support n-d distribution we can add more
-        // complex cases.
+        // Create an identity dim map of rank |vecRank|. This greedily divides
+        // threads along the outermost vector dimensions to the innermost ones.
         int64_t vecRank = vecType.getRank();
         OpBuilder builder(val.getContext());
-        return AffineMap::get(vecRank, 0,
-                              builder.getAffineDimExpr(vecRank - 1));
+        return builder.getMultiDimIdentityMap(vecRank);
       };
 
       RewritePatternSet patterns(ctx);
@@ -313,15 +317,15 @@ public:
 
 private:
   bool expandSubgroupReduction;
-  std::function<int(func::FuncOp)> getWarpSize;
+  std::function<int(mlir::FunctionOpInterface)> getWarpSize;
 };
 
 } // namespace
 
-std::unique_ptr<OperationPass<func::FuncOp>>
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
 createConvertVectorReductionToGPUPass(
     bool expandSubgroupReduction,
-    std::function<int(func::FuncOp)> getWarpSize) {
+    std::function<int(mlir::FunctionOpInterface)> getWarpSize) {
   return std::make_unique<VectorReductionToGPUPass>(expandSubgroupReduction,
                                                     getWarpSize);
 }

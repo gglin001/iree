@@ -10,9 +10,11 @@
 
 iree_add_all_subdirs()
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_arm_sme_nondt_f32_small
+    e2e_matmul_cpu_arm_sme_nondt_f32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -20,20 +22,25 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
     "local-task"
   COMPILER_FLAGS
     "--iree-opt-data-tiling=false"
+    "--iree-llvmcpu-enable-scalable-vectorization"
+  LABELS
+    "requires-arm-sme"
   TARGET_CPU_FEATURES_VARIANTS
     "arm_64:sme:+sve,+sme"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_arm_sme_nondt_f32_large
+    e2e_matmul_cpu_arm_sme_nondt_f32_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -41,20 +48,25 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
     "local-task"
   COMPILER_FLAGS
     "--iree-opt-data-tiling=false"
+    "--iree-llvmcpu-enable-scalable-vectorization"
+  LABELS
+    "requires-arm-sme"
   TARGET_CPU_FEATURES_VARIANTS
     "arm_64:sme:+sve,+sme"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_i8_i32_small
+    e2e_matmul_cpu_dt_i8_i32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -62,7 +74,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=i32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -79,9 +91,11 @@ iree_generated_e2e_matmul_test(
     "x86_64:avx512vnni:+avx,+avx2,+fma,+f16c,+avx512f,+avx512vl,+avx512cd,+avx512bw,+avx512dq,+avx512vnni"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_i8_i32_large
+    e2e_matmul_cpu_dt_i8_i32_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -89,7 +103,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=i32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -107,9 +121,11 @@ iree_generated_e2e_matmul_test(
     "x86_64:avx512vnni:+avx,+avx2,+fma,+f16c,+avx512f,+avx512vl,+avx512cd,+avx512bw,+avx512dq,+avx512vnni"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_f32_f32_small
+    e2e_matmul_cpu_dt_f32_f32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -117,7 +133,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -133,9 +149,11 @@ iree_generated_e2e_matmul_test(
     "x86_64:avx512:+avx,+avx2,+fma,+f16c,+avx512f,+avx512vl,+avx512cd,+avx512bw,+avx512dq"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_f32_f32_large
+    e2e_matmul_cpu_dt_f32_f32_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -143,7 +161,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -160,9 +178,11 @@ iree_generated_e2e_matmul_test(
     "x86_64:avx512:+avx,+avx2,+fma,+f16c,+avx512f,+avx512vl,+avx512cd,+avx512bw,+avx512dq"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_f16_f16_small
+    e2e_matmul_cpu_dt_f16_f16_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -170,7 +190,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f16"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -188,9 +208,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:fullfp16:+fullfp16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_f16_f16_large
+    e2e_matmul_cpu_dt_f16_f16_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -198,7 +220,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f16"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -218,9 +240,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:fullfp16:+fullfp16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_f16_f32_small
+    e2e_matmul_cpu_dt_f16_f32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -228,7 +252,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -246,9 +270,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:fp16fml:+fp16fml"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_f16_f32_large
+    e2e_matmul_cpu_dt_f16_f32_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -256,7 +282,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -276,9 +302,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:fp16fml:+fp16fml"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_bf16_bf16_small
+    e2e_matmul_cpu_dt_bf16_bf16_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -286,7 +314,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=bf16"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -305,9 +333,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:bf16:+bf16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_bf16_bf16_large
+    e2e_matmul_cpu_dt_bf16_bf16_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -315,7 +345,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=bf16"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -336,9 +366,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:bf16:+bf16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_bf16_f32_small
+    e2e_matmul_cpu_dt_bf16_f32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -346,7 +378,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -365,9 +397,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:bf16:+bf16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_bf16_f32_large
+    e2e_matmul_cpu_dt_bf16_f32_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -375,7 +409,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -396,9 +430,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:bf16:+bf16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_i8_i32_small
+    e2e_matmul_cpu_dt_uk_i8_i32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -406,7 +442,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=i32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -423,9 +459,11 @@ iree_generated_e2e_matmul_test(
     "x86_64:avx512vnni:+avx,+avx2,+fma,+f16c,+avx512f,+avx512vl,+avx512cd,+avx512bw,+avx512dq,+avx512vnni"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_i8_i32_large
+    e2e_matmul_cpu_dt_uk_i8_i32_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -433,7 +471,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=i32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -451,9 +489,11 @@ iree_generated_e2e_matmul_test(
     "x86_64:avx512vnni:+avx,+avx2,+fma,+f16c,+avx512f,+avx512vl,+avx512cd,+avx512bw,+avx512dq,+avx512vnni"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_f32_f32_small
+    e2e_matmul_cpu_dt_uk_f32_f32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -461,7 +501,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -477,9 +517,11 @@ iree_generated_e2e_matmul_test(
     "x86_64:avx512:+avx,+avx2,+fma,+f16c,+avx512f,+avx512vl,+avx512cd,+avx512bw,+avx512dq"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_f32_f32_large
+    e2e_matmul_cpu_dt_uk_f32_f32_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -487,7 +529,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -504,9 +546,11 @@ iree_generated_e2e_matmul_test(
     "x86_64:avx512:+avx,+avx2,+fma,+f16c,+avx512f,+avx512vl,+avx512cd,+avx512bw,+avx512dq"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_f16_f16_small
+    e2e_matmul_cpu_dt_uk_f16_f16_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -514,7 +558,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f16"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -532,9 +576,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:fullfp16:+fullfp16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_f16_f16_large
+    e2e_matmul_cpu_dt_uk_f16_f16_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -542,7 +588,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f16"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -562,9 +608,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:fullfp16:+fullfp16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_f16_f32_small
+    e2e_matmul_cpu_dt_uk_f16_f32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -572,7 +620,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -590,9 +638,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:fp16fml:+fp16fml"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_f16_f32_large
+    e2e_matmul_cpu_dt_uk_f16_f32_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -600,7 +650,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -620,9 +670,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:fp16fml:+fp16fml"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_bf16_bf16_small
+    e2e_matmul_cpu_dt_uk_bf16_bf16_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -630,7 +682,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=bf16"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -649,9 +701,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:bf16:+bf16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_bf16_bf16_large
+    e2e_matmul_cpu_dt_uk_bf16_bf16_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -659,7 +713,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=bf16"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -680,9 +734,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:bf16:+bf16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_bf16_f32_small
+    e2e_matmul_cpu_dt_uk_bf16_f32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -690,7 +746,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -709,9 +765,11 @@ iree_generated_e2e_matmul_test(
     "arm_64:bf16:+bf16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_bf16_f32_large
+    e2e_matmul_cpu_dt_uk_bf16_f32_large
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -719,7 +777,7 @@ iree_generated_e2e_matmul_test(
     "--acc_type=f32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "llvm-cpu"
   DRIVERS
@@ -740,16 +798,18 @@ iree_generated_e2e_matmul_test(
     "arm_64:bf16:+bf16"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_i8_small
+    e2e_matmul_vmvx_dt_uk_i8_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
     "--lhs_rhs_type=i8"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "vmvx"
   DRIVERS
@@ -759,16 +819,18 @@ iree_generated_e2e_matmul_test(
     "--iree-opt-data-tiling"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_dt_uk_f32_small
+    e2e_matmul_vmvx_dt_uk_f32_small
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
     "--lhs_rhs_type=f32"
     "--shapes=small"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "vmvx"
   DRIVERS
@@ -778,9 +840,11 @@ iree_generated_e2e_matmul_test(
     "--iree-opt-data-tiling"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f32_gpu_large_LLVMGPUMatmulSimt
+    e2e_matmul_cuda_f32_large_simt
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -788,7 +852,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=LLVMGPUMatmulSimt"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "cuda"
   DRIVERS
@@ -801,9 +865,11 @@ iree_generated_e2e_matmul_test(
     "requires-gpu-nvidia"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f32_gpu_large_LLVMGPUMatmulTensorCore
+    e2e_matmul_cuda_f32_large_tensorcore
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -811,7 +877,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=LLVMGPUMatmulTensorCore"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "cuda"
   DRIVERS
@@ -826,16 +892,18 @@ iree_generated_e2e_matmul_test(
     "requires-gpu-sm80"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f32_gpu_large_unaligned
+    e2e_matmul_cuda_f32_large_unaligned
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
     "--lhs_rhs_type=f32"
     "--shapes=gpu_large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "cuda"
   DRIVERS
@@ -850,16 +918,18 @@ iree_generated_e2e_matmul_test(
     "requires-gpu-sm80"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f16_gpu_large_unaligned
+    e2e_matmul_cuda_f16_large_unaligned
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
     "--lhs_rhs_type=f16"
     "--shapes=gpu_large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "cuda"
   DRIVERS
@@ -874,9 +944,11 @@ iree_generated_e2e_matmul_test(
     "requires-gpu-sm80"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f32_gpu_large_mma_sync_LLVMGPUMatmulTensorCoreMmaSync
+    e2e_matmul_cuda_f32_large_mma_sync
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -884,7 +956,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=LLVMGPUMatmulTensorCoreMmaSync"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "cuda"
   DRIVERS
@@ -899,9 +971,11 @@ iree_generated_e2e_matmul_test(
     "requires-gpu-sm80"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f16_gpu_large_LLVMGPUMatmulTensorCore
+    e2e_matmul_cuda_f16_large_tensorcore
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -909,7 +983,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=LLVMGPUMatmulTensorCore"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "cuda"
   DRIVERS
@@ -924,9 +998,11 @@ iree_generated_e2e_matmul_test(
     "requires-gpu-sm80"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f16_gpu_large_mma_sync_LLVMGPUMatmulTensorCoreMmaSync
+    e2e_matmul_cuda_f16_large_mma_sync
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -934,7 +1010,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=LLVMGPUMatmulTensorCoreMmaSync"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "cuda"
   DRIVERS
@@ -949,16 +1025,18 @@ iree_generated_e2e_matmul_test(
     "requires-gpu-sm80"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f32_large_split_k
+    e2e_matmul_cuda_f32_large_splitk
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
     "--lhs_rhs_type=f32"
     "--shapes=large"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "cuda"
   DRIVERS
@@ -974,9 +1052,68 @@ iree_generated_e2e_matmul_test(
     "noriscv"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_i8_gpu_large_valhall
+    e2e_matmul_rocm_f16_large_cdna3_mfma
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f16"
+    "--acc_type=f32"
+    "--shapes=gpu_large_aligned"
+    "--compilation_info=LLVMGPUVectorDistribute"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "rocm"
+  COMPILER_FLAGS
+    "--iree-rocm-target-chip=gfx942"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-cdna3"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_rocm_f16_large_cdna3_mfma_tb
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f16"
+    "--acc_type=f32"
+    "--transpose_rhs"
+    "--shapes=gpu_large_aligned"
+    "--compilation_info=LLVMGPUVectorDistribute"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "rocm"
+  COMPILER_FLAGS
+    "--iree-rocm-target-chip=gfx942"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-cdna3"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_vulkan_i8_large_valhall
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -984,7 +1121,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=SPIRVVectorizeMali"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "vulkan-spirv"
   DRIVERS
@@ -996,9 +1133,11 @@ iree_generated_e2e_matmul_test(
     "vulkan_uses_vk_khr_shader_float16_int8"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f16_gpu_large_valhall
+    e2e_matmul_vulkan_f16_large_valhall
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -1006,7 +1145,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=SPIRVVectorizeMali"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "vulkan-spirv"
   DRIVERS
@@ -1018,9 +1157,11 @@ iree_generated_e2e_matmul_test(
     "vulkan_uses_vk_khr_shader_float16_int8"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f32_gpu_large_valhall
+    e2e_matmul_vulkan_f32_large_valhall
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -1028,7 +1169,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=SPIRVVectorizeMali"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "vulkan-spirv"
   DRIVERS
@@ -1040,9 +1181,11 @@ iree_generated_e2e_matmul_test(
     "vulkan_uses_vk_khr_shader_float16_int8"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_i8_gpu_large_ampere
+    e2e_matmul_vulkan_i8_large_ampere
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -1050,7 +1193,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=SPIRVVectorizeNVIDIA"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "vulkan-spirv"
   DRIVERS
@@ -1062,9 +1205,11 @@ iree_generated_e2e_matmul_test(
     "vulkan_uses_vk_khr_shader_float16_int8"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f16_gpu_large_ampere
+    e2e_matmul_vulkan_f16_large_ampere
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -1072,7 +1217,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=SPIRVVectorizeNVIDIA"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "vulkan-spirv"
   DRIVERS
@@ -1084,9 +1229,11 @@ iree_generated_e2e_matmul_test(
     "vulkan_uses_vk_khr_shader_float16_int8"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f32_gpu_large_ampere
+    e2e_matmul_vulkan_f32_large_ampere
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -1094,7 +1241,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=SPIRVVectorizeNVIDIA"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "vulkan-spirv"
   DRIVERS
@@ -1106,9 +1253,11 @@ iree_generated_e2e_matmul_test(
     "vulkan_uses_vk_khr_shader_float16_int8"
 )
 
-iree_generated_e2e_matmul_test(
+iree_generated_e2e_runner_test(
   NAME
-    e2e_matmul_direct_f16_gpu_large_rdna3
+    e2e_matmul_vulkan_f16_large_rdna3
+  TEST_TYPE
+    matmul
   GENERATOR
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
@@ -1116,7 +1265,7 @@ iree_generated_e2e_matmul_test(
     "--shapes=gpu_large_aligned"
     "--compilation_info=SPIRVCooperativeMatrixVectorize"
   TEST_RUNNER
-    iree-e2e-matmul-test
+    iree_tools_testing_e2e_iree-e2e-matmul-test
   TARGET_BACKENDS
     "vulkan-spirv"
   DRIVERS

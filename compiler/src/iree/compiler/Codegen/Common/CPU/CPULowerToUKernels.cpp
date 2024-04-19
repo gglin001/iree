@@ -4,16 +4,16 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree/builtins/ukernel/exported_bits.h"
 #include "iree/compiler/Codegen/Common/CPU/PassDetail.h"
 #include "iree/compiler/Codegen/Common/CPU/Passes.h"
+#include "iree/compiler/Codegen/Common/EncodingUtils.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/UKernelOps.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -65,8 +65,10 @@ public:
 
   void runOnOperation() override;
 
-  LogicalResult initializeOptions(StringRef options) override {
-    if (failed(Pass::initializeOptions(options))) {
+  LogicalResult initializeOptions(
+      StringRef options,
+      function_ref<LogicalResult(const Twine &)> errorHandler) override {
+    if (failed(Pass::initializeOptions(options, errorHandler))) {
       return failure();
     }
     // This option defaults to `true` both in Passes.td and in C++ code.
@@ -119,11 +121,6 @@ getFnNameAndDefAttrs(const char *ukernelName, RewriterBase &rewriter,
         rewriter.getArrayAttr({rewriter.getStringAttr("processor_data")}));
     result.defAttrs.emplace_back(rewriter.getStringAttr("hal.import.bitcode"),
                                  rewriter.getBoolAttr(true));
-    result.defAttrs.emplace_back(
-        rewriter.getStringAttr("hal.import.cconv"),
-        IREE::HAL::CallingConventionAttr::get(
-            rewriter.getContext(),
-            IREE::HAL::CallingConvention::ParameterStruct));
   }
   return result;
 }
@@ -179,6 +176,10 @@ matchDAGForUKernel(RewriterBase &rewriter, linalg::Mmt4DOp op,
   if (lhsElemType.isSignlessInteger(8) && rhsElemType.isSignlessInteger(8) &&
       outElemType.isSignlessInteger(32)) {
     flags = IREE_UK_FLAG_MMT4D_TYPE_S8S8S32;
+  } else if (lhsElemType.isSignlessInteger(8) &&
+             rhsElemType.isSignlessInteger(4) &&
+             outElemType.isSignlessInteger(32)) {
+    flags = IREE_UK_FLAG_MMT4D_TYPE_S8S4S32;
   } else if (lhsElemType.isSignlessInteger(16) &&
              rhsElemType.isSignlessInteger(16) &&
              outElemType.isSignlessInteger(32)) {
@@ -227,6 +228,11 @@ matchDAGForUKernel(RewriterBase &rewriter, linalg::Mmt4DOp op,
     flags |= IREE_UK_FLAG_MMT4D_SKIP_INTERMEDIATE_ROUNDINGS;
   }
 
+  // TODO(#15784): drop the fallback flag, instead create a iree_uk_mmt4d_info
+  // ukernel op to query whether the ukernel has fast code for this case, and
+  // preserve the original `linalg.mmt4d` as a fallback in the `else` branch.
+  flags |= IREE_UK_FLAG_MMT4D_ALLOW_GENERIC_FALLBACK_TILE_FUNCTION;
+
   Location loc = op.getLoc();
   Value m = rewriter.create<tensor::DimOp>(loc, lhs, 0);
   Value n = rewriter.create<tensor::DimOp>(loc, rhs, 0);
@@ -244,8 +250,15 @@ matchDAGForUKernel(RewriterBase &rewriter, linalg::Mmt4DOp op,
   Value flagsVal = rewriter.create<arith::ConstantOp>(
       loc, rewriter.getI32IntegerAttr(flags));
   auto fn = getFnNameAndDefAttrs(ukernelName, rewriter, targetAttr);
+  SmallVector<Type> returnTypes{outType};
+  if (!isVMVXBackend(targetAttr)) {
+    // Hack to avoid issues with void-returning functions in llvm-cpu.
+    // Note that the first return value, of tensor type, disappears in
+    // bufferization.
+    returnTypes.push_back(rewriter.getI32Type());
+  }
   auto genericMicroKernelOp = rewriter.create<IREE::Codegen::UKernelGenericOp>(
-      loc, outType, fn.name, ValueRange{lhs, rhs}, out,
+      loc, returnTypes, fn.name, ValueRange{lhs, rhs}, out,
       ValueRange{m, n, k, m0, n0, k0, flagsVal},
       /*fn_def_attrs=*/rewriter.getDictionaryAttr(fn.defAttrs),
       /*strided_outer_dims=*/rewriter.getIndexAttr(1));
@@ -461,10 +474,12 @@ matchDAGForUKernel(RewriterBase &rewriter, tensor::UnPackOp op,
 }
 
 static uint32_t
-getFlagForUserAndOperandTypes(IREE::LinalgExt::EncodingUser user,
+getFlagForUserAndOperandTypes(IREE::LinalgExt::EncodingAttr encoding,
                               ArrayRef<Attribute> operandTypes) {
-  if (user != IREE::LinalgExt::EncodingUser::MATMUL ||
-      operandTypes.size() != 3) {
+  // There are currently no batch_mmt4d ukernels, so check for no batch
+  // dimension.
+  auto cDims = IREE::LinalgExt::getEncodingContractionDims(encoding);
+  if (failed(cDims) || !cDims->batch.empty() || operandTypes.size() != 3) {
     return IREE_UK_FLAG_QUERY_TILE_SIZES_OPERATION_NONE;
   }
 
@@ -531,7 +546,7 @@ matchDAGForUKernel(RewriterBase &rewriter, IREE::Codegen::QueryTileSizesOp op,
     inputValues.push_back(rewriter.create<arith::ConstantIndexOp>(loc, i));
   }
   uint32_t flagForUserAndOperandTypes = getFlagForUserAndOperandTypes(
-      encoding.getUser().getValue(), encoding.getElementTypes().getValue());
+      encoding, encoding.getElementTypes().getValue());
   uint32_t flagForRole = getFlagForRole(encoding.getRole().getValue());
   if (!flagForUserAndOperandTypes || !flagForRole) {
     return rewriter.notifyMatchFailure(op, "unhandled encoding");
@@ -571,7 +586,9 @@ struct LowerToUKernelPattern : OpRewritePattern<OpType> {
       return rewriter.notifyMatchFailure(
           op, "failed to find microkernel op to replace with");
     }
-    rewriter.replaceOp(op, ukernelOp.value()->getResults());
+    SmallVector<Value> results = ukernelOp.value()->getResults();
+    results.truncate(op->getNumResults());
+    rewriter.replaceOp(op, results);
     return success();
   }
 

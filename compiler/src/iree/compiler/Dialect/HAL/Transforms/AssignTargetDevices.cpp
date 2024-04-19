@@ -14,7 +14,6 @@
 #include "iree/compiler/Dialect/HAL/Transforms/Passes.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -59,36 +58,44 @@ struct AssignTargetDevicesPass
 
     // If no targets are specified we can't do anything - another pass earlier
     // in the pipeline will have had to add the targets.
-    if (targets.empty()) {
+    if (targetBackends.empty()) {
       emitRemark(moduleOp.getLoc())
-          << "no target HAL devices specified during assignment";
+          << "no target HAL target backends specified during assignment";
       return;
     }
 
     llvm::SmallDenseSet<Attribute> targetAttrSet;
     SmallVector<Attribute> targetAttrs;
-    for (const auto &targetName : targets) {
-      auto targetBackend = targetRegistry->getTargetBackend(targetName);
+    for (const auto &targetBackendName : targetBackends) {
+      auto targetBackend = targetRegistry->getTargetBackend(targetBackendName);
       if (!targetBackend) {
         std::string backends;
         llvm::raw_string_ostream os(backends);
-        llvm::interleaveComma(
-            targetRegistry->getTargetBackends(
-                targetRegistry->getRegisteredTargetBackends()),
-            os,
-            [&os](const std::shared_ptr<
-                  mlir::iree_compiler::IREE::HAL::TargetBackend>
-                      b) { os << b->name(); });
+        llvm::interleaveComma(targetRegistry->getRegisteredTargetBackends(), os,
+                              [&os](const std::string &name) { os << name; });
         emitError(moduleOp.getLoc())
-            << "target backend '" << targetName
+            << "target backend '" << targetBackendName
             << "' not registered; registered backends: " << os.str();
+        signalPassFailure();
+        return;
+      }
+      auto targetDeviceName = targetBackend->getLegacyDefaultDeviceID();
+      auto targetDevice = targetRegistry->getTargetDevice(targetDeviceName);
+      if (!targetDevice) {
+        std::string devices;
+        llvm::raw_string_ostream os(devices);
+        llvm::interleaveComma(targetRegistry->getRegisteredTargetDevices(), os,
+                              [&os](const std::string &name) { os << name; });
+        emitError(moduleOp.getLoc())
+            << "target device '" << targetDeviceName
+            << "' not registered; registered devices: " << os.str();
         signalPassFailure();
         return;
       }
 
       // Ask the target backend for its default device specification attribute.
-      auto targetAttr =
-          targetBackend->getDefaultDeviceTarget(moduleOp.getContext());
+      auto targetAttr = targetDevice->getDefaultDeviceTarget(
+          moduleOp.getContext(), *targetRegistry.value);
       if (!targetAttrSet.contains(targetAttr)) {
         targetAttrSet.insert(targetAttr);
         targetAttrs.push_back(targetAttr);

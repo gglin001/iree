@@ -32,8 +32,6 @@
 # Experimental
 # It's experimental, but we still don't want any old directory added here.
 /experimental/ @benvanik @stellaraccident
-/experimental/cpu_ukernel/ @bjacob
-/experimental/cuda2/ @antiagainst
 /experimental/dispatch_profiler/ @manishucsd
 /experimental/rocm/ @benvanik
 /experimental/web/ @ScottTodd
@@ -51,8 +49,6 @@
 # llvm-external-projects
 /llvm-external-projects/ @stellaraccident
 /llvm-external-projects/iree-dialects/ @MaheshRavishankar
-/llvm-external-projects/iree-dialects/**/Dialect/LinalgExt/ @hanhanW @MaheshRavishankar
-/llvm-external-projects/iree-dialects/test/iree_linalgext @hanhanW @MaheshRavishankar
 
 # Other Top-Level Directories
 /docs/ @ScottTodd
@@ -70,6 +66,7 @@
 /compiler/src/iree/compiler/Codegen/TransformStrategies/ @qedawkins @MaheshRavishankar
 /compiler/src/iree/compiler/ConstEval/ @hanhanW @stellaraccident
 /compiler/src/iree/compiler/Dialect/Flow/ @hanhanW @MaheshRavishankar
+/compiler/src/iree/compiler/Dialect/LinalgExt/ @hanhanW @MaheshRavishankar
 /compiler/src/iree/compiler/Dialect/Vulkan/ @antiagainst
 /compiler/src/iree/compiler/GlobalOptimization/ @hanhanW
 /compiler/src/iree/compiler/InputConversion/ @MaheshRavishankar @stellaraccident
@@ -79,6 +76,7 @@
 # Runtime
 /runtime/src/iree/ @benvanik
 /runtime/src/iree/hal/cts/ @ScottTodd
-/runtime/src/iree/hal/drivers/cuda2/ @antiagainst
+/runtime/src/iree/hal/drivers/cuda/ @antiagainst
+/runtime/src/iree/hal/drivers/hip/ @antiagainst @nithinsubbiah
 /runtime/src/iree/hal/drivers/metal/ @antiagainst
 /runtime/src/iree/hal/drivers/vulkan/ @antiagainst @ScottTodd

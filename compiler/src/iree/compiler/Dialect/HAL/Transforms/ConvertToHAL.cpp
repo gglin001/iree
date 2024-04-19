@@ -14,6 +14,7 @@
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
+#include "iree/compiler/Dialect/HAL/Transforms/Passes.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamDialect.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "iree/compiler/Dialect/Util/Conversion/ConversionPatterns.h"
@@ -86,6 +87,17 @@ struct ConvertToHALPass
     if (failed(applyPartialConversion(getOperation(), conversionTarget,
                                       std::move(patterns)))) {
       return signalPassFailure();
+    }
+
+    // Cleanup conversion attributes used for spooky action at a distance.
+    for (auto executableOp : getOperation().getOps<IREE::HAL::ExecutableOp>()) {
+      for (auto variantOp :
+           executableOp.getOps<IREE::HAL::ExecutableVariantOp>()) {
+        for (auto exportOp :
+             variantOp.getOps<IREE::HAL::ExecutableExportOp>()) {
+          exportOp->removeAttr("hal.interface.bindings");
+        }
+      }
     }
   }
 };

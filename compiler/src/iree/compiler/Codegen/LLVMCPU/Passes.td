@@ -46,7 +46,7 @@ def LLVMCPUAssignImportOrdinals :
 }
 
 def LLVMCPUCheckIRBeforeLLVMConversion :
-    Pass<"iree-llvmcpu-check-ir-before-llvm-conversion", "ModuleOp"> {
+    InterfacePass<"iree-llvmcpu-check-ir-before-llvm-conversion", "mlir::FunctionOpInterface"> {
   let summary = "Checks CPU backend specific IR constraints (like no allocas)";
   let constructor = "mlir::iree_compiler::createLLVMCPUCheckIRBeforeLLVMConversionPass()";
   let options = [
@@ -57,7 +57,7 @@ def LLVMCPUCheckIRBeforeLLVMConversion :
 }
 
 def LLVMCPUEmitVectorizationRemarks :
-    Pass<"iree-llvmcpu-emit-vectorization-remarks", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-emit-vectorization-remarks", "mlir::FunctionOpInterface"> {
   let summary = "Emit vectorization remarks on Linalg ops";
   let constructor =
       "mlir::iree_compiler::createLLVMCPUEmitVectorizationRemarksPass()";
@@ -70,8 +70,7 @@ def LLVMCPULinkExecutables :
 }
 
 def LLVMCPULowerExecutableTarget :
-    Pass<"iree-llvmcpu-lower-executable-target",
-         "mlir::iree_compiler::IREE::HAL::ExecutableVariantOp"> {
+    InterfacePass<"iree-llvmcpu-lower-executable-target", "mlir::FunctionOpInterface"> {
   let summary =
       "Lower executable target using an IREE::HAL::DispatchLoweringPassPipeline";
   let constructor =
@@ -79,29 +78,33 @@ def LLVMCPULowerExecutableTarget :
 }
 
 def LLVMCPUMmt4dVectorLowering
-    : Pass<"iree-llvmcpu-mmt4d-vector-lowering", "func::FuncOp"> {
+    : InterfacePass<"iree-llvmcpu-mmt4d-vector-lowering", "mlir::FunctionOpInterface"> {
   let summary = "Apply vector lowering logic to vector ops";
+  let options = [
+    Option<"enableVectorContractCustomKernels", "vector-contract-custom-kernels", "bool",
+      /*default=*/"true",
+      "Flag to enable or disable vector contract custom kernels.">,
+  ];
   let constructor =
       "mlir::iree_compiler::createLLVMCPUMmt4dVectorLoweringPass()";
 }
 
 def LLVMCPUPeel :
-    Pass<"iree-llvmcpu-peel", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-peel", "mlir::FunctionOpInterface"> {
   let summary = "Pass to perform peeling on non-distributed loops.";
   let constructor =
       "mlir::iree_compiler::createLLVMCPUPeelPass()";
 }
 
 def LLVMCPUSelectLoweringStrategy :
-    Pass<"iree-llvmcpu-select-lowering-strategy",
-         "mlir::iree_compiler::IREE::HAL::ExecutableVariantOp"> {
+    Pass<"iree-llvmcpu-select-lowering-strategy", "ModuleOp"> {
   let summary =
       "Select a IREE::HAL::DispatchLoweringPassPipeline for lowering the variant";
   let constructor =
       "mlir::iree_compiler::createLLVMCPUSelectLoweringStrategyPass()";
 }
 
-def LLVMCPUSplitReduction : Pass<"iree-llvmcpu-split-reduction", "func::FuncOp"> {
+def LLVMCPUSplitReduction : InterfacePass<"iree-llvmcpu-split-reduction", "mlir::FunctionOpInterface"> {
   let summary = "Pass to splitReduce linalg operations.";
   let constructor = "mlir::iree_compiler::createLLVMCPUSplitReductionPass()";
   let options = [
@@ -118,7 +121,7 @@ def LLVMCPUSynchronizeSymbolVisibility :
 }
 
 def LLVMCPUTile :
-    Pass<"iree-llvmcpu-tile", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-tile", "mlir::FunctionOpInterface"> {
   let summary = "Pass to tile TilingInterface operations.";
   let constructor =
       "mlir::iree_compiler::createLLVMCPUTilePass()";
@@ -129,7 +132,7 @@ def LLVMCPUTile :
 }
 
 def LLVMCPUTileAndFuse :
-    Pass<"iree-llvmcpu-tile-and-fuse", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-tile-and-fuse", "mlir::FunctionOpInterface"> {
   let summary = "Pass to tile and fuse TilingInterface operations.";
   let constructor =
       "mlir::iree_compiler::createLLVMCPUTileAndFusePass()";
@@ -139,14 +142,34 @@ def LLVMCPUTileAndFuse :
   ];
 }
 
+// Note: This pass is currently only required when targeting Arm SME (which is
+// the only target that currently has some concept of 2D scalability).
+def LLVMCPU2DScalableTo1DScalable :
+    InterfacePass<"iree-llvmcpu-2d-scalable-to-1d-scalable", "mlir::FunctionOpInterface"> {
+  let summary = "Pass to replace unsupported scalable dimensions with loops.";
+  let constructor =
+      "mlir::iree_compiler::createLLVMCPU2DScalableTo1DScalablePass()";
+  let options = [
+    Option<"assumeArmSME", "assume-arm-sme", "bool", /*default=*/"false",
+      "Assume the current target is ArmSME (used for testing)">
+  ];
+}
+
 def LLVMCPUUnfuseFMAOps :
-    Pass<"iree-llvmcpu-unfuse-fma-pass", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-unfuse-fma-pass", "mlir::FunctionOpInterface"> {
   let summary = "Convert llvm.fma into unfused mulf and addf ops";
   let constructor = "mlir::iree_compiler::createLLVMCPUUnfuseFMAOpsPass()";
 }
 
+def LLVMCPUDropVectorUnitDims :
+    InterfacePass<"iree-llvmcpu-drop-vector-unit-dims", "mlir::FunctionOpInterface"> {
+  let summary = "Pass to drop vector unit dims.";
+  let constructor =
+      "mlir::iree_compiler::createLLVMCPUDropVectorUnitDimsPass()";
+}
+
 def LLVMCPUVirtualVectorLowering :
-    Pass<"iree-llvmcpu-virtual-vector-lowering", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-virtual-vector-lowering", "mlir::FunctionOpInterface"> {
   let summary = "Pass to lower high level vector operations like contract or multidim reduce ops to lower level vector ops.";
   let options = [
     Option<"splitVectorTransfersTo", "split-transfers", "std::string",
@@ -163,14 +186,14 @@ def LLVMCPUVirtualVectorLowering :
 }
 
 def LLVMCPUVectorTransferLowering :
-    Pass<"iree-llvmcpu-vector-transfer-lowering", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-vector-transfer-lowering", "mlir::FunctionOpInterface"> {
   let summary = "Pass to lower transfer ops to simpler ops like `vector.load`, `vector.store`, `vector.broadcast`, and a set of scf ops.";
   let constructor =
       "mlir::iree_compiler::createLLVMCPUVectorTransferLoweringPass()";
 }
 
 def LLVMCPUVectorTransposeLowering :
-    Pass<"iree-llvmcpu-vector-transpose-lowering", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-vector-transpose-lowering", "mlir::FunctionOpInterface"> {
   let summary = "Pass to lower vector.transpose ops.";
   let options = [
     Option<"lowerVectorTransposeToAVX2", "lower-vector-transpose-to-avx2", "bool",
@@ -182,20 +205,20 @@ def LLVMCPUVectorTransposeLowering :
 }
 
 def LLVMCPUVectorShapeCastLowering :
-    Pass<"iree-llvmcpu-vector-shape-cast-lowering", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-vector-shape-cast-lowering", "mlir::FunctionOpInterface"> {
   let summary = "Pass to lower vector.shape_cast ops.";
   let constructor =
       "mlir::iree_compiler::createLLVMCPUVectorShapeCastLoweringPass()";
 }
 
 def VectorContractCustomKernels :
-    Pass<"iree-llvmcpu-vector-contract-custom-kernels", "func::FuncOp"> {
+    InterfacePass<"iree-llvmcpu-vector-contract-custom-kernels", "mlir::FunctionOpInterface"> {
   let summary = "Enable custom kernels (inline assembly or intrinsics) for some vector.contract ops";
   let constructor = "mlir::iree_compiler::createVectorContractCustomKernelsPass()";
 }
 
 def VerifyLinalgTransformLegality :
-    Pass<"iree-llvmcpu-verify-linalg-transform-legality", "ModuleOp"> {
+    InterfacePass<"iree-llvmcpu-verify-linalg-transform-legality", "mlir::FunctionOpInterface"> {
   let summary = "Verify that only supported IR constructs are passed to the compiler.";
   let constructor = "mlir::iree_compiler::createVerifyLinalgTransformLegalityPass()";
 }

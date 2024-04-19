@@ -10,10 +10,12 @@ VER_0 {
     ireeCompilerGetRevision;
     ireeCompilerGlobalInitialize;
     ireeCompilerGlobalShutdown;
+    ireeCompilerInitializeContext;
     ireeCompilerInvocationCreate;
     ireeCompilerInvocationDestroy;
     ireeCompilerInvocationEnableCallbackDiagnostics;
     ireeCompilerInvocationEnableConsoleDiagnostics;
+    ireeCompilerInvocationExportStealModule;
     ireeCompilerInvocationImportBorrowModule;
     ireeCompilerInvocationImportStealModule;
     ireeCompilerInvocationOutputHALExecutable;
@@ -27,6 +29,7 @@ VER_0 {
     ireeCompilerInvocationSetCompileFromPhase;
     ireeCompilerInvocationSetCompileToPhase;
     ireeCompilerInvocationSetCrashHandler;
+    ireeCompilerInvocationSetDumpCompilationPhasesTo;
     ireeCompilerInvocationSetVerifyIR;
     ireeCompilerOutputDestroy;
     ireeCompilerOutputKeep;
@@ -51,6 +54,7 @@ VER_0 {
     ireeCompilerSourceWrapBuffer;
     ireeMlirLspServerRunMain;
     ireeOptRunMain;
+    ireeReduceRunMain;
     ireeRegisterTransformExtensions;
     mlirAffineAddExprGet;
     mlirAffineBinaryOpExprGetLHS;
@@ -119,6 +123,9 @@ VER_0 {
     mlirArrayAttrGetElement;
     mlirArrayAttrGetNumElements;
     mlirArrayAttrGetTypeID;
+    mlirAsmStateCreateForOperation;
+    mlirAsmStateCreateForValue;
+    mlirAsmStateDestroy;
     mlirAttributeDump;
     mlirAttributeEqual;
     mlirAttributeGetContext;
@@ -139,6 +146,7 @@ VER_0 {
     mlirAttributeIsADenseI64Array;
     mlirAttributeIsADenseI8Array;
     mlirAttributeIsADenseIntElements;
+    mlirAttributeIsADenseResourceElements;
     mlirAttributeIsADictionary;
     mlirAttributeIsAElements;
     mlirAttributeIsAFlatSymbolRef;
@@ -303,6 +311,7 @@ VER_0 {
     mlirDictionaryAttrGetElementByName;
     mlirDictionaryAttrGetNumElements;
     mlirDictionaryAttrGetTypeID;
+    mlirDisctinctAttrCreate;
     mlirElementsAttrGetNumElements;
     mlirElementsAttrGetValue;
     mlirElementsAttrIsValidIndex;
@@ -332,6 +341,7 @@ VER_0 {
     mlirFloatAttrGetTypeID;
     mlirFloatAttrGetValueDouble;
     mlirFloatTF32TypeGetTypeID;
+    mlirFloatTypeGetWidth;
     mlirFunctionTypeGet;
     mlirFunctionTypeGetInput;
     mlirFunctionTypeGetNumInputs;
@@ -339,7 +349,6 @@ VER_0 {
     mlirFunctionTypeGetResult;
     mlirFunctionTypeGetTypeID;
     mlirGetDialectHandle__iree_input__;
-    mlirGetDialectHandle__iree_linalg_ext__;
     mlirGetDialectHandle__transform__;
     mlirIREELinalgTransformRegisterPasses;
     mlirIREETransformRegisterPasses;
@@ -404,6 +413,7 @@ VER_0 {
     mlirMemRefTypeGetChecked;
     mlirMemRefTypeGetLayout;
     mlirMemRefTypeGetMemorySpace;
+    mlirMemRefTypeGetStridesAndOffset;
     mlirMemRefTypeGetTypeID;
     mlirModuleCreateEmpty;
     mlirModuleCreateParse;
@@ -418,6 +428,7 @@ VER_0 {
     mlirOpOperandGetNextUse;
     mlirOpOperandGetOperandNumber;
     mlirOpOperandGetOwner;
+    mlirOpOperandGetValue;
     mlirOpOperandIsNull;
     mlirOpPassManagerAddOwnedPass;
     mlirOpPassManagerAddPipeline;
@@ -449,11 +460,15 @@ VER_0 {
     mlirOperationGetAttributeByName;
     mlirOperationGetBlock;
     mlirOperationGetContext;
+    mlirOperationGetDiscardableAttribute;
+    mlirOperationGetDiscardableAttributeByName;
     mlirOperationGetFirstRegion;
+    mlirOperationGetInherentAttributeByName;
     mlirOperationGetLocation;
     mlirOperationGetName;
     mlirOperationGetNextInBlock;
     mlirOperationGetNumAttributes;
+    mlirOperationGetNumDiscardableAttributes;
     mlirOperationGetNumOperands;
     mlirOperationGetNumRegions;
     mlirOperationGetNumResults;
@@ -464,17 +479,23 @@ VER_0 {
     mlirOperationGetResult;
     mlirOperationGetSuccessor;
     mlirOperationGetTypeID;
+    mlirOperationHasInherentAttributeByName;
     mlirOperationImplementsInterface;
     mlirOperationImplementsInterfaceStatic;
     mlirOperationMoveAfter;
     mlirOperationMoveBefore;
     mlirOperationPrint;
     mlirOperationPrintWithFlags;
+    mlirOperationPrintWithState;
     mlirOperationRemoveAttributeByName;
+    mlirOperationRemoveDiscardableAttributeByName;
     mlirOperationRemoveFromParent;
     mlirOperationSetAttributeByName;
+    mlirOperationSetDiscardableAttributeByName;
+    mlirOperationSetInherentAttributeByName;
     mlirOperationSetOperand;
     mlirOperationSetOperands;
+    mlirOperationSetSuccessor;
     mlirOperationStateAddAttributes;
     mlirOperationStateAddOperands;
     mlirOperationStateAddOwnedRegions;
@@ -483,6 +504,7 @@ VER_0 {
     mlirOperationStateEnableResultTypeInference;
     mlirOperationStateGet;
     mlirOperationVerify;
+    mlirOperationWalk;
     mlirOperationWriteBytecode;
     mlirOperationWriteBytecodeWithConfig;
     mlirPDLAttributeTypeGet;
@@ -516,6 +538,7 @@ VER_0 {
     mlirRegionInsertOwnedBlockAfter;
     mlirRegionInsertOwnedBlockBefore;
     mlirRegionTakeBody;
+    mlirRegisterGPUPasses;
     mlirRegisterLinalgPasses;
     mlirShapedTypeGetDimSize;
     mlirShapedTypeGetDynamicSize;
@@ -559,9 +582,24 @@ VER_0 {
     mlirSymbolTableWalkSymbolTables;
     mlirTF32TypeGet;
     mlirTransformAnyOpTypeGet;
+    mlirTransformAnyOpTypeGetTypeID;
+    mlirTransformAnyParamTypeGet;
+    mlirTransformAnyParamTypeGetTypeID;
+    mlirTransformAnyValueTypeGet;
+    mlirTransformAnyValueTypeGetTypeID;
+    mlirTransformApplyNamedSequence;
     mlirTransformOperationTypeGet;
     mlirTransformOperationTypeGetOperationName;
     mlirTransformOperationTypeGetTypeID;
+    mlirTransformOptionsCreate;
+    mlirTransformOptionsDestroy;
+    mlirTransformOptionsEnableExpensiveChecks;
+    mlirTransformOptionsEnforceSingleTopLevelTransformOp;
+    mlirTransformOptionsGetEnforceSingleTopLevelTransformOp;
+    mlirTransformOptionsGetExpensiveChecksEnabled;
+    mlirTransformParamTypeGet;
+    mlirTransformParamTypeGetType;
+    mlirTransformParamTypeGetTypeID;
     mlirTupleTypeGet;
     mlirTupleTypeGetNumTypes;
     mlirTupleTypeGetType;
@@ -585,6 +623,7 @@ VER_0 {
     mlirTypeIsAF16;
     mlirTypeIsAF32;
     mlirTypeIsAF64;
+    mlirTypeIsAFloat;
     mlirTypeIsAFloat8E4M3B11FNUZ;
     mlirTypeIsAFloat8E4M3FN;
     mlirTypeIsAFloat8E4M3FNUZ;
@@ -607,7 +646,10 @@ VER_0 {
     mlirTypeIsATF32;
     mlirTypeIsATensor;
     mlirTypeIsATransformAnyOpType;
+    mlirTypeIsATransformAnyParamType;
+    mlirTypeIsATransformAnyValueType;
     mlirTypeIsATransformOperationType;
+    mlirTypeIsATransformParamType;
     mlirTypeIsATuple;
     mlirTypeIsAUnrankedMemRef;
     mlirTypeIsAUnrankedTensor;
@@ -623,6 +665,7 @@ VER_0 {
     mlirUnmanagedDenseInt32ResourceElementsAttrGet;
     mlirUnmanagedDenseInt64ResourceElementsAttrGet;
     mlirUnmanagedDenseInt8ResourceElementsAttrGet;
+    mlirUnmanagedDenseResourceElementsAttrGet;
     mlirUnmanagedDenseUInt16ResourceElementsAttrGet;
     mlirUnmanagedDenseUInt32ResourceElementsAttrGet;
     mlirUnmanagedDenseUInt64ResourceElementsAttrGet;
@@ -646,7 +689,11 @@ VER_0 {
     mlirValueSetType;
     mlirVectorTypeGet;
     mlirVectorTypeGetChecked;
+    mlirVectorTypeGetScalable;
+    mlirVectorTypeGetScalableChecked;
     mlirVectorTypeGetTypeID;
+    mlirVectorTypeIsDimScalable;
+    mlirVectorTypeIsScalable;
   local:
     *;
 };

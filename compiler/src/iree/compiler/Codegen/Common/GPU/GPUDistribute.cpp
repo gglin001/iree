@@ -6,9 +6,9 @@
 
 #include "iree/compiler/Codegen/Common/GPU/PassDetail.h"
 #include "iree/compiler/Codegen/Common/GPU/Passes.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/TransformOps/GPUTransformOps.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Support/MathExtras.h"
@@ -26,32 +26,32 @@ struct GPUDistributePass : public GPUDistributeBase<GPUDistributePass> {
   }
   void runOnOperation() override {
     auto funcOp = getOperation();
-    if (!isEntryPoint(funcOp))
-      return;
 
-    auto workgroupSize = llvm::map_to_vector(
-        getEntryPoint(funcOp)->getWorkgroupSize().value(),
-        [&](Attribute attr) { return llvm::cast<IntegerAttr>(attr).getInt(); });
+    std::optional<SmallVector<int64_t>> workgroupSize =
+        getWorkgroupSize(funcOp);
+    if (!workgroupSize) {
+      return;
+    }
 
     // TODO: Thread through subgroup size everywhere.
-    std::optional<llvm::APInt> maybeSubgroupSize =
-        getEntryPoint(funcOp)->getSubgroupSize();
+    std::optional<int64_t> maybeSubgroupSize = getSubgroupSize(funcOp);
     // TODO: Don't hard code kCudaWarpSize here.
-    int64_t subgroupSize =
-        maybeSubgroupSize ? maybeSubgroupSize->getSExtValue() : kCudaWarpSize;
+    int64_t subgroupSize = maybeSubgroupSize.value_or(kCudaWarpSize);
 
     IRRewriter rewriter(funcOp->getContext());
-    rewriter.setInsertionPointToStart(&funcOp.getBody().front());
+    rewriter.setInsertionPointToStart(&funcOp.front());
     DiagnosedSilenceableFailure result =
         mlir::transform::gpu::mapNestedForallToThreadsImpl(
-            rewriter, std::nullopt, funcOp, workgroupSize, subgroupSize, false);
+            rewriter, std::nullopt, funcOp, workgroupSize.value(), subgroupSize,
+            false);
     if (!result.succeeded())
       return signalPassFailure();
   }
 };
 } // namespace
 
-std::unique_ptr<OperationPass<func::FuncOp>> createGPUDistribute() {
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
+createGPUDistribute() {
   return std::make_unique<GPUDistributePass>();
 }
 

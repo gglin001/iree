@@ -124,6 +124,12 @@ void GlobalOptimizationOptions::bindOptions(OptionsBinder &binder) {
           "Hoists the results of latent constant expressions into immutable "
           "global initializers for evaluation at program load."),
       llvm::cl::cat(category));
+  binder.opt<int64_t>(
+      "iree-opt-const-expr-max-size-increase-threshold",
+      constExprMaxSizeIncreaseThreshold,
+      llvm::cl::desc("Maximum byte size increase allowed for constant expr "
+                     "hoisting policy to allow hoisting."),
+      llvm::cl::cat(category));
   binder.opt<bool>(
       "iree-opt-numeric-precision-reduction", numericPrecisionReduction,
       llvm::cl::desc(
@@ -133,6 +139,30 @@ void GlobalOptimizationOptions::bindOptions(OptionsBinder &binder) {
                    llvm::cl::desc("Strips debug assertions after any useful "
                                   "information has been extracted."),
                    llvm::cl::cat(category));
+  binder.opt<std::string>(
+      "iree-opt-parameter-archive-export-file", parameterArchiveExportPath,
+      llvm::cl::desc(
+          "File path to create a parameter archive using any inline global "
+          "constants."),
+      llvm::cl::cat(category));
+  binder.opt<std::string>(
+      "iree-opt-parameter-archive-export-scope", parameterExportScope,
+      llvm::cl::desc("Scope for parameters in the archive created in "
+                     "`iree-opt-export-parameter-archive-export-file`."),
+      llvm::cl::cat(category));
+  binder.opt<int64_t>(
+      "iree-opt-minimum-parameter-export-size", minimumParameterExportSize,
+      llvm::cl::desc(
+          "Minimum size of constants to export to the archive created in "
+          "`iree-opt-export-parameter-archive-export-file`."),
+      llvm::cl::cat(category));
+  binder.opt<std::string>(
+      "iree-opt-splat-parameter-archive-export-file",
+      splatParameterArchiveExportPath,
+      llvm::cl::desc(
+          "File path to create a parameter archive of splat values out of all "
+          "parameter backed globals."),
+      llvm::cl::cat(category));
 }
 
 void SchedulingOptions::bindOptions(OptionsBinder &binder) {
@@ -195,6 +225,25 @@ void PreprocessingOptions::bindOptions(OptionsBinder &binder) {
       "iree-preprocessing-pass-pipeline", preprocessingPassPipeline,
       llvm::cl::desc("Textual description of the pass pipeline to run before "
                      "running normal IREE compilation pipelines"),
+      llvm::cl::cat(category));
+  // Following ways of doing custom transformations at the pre-processing step
+  // are supported.
+
+  // 0. Through a preprocessing pass pipeline.
+  // 1. Through a Transform dialect spec file.
+  // 2. Through a PDL spec file.
+  // A user may simultaneously use both. The order is transform dialect
+  // transforms are applied first and then the pdl patterns.
+  binder.opt<std::string>(
+      "iree-preprocessing-transform-spec-filename",
+      preprocessingTransformSpecFilename,
+      llvm::cl::desc(
+          "File name of a transform dialect spec to use for preprocessing"),
+      llvm::cl::cat(category));
+  binder.opt<std::string>(
+      "iree-preprocessing-pdl-spec-filename", preprocessingPDLSpecFilename,
+      llvm::cl::desc(
+          "File name of a transform dialect spec to use for preprocessing"),
       llvm::cl::cat(category));
 }
 

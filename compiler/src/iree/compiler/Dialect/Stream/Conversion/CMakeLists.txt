@@ -19,7 +19,9 @@ iree_cc_library(
     "PatternUtils.cpp"
   DEPS
     MLIRFuncDialect
+    MLIRFunctionInterfaces
     MLIRIR
+    MLIRTransformUtils
     MLIRTransforms
     iree::compiler::Dialect::Stream::IR
   PUBLIC

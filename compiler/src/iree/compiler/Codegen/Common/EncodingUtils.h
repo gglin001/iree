@@ -7,8 +7,8 @@
 #ifndef IREE_COMPILER_SRC_IREE_COMPILER_CODEGEN_COMMON_ENCODINGUTILS_H_
 #define IREE_COMPILER_SRC_IREE_COMPILER_CODEGEN_COMMON_ENCODINGUTILS_H_
 
-#include "iree-dialects/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "mlir/Transforms/DialectConversion.h"
 
 namespace mlir::iree_compiler {
@@ -72,19 +72,6 @@ protected:
 // Utility methods about Encoding.
 //===---------------------------------------------------------------------===//
 
-/// Returns the encoding attribute from the type if there is an encoding.
-/// Otherwise, returns null.
-IREE::LinalgExt::EncodingAttr getEncodingAttr(RankedTensorType type);
-
-/// Get the permutation that permutes the input shape to the canonical
-/// matmul input shape based on the IndexingMaps encoding attribute.
-std::optional<SmallVector<int64_t>>
-getPermutationToCanonicalMatmulShape(IREE::LinalgExt::EncodingAttr encoding);
-
-/// Returns a RankedTensorType that has been transposed into the canonical
-/// form for an ordinary matmul/batch_matmul op.
-RankedTensorType getCanonicalMatmulTypeWithEncoding(RankedTensorType type);
-
 /// Returns the original type that carried by encoding.
 RankedTensorType getOriginalTypeWithEncoding(RankedTensorType type);
 
@@ -93,27 +80,6 @@ RankedTensorType dropEncoding(RankedTensorType type);
 
 /// Returns the integer contained in an IntegerAttr, or zero if it has none.
 int64_t getIntOrZero(IntegerAttr a);
-
-/// Returns true if encoding user is one of matmul encodings.
-bool isMatmulEncodingUser(IREE::LinalgExt::EncodingUser user);
-
-/// Returns true if encoding user is one of batch matmul encodings.
-bool isBatchMatmulEncodingUser(IREE::LinalgExt::EncodingUser user);
-
-/// Returns true if the encoding is a vecmat.
-bool isVecmatEncoding(IREE::LinalgExt::EncodingAttr encoding);
-
-/// Returns true if the encoding is a matvec.
-bool isMatvecEncoding(IREE::LinalgExt::EncodingAttr encoding);
-
-/// Returns true if the encoding is a batch_vecmat.
-bool isBatchVecmatEncoding(IREE::LinalgExt::EncodingAttr encoding);
-
-/// Returns true if the encoding is a batch_matvec.
-bool isBatchMatvecEncoding(IREE::LinalgExt::EncodingAttr encoding);
-
-/// Returns true if the encoded type is a vector.
-bool isVectorEncoding(int64_t rank, IREE::LinalgExt::EncodingUser user);
 
 struct TileMxNxK {
   int64_t M = 1;

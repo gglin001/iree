@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
@@ -34,42 +35,23 @@ namespace mlir::iree_compiler {
 // Utility functions to get entry points
 //===----------------------------------------------------------------------===//
 
-FailureOr<IREE::HAL::ExecutableExportOp> getEntryPoint(func::FuncOp funcOp) {
+std::optional<IREE::HAL::ExecutableExportOp>
+getEntryPoint(mlir::FunctionOpInterface funcOp) {
   auto variantOp = funcOp->getParentOfType<IREE::HAL::ExecutableVariantOp>();
-  if (!variantOp)
-    return failure();
+  if (!variantOp) {
+    return std::nullopt;
+  }
 
   for (auto op : variantOp.getExportOps()) {
     if (op.getSymName() == funcOp.getName()) {
       return op;
     }
   }
-  return failure();
+  return std::nullopt;
 }
 
-FailureOr<IREE::HAL::ExecutableVariantOp>
-getExecutableVariantOp(Operation *op) {
-  if (auto result = dyn_cast<IREE::HAL::ExecutableVariantOp>(op)) {
-    return result;
-  }
-  if (auto result = op->getParentOfType<IREE::HAL::ExecutableVariantOp>()) {
-    return result;
-  }
-  return failure();
-}
-
-bool isEntryPoint(func::FuncOp func) {
-  return func.isPublic() && succeeded(getEntryPoint(func));
-}
-
-llvm::StringMap<IREE::HAL::ExecutableExportOp>
-getAllEntryPoints(ModuleOp module) {
-  auto variantOp = module->getParentOfType<IREE::HAL::ExecutableVariantOp>();
-  llvm::StringMap<IREE::HAL::ExecutableExportOp> exportOps;
-  for (auto op : variantOp.getExportOps()) {
-    exportOps[op.getSymName()] = op;
-  }
-  return exportOps;
+bool isEntryPoint(mlir::FunctionOpInterface func) {
+  return func.isPublic() && getEntryPoint(func);
 }
 
 std::optional<StringAttr>
@@ -270,24 +252,9 @@ bool isReadOnly(Value v) {
 /// Returns the first of `exprs` which is of the type `T`.
 template <typename T>
 static AffineExpr getAffineExprOfType(ArrayRef<AffineExpr> exprs) {
-  for (auto expr : exprs) {
-    if (isa<T>(expr))
-      return expr;
-  }
+  if (auto it = llvm::find_if(exprs, llvm::IsaPred<T>); it != exprs.end())
+    return *it;
   return nullptr;
-}
-
-/// Returns true if the `expr` is on of the types in {`T1`, `T2`, `T3...`}.
-template <typename T>
-static bool isaAffineExprOfType(AffineExpr expr) {
-  return isa<T>(expr);
-}
-template <typename T1, typename T2, typename... T3>
-static bool isaAffineExprOfType(AffineExpr expr) {
-  if (isa<T1>(expr)) {
-    return true;
-  }
-  return isaAffineExprOfType<T2, T3...>(expr);
 }
 
 /// Returns a Value that represents the value for symbol or dim expr for the map
@@ -386,7 +353,7 @@ public:
     // The other expression must be the undistributed `lb`.
     AffineExpr lbExpr =
         (offsetExpr == expr.getLHS() ? expr.getRHS() : expr.getLHS());
-    if (isaAffineExprOfType<AffineDimExpr, AffineSymbolExpr>(lbExpr)) {
+    if (isa<AffineDimExpr, AffineSymbolExpr>(lbExpr)) {
       Value v = getValueForDimOrSymbol(applyOp, lbExpr);
       if (!v) {
         return failure();
@@ -540,7 +507,7 @@ public:
 private:
   LogicalResult processSentinel(AffineExpr e,
                                 SmallVectorImpl<AffineExpr> &sentinels) {
-    if (isaAffineExprOfType<AffineDimExpr, AffineSymbolExpr>(e)) {
+    if (isa<AffineDimExpr, AffineSymbolExpr>(e)) {
       sentinels.push_back(e);
       return success();
     } else if (auto constExpr = dyn_cast<AffineConstantExpr>(e)) {
@@ -631,7 +598,7 @@ isTiledAndDistributedLoop(scf::ForOp forOp) {
   return loopInfo;
 }
 
-SmallVector<Operation *> getComputeOps(func::FuncOp funcOp) {
+SmallVector<Operation *> getComputeOps(mlir::FunctionOpInterface funcOp) {
   SmallVector<Operation *> computeOps;
   funcOp.walk([&](Operation *op) {
     if (isa<TilingInterface, IREE::Codegen::UKernelOpInterface>(op)) {
@@ -642,7 +609,7 @@ SmallVector<Operation *> getComputeOps(func::FuncOp funcOp) {
 }
 
 SmallVector<LoopTilingAndDistributionInfo>
-getTiledAndDistributedLoopInfo(func::FuncOp funcOp) {
+getTiledAndDistributedLoopInfo(mlir::FunctionOpInterface funcOp) {
   SmallVector<LoopTilingAndDistributionInfo> info;
   funcOp.walk([&](scf::ForOp forOp) {
     if (auto tiledLoopInfo = isTiledAndDistributedLoop(forOp)) {
@@ -735,7 +702,7 @@ linalg::LinalgLoopDistributionOptions getIREELinalgLoopDistributionOptions(
     auto numParallelDims = parallelLoopRanges.size();
 
     SmallVector<linalg::ProcInfo, 3> procInfo(numParallelDims);
-    Value splitDim;
+    std::optional<OpFoldResult> splitDim;
     for (size_t dim = 0; dim < numParallelDims; ++dim) {
       if (numParallelDims > maxWorkgroupParallelDims &&
           dim >= maxWorkgroupParallelDims - 1) {
@@ -743,26 +710,27 @@ linalg::LinalgLoopDistributionOptions getIREELinalgLoopDistributionOptions(
           splitDim = buildHALWorkgroupInfoOp<IREE::HAL::InterfaceWorkgroupIDOp>(
               builder, maxWorkgroupParallelDims - 1);
         }
-        Value size = getValueOrCreateConstantIndexOp(
-            builder, loc, parallelLoopRanges[numParallelDims - dim - 1].size);
-        Value offset = getValueOrCreateConstantIndexOp(
-            builder, loc, parallelLoopRanges[numParallelDims - dim - 1].offset);
+        OpFoldResult size = parallelLoopRanges[numParallelDims - dim - 1].size;
+        OpFoldResult offset =
+            parallelLoopRanges[numParallelDims - dim - 1].offset;
         AffineExpr d0, d1;
         int64_t tileSize = nonZeroTileSizes[numParallelDims - dim - 1];
         bindSymbols(builder.getContext(), d0, d1);
-        Value numTiles = affine::makeComposedAffineApply(
+        OpFoldResult numTiles = affine::makeComposedFoldedAffineApply(
             builder, loc, (d0 - d1).ceilDiv(tileSize), {size, offset});
-        Value dimValue;
+        OpFoldResult dimValue;
         if (dim == numParallelDims - 1)
-          dimValue = splitDim;
+          dimValue = splitDim.value();
         else {
-          dimValue = affine::makeComposedAffineApply(builder, loc, (d0 % d1),
-                                                     {splitDim, numTiles});
-          splitDim = affine::makeComposedAffineApply(
-              builder, loc, (d0).floorDiv(d1), {splitDim, numTiles});
+          dimValue = affine::makeComposedFoldedAffineApply(
+              builder, loc, (d0 % d1), {splitDim.value(), numTiles});
+          splitDim = affine::makeComposedFoldedAffineApply(
+              builder, loc, (d0).floorDiv(d1), {splitDim.value(), numTiles});
         }
-        procInfo[numParallelDims - dim - 1] = {dimValue, numTiles,
-                                               distributionMethod};
+        procInfo[numParallelDims - dim - 1] = {
+            getValueOrCreateConstantIndexOp(builder, loc, dimValue),
+            getValueOrCreateConstantIndexOp(builder, loc, numTiles),
+            distributionMethod};
         continue;
       }
       procInfo[numParallelDims - dim - 1] = {
@@ -774,6 +742,45 @@ linalg::LinalgLoopDistributionOptions getIREELinalgLoopDistributionOptions(
     }
     return procInfo;
   }};
+}
+
+static constexpr char pipeliningDepthName[] = "pipeline_depth";
+static constexpr char pipeliningStageName[] = "store_stage";
+
+DictionaryAttr
+getSoftwarePipeliningAttrDict(MLIRContext *context,
+                              unsigned softwarePipelineDepth,
+                              unsigned softwarePipelineStoreStage) {
+  SmallVector<NamedAttribute> attrs;
+  attrs.push_back(
+      {StringAttr::get(context, pipeliningDepthName),
+       IntegerAttr::get(IntegerType::get(context, 64), softwarePipelineDepth)});
+  attrs.push_back({StringAttr::get(context, pipeliningStageName),
+                   IntegerAttr::get(IntegerType::get(context, 64),
+                                    softwarePipelineStoreStage)});
+  return DictionaryAttr::get(context, attrs);
+}
+
+FailureOr<int64_t> getSoftwarePipelineDepth(DictionaryAttr config) {
+  if (!config) {
+    return failure();
+  }
+  Attribute depth = config.get(pipeliningDepthName);
+  if (!depth) {
+    return failure();
+  }
+  return llvm::cast<IntegerAttr>(depth).getInt();
+}
+
+FailureOr<int64_t> getSoftwarePipelineStoreStage(DictionaryAttr config) {
+  if (!config) {
+    return failure();
+  }
+  Attribute stage = config.get(pipeliningStageName);
+  if (!stage) {
+    return failure();
+  }
+  return llvm::cast<IntegerAttr>(stage).getInt();
 }
 
 //===---------------------------------------------------------------------===//
@@ -994,7 +1001,7 @@ void replaceMemrefUsesAndPropagateType(RewriterBase &rewriter, Location loc,
       for (OpOperand &use : original.getUses()) {
         Operation *user = use.getOwner();
         // Some uses cannot be replaced.
-        if (isa<func::ReturnOp, scf::YieldOp>(user)) {
+        if (user->hasTrait<OpTrait::ReturnLike>()) {
           LLVM_DEBUG({
             llvm::dbgs() << "\tUnhandled user : ";
             user->print(llvm::dbgs(), OpPrintingFlags().assumeVerified());
@@ -1080,10 +1087,10 @@ void sinkOpsInCFG(const SmallVector<Operation *> &allocs,
 }
 
 /// Infer the number of workgroups from exportOp.
-SmallVector<int64_t> getStaticNumWorkgroups(func::FuncOp funcOp) {
+SmallVector<int64_t> getStaticNumWorkgroups(mlir::FunctionOpInterface funcOp) {
   SmallVector<int64_t> result;
-  FailureOr<IREE::HAL::ExecutableExportOp> exportOp = getEntryPoint(funcOp);
-  if (failed(exportOp))
+  std::optional<IREE::HAL::ExecutableExportOp> exportOp = getEntryPoint(funcOp);
+  if (!exportOp)
     return result;
 
   Block *body = exportOp->getWorkgroupCountBody();
@@ -1098,7 +1105,7 @@ SmallVector<int64_t> getStaticNumWorkgroups(func::FuncOp funcOp) {
     if (auto indexOp = dyn_cast_or_null<arith::ConstantIndexOp>(defOp)) {
       result.push_back(indexOp.value());
     } else {
-      return SmallVector<int64_t>();
+      result.push_back(ShapedType::kDynamic);
     }
   }
 
@@ -1119,9 +1126,19 @@ bool hasFusedLeadingOp(linalg::LinalgOp rootOp) {
     backwardSlice.set_union(tmpBackwardSlice);
   }
 
-  return llvm::any_of(backwardSlice, [](Operation *op) {
-    return llvm::isa<linalg::LinalgOp>(op);
-  });
+  return llvm::any_of(backwardSlice, llvm::IsaPred<linalg::LinalgOp>);
+}
+
+std::optional<VscaleRange>
+getDefaultVscaleRange(IREE::HAL::ExecutableTargetAttr targetAttr) {
+  if (isAArch64(targetAttr)) {
+    // On AArch64 the scalable vector length will always be between 128-bit and
+    // 2048-bit. This works out as a vscale range of 1 to 16. See:
+    // https://developer.arm.com/Architectures/Scalable%20Vector%20Extensions
+    return VscaleRange{1, 16};
+  }
+  // TODO: Implement for other architectures.
+  return std::nullopt;
 }
 
 } // namespace mlir::iree_compiler

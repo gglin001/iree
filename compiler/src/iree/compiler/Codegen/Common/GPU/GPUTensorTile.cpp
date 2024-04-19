@@ -6,7 +6,6 @@
 
 #include <numeric>
 
-#include "iree-dialects/Dialect/LinalgExt/Passes/Passes.h"
 #include "iree/compiler/Codegen/Common/GPU/PassDetail.h"
 #include "iree/compiler/Codegen/Common/GPU/Passes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
@@ -33,9 +32,10 @@ namespace mlir::iree_compiler {
 class TileConsumerAndFuseInputProducer final
     : public OpInterfaceRewritePattern<TilingInterface> {
 public:
-  TileConsumerAndFuseInputProducer(
-      MLIRContext *context, IREE::LinalgExt::LinalgTransformationFilter filter,
-      bool fuseInputProducer, PatternBenefit benefit = 1)
+  TileConsumerAndFuseInputProducer(MLIRContext *context,
+                                   LinalgTransformationFilter filter,
+                                   bool fuseInputProducer,
+                                   PatternBenefit benefit = 1)
       : OpInterfaceRewritePattern<TilingInterface>(context, benefit),
         filter(std::move(filter)), fuseInputProducer(fuseInputProducer) {}
 
@@ -96,7 +96,7 @@ private:
     // First tile the current op as the consumer op.
     auto tilingOptions = scf::SCFTilingOptions().setTileSizes(tileSizes);
     FailureOr<scf::SCFTilingResult> tilingResult =
-        tileUsingSCFForOp(rewriter, consumer, tilingOptions);
+        tileUsingSCF(rewriter, consumer, tilingOptions);
     if (failed(tilingResult)) {
       return rewriter.notifyMatchFailure(consumer, "failed to tile consumer");
     }
@@ -136,32 +136,27 @@ private:
 
     // Fuse the candidate immeidate operands into the tiled loop.
     OpBuilder::InsertionGuard guard(rewriter);
-    auto forLoops =
-        llvm::to_vector(llvm::map_range(tilingResult->loops, [](Operation *op) {
-          return cast<scf::ForOp>(op);
-        }));
     while (!candidates.empty()) {
       tensor::ExtractSliceOp sliceOp = candidates.back();
       candidates.pop_back();
       std::optional<scf::SCFFuseProducerOfSliceResult> result =
-          tileAndFuseProducerOfSlice(rewriter, sliceOp, forLoops);
+          scf::tileAndFuseProducerOfSlice(rewriter, sliceOp,
+                                          tilingResult->loops);
       if (result) {
         // Mark the fused input producer for distribution when writing to shared
         // memory. We cannot use the current matmul op's tiling scheme here
         // given dimensions are different.
-        IREE::LinalgExt::LinalgTransformationFilter f(
+        LinalgTransformationFilter f(
             ArrayRef<StringAttr>(),
             rewriter.getStringAttr(getCopyToWorkgroupMemoryMarker()));
         f.replaceLinalgTransformationFilter(
             rewriter, result->tiledAndFusedProducer.getDefiningOp());
       }
     }
-    tilingResult->loops = llvm::to_vector(
-        llvm::map_range(forLoops, [](auto op) -> Operation * { return op; }));
     return tilingResult;
   }
 
-  IREE::LinalgExt::LinalgTransformationFilter filter;
+  LinalgTransformationFilter filter;
   bool fuseInputProducer;
 };
 
@@ -172,7 +167,7 @@ static void populateTilingPatterns(RewritePatternSet &patterns,
                                    bool fuseInputProducer) {
   MLIRContext *context = patterns.getContext();
 
-  IREE::LinalgExt::LinalgTransformationFilter filter(
+  LinalgTransformationFilter filter(
       ArrayRef<StringAttr>{
           StringAttr::get(context, getWorkgroupMemoryMarker())},
       StringAttr::get(context, getWorkgroupKTiledMarker()));
@@ -182,7 +177,7 @@ static void populateTilingPatterns(RewritePatternSet &patterns,
                                                  fuseInputProducer);
 }
 
-LogicalResult tileReductionToSerialLoops(func::FuncOp funcOp,
+LogicalResult tileReductionToSerialLoops(mlir::FunctionOpInterface funcOp,
                                          bool fuseInputProducer) {
   {
     // Tile again at the workgroup level since redution dimension were
@@ -213,7 +208,7 @@ LogicalResult tileReductionToSerialLoops(func::FuncOp funcOp,
 
 /// Tile parallel dimensions according to the attribute tile sizes attached to
 /// each op.
-static LogicalResult tileParallelDims(func::FuncOp funcOp,
+static LogicalResult tileParallelDims(mlir::FunctionOpInterface funcOp,
                                       SmallVectorImpl<int64_t> &workgroupSize,
                                       bool distributeToWarp) {
   std::array<int64_t, 3> elementPerWorkgroup = {
@@ -226,8 +221,7 @@ static LogicalResult tileParallelDims(func::FuncOp funcOp,
       StringAttr::get(funcOp.getContext(), getCopyToWorkgroupMemoryMarker());
 
   for (TilingInterface tilingOp : computeOps) {
-    auto attr = tilingOp->getAttr(
-        IREE::LinalgExt::LinalgTransforms::kLinalgTransformMarker);
+    auto attr = tilingOp->getAttr(LinalgTransforms::kLinalgTransformMarker);
     if (attr == marker)
       continue;
 
@@ -271,7 +265,7 @@ static LogicalResult tileParallelDims(func::FuncOp funcOp,
 }
 
 // Tile convolution output window dimension by 1 to prepare downsizing.
-static LogicalResult tileAndUnrollConv(func::FuncOp funcOp) {
+static LogicalResult tileAndUnrollConv(mlir::FunctionOpInterface funcOp) {
   SmallVector<linalg::ConvolutionOpInterface, 1> convOps;
   funcOp.walk([&convOps](linalg::ConvolutionOpInterface convOp) {
     convOps.push_back(convOp);
@@ -285,7 +279,7 @@ static LogicalResult tileAndUnrollConv(func::FuncOp funcOp) {
       return success();
 
     FailureOr<scf::SCFTileAndFuseResult> tileAndFuseResult =
-        scf::tileConsumerAndFuseProducerGreedilyUsingSCFForOp(
+        scf::tileConsumerAndFuseProducersUsingSCF(
             rewriter, cast<TilingInterface>(consumerOp.getOperation()),
             scf::SCFTileAndFuseOptions().setTilingOptions(
                 scf::SCFTilingOptions().setTileSizes(tileSizes)));
@@ -306,7 +300,7 @@ static LogicalResult tileAndUnrollConv(func::FuncOp funcOp) {
     // Fully unroll the generated loop. This allows us to remove the loop
     // for parallel output window dimension, so it helps future vector
     // transformations.
-    ArrayRef<Operation *> loops = tileAndFuseResult.value().loops;
+    ArrayRef<LoopLikeOpInterface> loops = tileAndFuseResult.value().loops;
     if (!loops.empty()) {
       assert(loops.size() == 1);
       scf::ForOp loopOp = cast<scf::ForOp>(loops.front());
@@ -338,13 +332,14 @@ public:
   }
   void runOnOperation() override {
     auto funcOp = getOperation();
-    if (!isEntryPoint(funcOp))
-      return;
 
-    auto workgroupSize = llvm::map_to_vector(
-        getEntryPoint(funcOp)->getWorkgroupSize().value(),
-        [&](Attribute attr) { return llvm::cast<IntegerAttr>(attr).getInt(); });
-    if (failed(tileParallelDims(funcOp, workgroupSize, distributeToWarp))) {
+    std::optional<SmallVector<int64_t>> workgroupSize =
+        getWorkgroupSize(funcOp);
+    if (!workgroupSize) {
+      return;
+    }
+    if (failed(tileParallelDims(funcOp, workgroupSize.value(),
+                                distributeToWarp))) {
       return signalPassFailure();
     }
 
@@ -375,7 +370,7 @@ public:
 };
 } // namespace
 
-std::unique_ptr<OperationPass<func::FuncOp>>
+std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
 createGPUTensorTile(bool distributeToWarp) {
   return std::make_unique<GPUTensorTilePass>(distributeToWarp);
 }
