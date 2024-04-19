@@ -30,9 +30,7 @@
         "LLD_DIR": "/iree-llvm-project/build/install/lib/cmake/lld",
         "MLIR_DIR": "/iree-llvm-project/build/install/lib/cmake/mlir",
         "Clang_DIR": "/iree-llvm-project/build/install/lib/cmake/clang",
-        "IREE_ENABLE_ASSERTIONS": true,
-        "IREE_EXTERNAL_HAL_DRIVERS": "ocl",
-        "IREE_TARGET_BACKEND_OCL": true
+        "IREE_ENABLE_ASSERTIONS": true
       }
     }
   ]
