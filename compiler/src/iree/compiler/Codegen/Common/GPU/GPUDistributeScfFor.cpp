@@ -4,16 +4,17 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-//===- SPIRVDistribute.cpp ------------------------------------------------===//
+//===- GPUDistributeScfFor.cpp ----------------------------------------===//
 //
-// This pass distributes tiled loop nests with `iree.spirv.distribute_dim`
+// This pass distributes tiled loop nests with `iree.gpu.distribute_dim`
 // attributes to invocations.
 //
 //===----------------------------------------------------------------------===//
 
-#include "iree/compiler/Codegen/SPIRV/PassDetail.h"
-#include "iree/compiler/Codegen/SPIRV/Passes.h"
-#include "iree/compiler/Codegen/SPIRV/Utils.h"
+#include "iree/compiler/Codegen/Common/GPU/PassDetail.h"
+#include "iree/compiler/Codegen/Common/GPU/Passes.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
+#include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -21,7 +22,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
-#define DEBUG_TYPE "iree-spirv-distribute"
+#define DEBUG_TYPE "iree-codegen-gpu-distribute-scf-for"
 
 namespace mlir::iree_compiler {
 
@@ -30,13 +31,32 @@ namespace {
 struct DistributeLoop final : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern::OpRewritePattern;
 
+public:
+  DistributeLoop(MLIRContext *context, bool useBD, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), useBlockDims(useBD) {}
+
   LogicalResult matchAndRewrite(scf::ForOp forOp,
                                 PatternRewriter &rewriter) const override {
     // Only distribute if we see the marker attribute.
     auto numDimAttr =
-        forOp->getAttrOfType<IntegerAttr>(getSPIRVDistributeAttrName());
+        forOp->getAttrOfType<IntegerAttr>(getGPUDistributeAttrName());
     if (!numDimAttr)
       return failure();
+
+    // Get workgroup sizes if not using gpu.block_dim
+    SmallVector<int64_t> workgroupSize;
+    if (!useBlockDims) {
+      auto funcOp = forOp->getParentOfType<FunctionOpInterface>();
+      if (!funcOp) {
+        return failure();
+      }
+      std::optional<SmallVector<int64_t>> maybeWorkgroupSize =
+          getWorkgroupSize(funcOp);
+      if (!maybeWorkgroupSize) {
+        return failure();
+      }
+      workgroupSize = maybeWorkgroupSize.value();
+    }
 
     Location loc = forOp.getLoc();
     auto indexType = rewriter.getIndexType();
@@ -44,7 +64,13 @@ struct DistributeLoop final : public OpRewritePattern<scf::ForOp> {
         gpu::Dimension::x, gpu::Dimension::y, gpu::Dimension::z};
     gpu::Dimension symDim = symDims[numDimAttr.getInt()];
     auto idOp = rewriter.create<gpu::ThreadIdOp>(loc, indexType, symDim);
-    auto countOp = rewriter.create<gpu::BlockDimOp>(loc, indexType, symDim);
+    Value count = useBlockDims
+                      ? rewriter.create<gpu::BlockDimOp>(loc, indexType, symDim)
+                            .getResult()
+                      : rewriter
+                            .create<arith::ConstantIndexOp>(
+                                loc, workgroupSize[numDimAttr.getInt()])
+                            .getResult();
 
     MLIRContext *context = getContext();
     AffineExpr sym0, sym1, sym2;
@@ -56,18 +82,26 @@ struct DistributeLoop final : public OpRewritePattern<scf::ForOp> {
         loc, mulAddMap,
         ValueRange{idOp, forOp.getStep(), forOp.getLowerBound()});
     auto newStep = rewriter.create<affine::AffineApplyOp>(
-        loc, mulMap, ValueRange{countOp, forOp.getStep()});
+        loc, mulMap, ValueRange{count, forOp.getStep()});
 
     forOp.getLowerBoundMutable().assign(newLb);
     forOp.getStepMutable().assign(newStep);
     // Remove the attribute to avoid endless recursion.
-    forOp->removeAttr(getSPIRVDistributeAttrName());
+    forOp->removeAttr(getGPUDistributeAttrName());
     return success();
   }
+
+private:
+  bool useBlockDims;
 };
 
-struct SPIRVDistributePass final
-    : public SPIRVDistributeBase<SPIRVDistributePass> {
+struct GPUDistributeScfForPass final
+    : public GPUDistributeScfForBase<GPUDistributeScfForPass> {
+public:
+  GPUDistributeScfForPass(bool useBlockDims) {
+    this->useBlockDims = useBlockDims;
+  }
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<gpu::GPUDialect>();
   }
@@ -75,7 +109,7 @@ struct SPIRVDistributePass final
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
-    patterns.add<DistributeLoop>(context);
+    patterns.add<DistributeLoop>(context, useBlockDims);
     if (failed(applyPatternsAndFoldGreedily(getOperation(),
                                             std::move(patterns)))) {
       return signalPassFailure();
@@ -86,8 +120,8 @@ struct SPIRVDistributePass final
 } // namespace
 
 std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createSPIRVDistributePass() {
-  return std::make_unique<SPIRVDistributePass>();
+createGPUDistributeScfForPass(bool useBlockDims) {
+  return std::make_unique<GPUDistributeScfForPass>(useBlockDims);
 }
 
 } // namespace mlir::iree_compiler

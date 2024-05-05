@@ -14,6 +14,7 @@
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
+#include "iree/compiler/Codegen/Interfaces/PartitionableLoopsInterface.h"
 #include "iree/compiler/Codegen/Interfaces/UKernelOpInterface.h"
 #include "iree/compiler/Codegen/TransformStrategies/GPU/Strategies.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
@@ -29,10 +30,14 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 
+#define DEBUG_TYPE "iree-llvmgpu-kernel-config"
+#define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
+#define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 namespace mlir::iree_compiler {
 
 llvm::cl::opt<bool> clGPUEnableVectorDistribution(
@@ -462,12 +467,9 @@ setConvolutionVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
   MLIRContext *context = op.getContext();
   auto scheduleAttr = IREE::GPU::MMAScheduleAttr::get(
       context, mmaAttrs[schedule->index], schedule->mWarpCount,
-      schedule->nWarpCount, schedule->mTileCount, schedule->nTileCount,
-      schedule->kTileCount);
+      schedule->nWarpCount);
   SmallVector<NamedAttribute, 1> attrs;
-  attrs.emplace_back(
-      StringAttr::get(context, IREE::GPU::MMAScheduleAttr::getMnemonic()),
-      scheduleAttr);
+  attrs.emplace_back(StringAttr::get(context, "mma_schedule"), scheduleAttr);
   auto configDict = DictionaryAttr::get(context, attrs);
 
   return setOpConfigAndEntryPointFnTranslation(
@@ -617,12 +619,9 @@ setMatmulVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
   MLIRContext *context = op.getContext();
   auto scheduleAttr = IREE::GPU::MMAScheduleAttr::get(
       context, mmaAttrs[schedule->index], schedule->mWarpCount,
-      schedule->nWarpCount, schedule->mTileCount, schedule->nTileCount,
-      schedule->kTileCount);
+      schedule->nWarpCount);
   SmallVector<NamedAttribute, 1> attrs;
-  attrs.emplace_back(
-      StringAttr::get(context, IREE::GPU::MMAScheduleAttr::getMnemonic()),
-      scheduleAttr);
+  attrs.emplace_back(StringAttr::get(context, "mma_schedule"), scheduleAttr);
   auto configDict = DictionaryAttr::get(context, attrs);
 
   return setOpConfigAndEntryPointFnTranslation(
@@ -633,15 +632,32 @@ setMatmulVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
 
 static LogicalResult
 setVectorDistributionConfig(mlir::FunctionOpInterface entryPoint,
-                            linalg::LinalgOp linalgOp,
+                            Operation *computeOp,
                             const TargetInfo &targetInfo) {
-  if (linalg::isaContractionOpInterface(linalgOp)) {
-    return setMatmulVectorDistributionConfig(entryPoint, linalgOp, targetInfo);
+
+  if (!clGPUEnableVectorDistribution) {
+    LDBG("vector distribution not enabled, skipping...\n");
+    return failure();
   }
-  if (linalg::isaConvolutionOpInterface(linalgOp)) {
-    return setConvolutionVectorDistributionConfig(entryPoint, linalgOp,
-                                                  targetInfo);
+
+  LDBG("VectorDistribution: finding a suitable config...\n");
+
+  if (auto linalgOp = dyn_cast<linalg::LinalgOp>(computeOp)) {
+    if (linalg::isaContractionOpInterface(linalgOp)) {
+      LDBG(
+          "VectorDistribution: trying to find a suitable contraction config\n");
+      return setMatmulVectorDistributionConfig(entryPoint, linalgOp,
+                                               targetInfo);
+    }
+    if (linalg::isaConvolutionOpInterface(linalgOp)) {
+      LDBG(
+          "VectorDistribution: trying to find a suitable convolution config\n");
+      return setConvolutionVectorDistributionConfig(entryPoint, linalgOp,
+                                                    targetInfo);
+    }
   }
+
+  LDBG("VectorDistribution: failed to find a suitable config");
   return failure();
 }
 
@@ -1742,51 +1758,66 @@ static LogicalResult setConvolutionConfig(linalg::LinalgOp linalgOp,
 
 static LogicalResult setRootConfig(mlir::FunctionOpInterface entryPointFn,
                                    Operation *computeOp) {
+  LLVM_DEBUG({
+    DBGS() << "Selecting root config for: ";
+    computeOp->print(llvm::dbgs(), OpPrintingFlags().skipRegions());
+    llvm::dbgs() << "\n";
+  });
   TargetInfo targetInfo = getTargetInfo(entryPointFn);
   // First try to see if there is a transform dialect configuration existing.
   if (succeeded(
           setTransformDialectConfig(entryPointFn, computeOp, targetInfo))) {
+    LDBG("Transform Dialect Config");
     return success();
   }
+  if (succeeded(
+          setVectorDistributionConfig(entryPointFn, computeOp, targetInfo))) {
+    return success();
+  }
+
   if (auto linalgOp = dyn_cast<linalg::LinalgOp>(computeOp)) {
-    if (clGPUEnableVectorDistribution) {
-      if (succeeded(setVectorDistributionConfig(entryPointFn, linalgOp,
-                                                targetInfo))) {
-        return success();
-      }
-    }
     if (succeeded(setContractConfig(entryPointFn, linalgOp, targetInfo))) {
+      LDBG("Contract Config");
       return success();
     }
     if (succeeded(setWarpReductionConfig(entryPointFn, linalgOp, targetInfo))) {
+      LDBG("Warp Reduction Config");
       return success();
     }
     if (succeeded(setConvolutionConfig(
             linalgOp, targetInfo.supportedSubgroupSizes.front(), 16))) {
+      LDBG("Convolution Config");
       return success();
     }
     auto genericOp = dyn_cast<linalg::GenericOp>(computeOp);
     if (genericOp && succeeded(setTransposeConfig(entryPointFn, genericOp))) {
+      LDBG("Transpose Config");
       return success();
     } else if (genericOp && succeeded(setArgmaxUkernelConfig(
                                 entryPointFn, genericOp, targetInfo))) {
+      LDBG("Argmax Ukernel Config");
       return success();
     }
   }
 
   if (auto fftOp = dyn_cast<IREE::LinalgExt::FftOp>(computeOp)) {
+    LDBG("FFT Config");
     return setFftConfig(entryPointFn, fftOp, targetInfo);
   }
   if (auto sortOp = dyn_cast<IREE::LinalgExt::SortOp>(computeOp)) {
+    LDBG("Sort Config");
     return setSortConfig(entryPointFn, sortOp, targetInfo);
   }
   if (auto packOp = dyn_cast<tensor::PackOp>(computeOp)) {
+    LDBG("Pack Config");
     return setPackConfig(entryPointFn, packOp, targetInfo);
   }
   if (auto ukernelOp = dyn_cast<IREE::Codegen::UKernelOpInterface>(computeOp)) {
+    LDBG("Ukernel Config");
     return setUKernelConfig(entryPointFn, ukernelOp);
   }
 
+  LDBG("Default Config");
   return setRootDefaultConfig(entryPointFn, computeOp, targetInfo);
 }
 
