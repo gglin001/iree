@@ -673,11 +673,11 @@ if(IREE_BUILD_PYTHON_BINDINGS)
   # Not doing this here risks them diverging, which on multi-Python systems,
   # can be troublesome. Note that nanobind requires FindPython.
   set(Python_EXECUTABLE "${Python3_EXECUTABLE}")
-  find_package(Python 3.9 COMPONENTS Interpreter Development.Module NumPy REQUIRED)
+  # find_package(Python 3.9 COMPONENTS Interpreter Development.Module NumPy REQUIRED)
 elseif(IREE_BUILD_COMPILER OR IREE_BUILD_TESTS)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   set(Python_EXECUTABLE "${Python3_EXECUTABLE}")
-  find_package(Python COMPONENTS Interpreter REQUIRED)
+  # find_package(Python COMPONENTS Interpreter REQUIRED)
 endif()
 
 if(NOT "${Python_EXECUTABLE}" STREQUAL "${Python3_EXECUTABLE}")
