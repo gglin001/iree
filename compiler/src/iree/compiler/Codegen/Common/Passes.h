@@ -45,6 +45,8 @@ void addIREEComprehensiveBufferizePasses(
         std::nullopt,
     std::optional<BufferizationOptions::MemCpyFn> memCpyFn = std::nullopt);
 
+void addConstantBufferizePasses(OpPassManager &funcPassManager);
+
 std::unique_ptr<OperationPass<LLVM::LLVMFuncOp>> createAddFastMathFlagsPass();
 
 /// Pass to bubble up ordinal operations to allow workgroup count computation
@@ -87,10 +89,6 @@ createConvertToDestinationPassingStylePass(
 // Decompose affine.apply operations into sub affine.apply that can be
 // hoisted in different loops.
 std::unique_ptr<Pass> createDecomposeAffineOpsPass();
-
-// Decomposes batch mmt4d op into mmt4d by tiling the batch dim to 1.
-std::unique_ptr<InterfacePass<FunctionOpInterface>>
-createDecomposeBatchMmt4DOpsPass();
 
 // Decomposes high-D convolution ops into low-D ones.
 std::unique_ptr<Pass> createDecomposeConvolutionToLowerDimOpsPass();

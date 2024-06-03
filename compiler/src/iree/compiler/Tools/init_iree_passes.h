@@ -48,7 +48,7 @@ inline void registerAllIreePasses() {
   IREE::TFLite::registerPasses();
   IREE::TFLite::registerTransformPassPipeline();
 
-  registerCommonInputConversionPasses();
+  InputConversion::registerCommonInputConversionPasses();
   ConstEval::registerConstEvalPasses();
   GlobalOptimization::registerGlobalOptimizationPipeline();
   Preprocessing::registerPreprocessingPasses();
@@ -62,7 +62,6 @@ inline void registerAllIreePasses() {
   IREE::Util::registerTransformPasses();
   IREE::VM::registerVMPasses();
   IREE::VM::registerVMAnalysisTestPasses();
-  IREE::VM::registerVMTestPasses();
   IREE::VMVX::registerVMVXPasses();
   registerIREEVMTransformPassPipeline();
 

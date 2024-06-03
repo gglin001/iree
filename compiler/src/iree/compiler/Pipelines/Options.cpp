@@ -58,6 +58,32 @@ void InputDialectOptions::bindOptions(OptionsBinder &binder) {
           // clang-format on
           ),
       llvm::cl::cat(category));
+
+  binder.opt<bool>(
+      "iree-input-demote-i64-to-i32", demoteI64ToI32,
+      llvm::cl::desc("Converts all i64 ops and values into i32 counterparts "
+                     "unconditionally before main global optimizations."),
+      llvm::cl::cat(category));
+  binder.opt<bool>(
+      "iree-input-demote-f32-to-f16", demoteF32ToF16,
+      llvm::cl::desc("Converts all f32 ops and values into f16 counterparts "
+                     "unconditionally before main global optimizations."),
+      llvm::cl::cat(category));
+  binder.opt<bool>(
+      "iree-input-demote-f64-to-f32", demoteF64ToF32,
+      llvm::cl::desc("Converts all f64 ops and values into f32 counterparts "
+                     "unconditionally before main global optimizations."),
+      llvm::cl::cat(category));
+  binder.opt<bool>(
+      "iree-input-promote-f16-to-f32", promoteF16ToF32,
+      llvm::cl::desc("Converts all f16 ops and values into f32 counterparts "
+                     "unconditionally before main global optimizations."),
+      llvm::cl::cat(category));
+  binder.opt<bool>(
+      "iree-input-promote-bf16-to-f32", promoteBF16ToF32,
+      llvm::cl::desc("Converts all bf16 ops and values into f32 counterparts "
+                     "unconditionally before main global optimizations."),
+      llvm::cl::cat(category));
 }
 
 InputDialectOptions::Type InputDialectOptions::parseInputTypeMnemonic() {
@@ -91,49 +117,11 @@ void PreprocessingOptions::bindOptions(OptionsBinder &binder) {
       llvm::cl::desc(
           "File name of a transform dialect spec to use for preprocessing."),
       llvm::cl::cat(category));
-
-  // DEPRECATED: do not add explicit options for specific passes.
-  binder.opt<TransposeMatmulInput>(
-      "iree-preprocessing-transpose-matmul", preprocessingTransposeMatmulInput,
-      llvm::cl::desc("Convert Linalg matmul ops to transposed variants."),
-      llvm::cl::cat(category),
-      llvm::cl::values(clEnumValN(TransposeMatmulInput::Lhs, "lhs",
-                                  "Transpose LHS input matrix."),
-                       clEnumValN(TransposeMatmulInput::Rhs, "rhs",
-                                  "Transpose RHS input matrix."),
-                       clEnumValN(TransposeMatmulInput::None, "none",
-                                  "Transpose neither input (disable).")));
 }
 
 void GlobalOptimizationOptions::bindOptions(OptionsBinder &binder) {
   static llvm::cl::OptionCategory category(
       "IREE options for controlling global optimizations.");
-  // Type promotion/demotion options.
-  binder.opt<bool>(
-      "iree-opt-demote-f64-to-f32", demoteF64ToF32,
-      llvm::cl::desc("Converts all f64 ops and values into f32 counterparts "
-                     "unconditionally before main global optimizations."),
-      llvm::cl::cat(category));
-  binder.opt<bool>(
-      "iree-opt-demote-f32-to-f16", demoteF32ToF16,
-      llvm::cl::desc("Converts all f32 ops and values into f16 counterparts "
-                     "unconditionally before main global optimizations."),
-      llvm::cl::cat(category));
-  binder.opt<bool>(
-      "iree-opt-promote-f16-to-f32", promoteF16ToF32,
-      llvm::cl::desc("Converts all f16 ops and values into f32 counterparts "
-                     "unconditionally before main global optimizations."),
-      llvm::cl::cat(category));
-  binder.opt<bool>(
-      "iree-opt-promote-bf16-to-f32", promoteBF16ToF32,
-      llvm::cl::desc("Converts all bf16 ops and values into f32 counterparts "
-                     "unconditionally before main global optimizations."),
-      llvm::cl::cat(category));
-  binder.opt<bool>(
-      "iree-opt-demote-i64-to-i32", demoteI64ToI32,
-      llvm::cl::desc("Converts all i64 ops and values into i32 counterparts "
-                     "unconditionally before main global optimizations."),
-      llvm::cl::cat(category));
   binder.opt<bool>(
       "iree-opt-aggressively-propagate-transposes",
       aggressiveTransposePropagation,

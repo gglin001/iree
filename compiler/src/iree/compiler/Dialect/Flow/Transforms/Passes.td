@@ -167,6 +167,7 @@ def FormDispatchRegionsPass :
     "mlir::scf::SCFDialect",
     "mlir::tensor::TensorDialect",
     "IREE::Flow::FlowDialect",
+    "IREE::LinalgExt::IREELinalgExtDialect",
   ];
 }
 
@@ -388,6 +389,20 @@ def InterchangeTransposeGenericOpsPass :
   let summary = "Interchange transpose generic op loops to make the input indeximg map indentity.";
   let dependentDialects = [
     "mlir::linalg::LinalgDialect",
+  ];
+}
+
+def OutlineConstantsPass :
+    Pass<"iree-flow-outline-constants", "mlir::ModuleOp"> {
+  let summary = "Outlines tensor constants into util.globals at the module level.";
+  let description = [{
+    Outlines tensor constants throughout the program into globals initialized
+    with stream ops.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "IREE::Flow::FlowDialect",
+    "IREE::Util::UtilDialect",
   ];
 }
 

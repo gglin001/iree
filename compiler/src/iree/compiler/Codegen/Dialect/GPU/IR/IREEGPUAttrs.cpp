@@ -8,18 +8,27 @@
 #include <numeric>
 
 #include "iree-dialects/Dialect/VectorExt/IR/VectorExtDialect.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenInterfaces.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUEnums.h"
 #include "iree/compiler/Codegen/Utils/VectorOpUtils.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/STLForwardCompat.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "mlir/Dialect/AMDGPU/IR/AMDGPUDialect.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h"
+#include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/TypeUtilities.h"
 
 #define DEBUG_TYPE "iree-gpu-attrs"
@@ -329,6 +338,14 @@ MMAAttr MMAAttr::get(MLIRContext *context, MMAIntrinsic type) {
                    layout.cType);
 }
 
+std::tuple<Type, Type, Type> MMAAttr::getABCElementTypes() const {
+  return {getAType(), getBType(), getCType()};
+}
+
+std::tuple<int64_t, int64_t, int64_t> MMAAttr::getMNKShape() const {
+  return {getMSize(), getNSize(), getKSize()};
+}
+
 // NOTE: For layout specifications of the WMMA intrinsics
 //       below we are assuming subgroupsize of 32.
 std::tuple<VectorType, VectorType, VectorType>
@@ -393,20 +410,6 @@ int64_t MMAAttr::getSubgroupSize() const {
   }
   // This should not happen but just to make GCC happy.
   return 0;
-}
-
-MMAComputeType MMAAttr::getComputeType() const {
-  switch (getIntrinsic().getValue()) {
-  case MMAIntrinsic::MFMA_F16_16x16x16_F32:
-  case MMAIntrinsic::MFMA_F16_32x32x8_F32: {
-    return MMAComputeType::MFMA;
-  }
-  case MMAIntrinsic::WMMA_F16_16x16x16_F32: {
-    return MMAComputeType::WMMA;
-  }
-  }
-  // This should not happen but just to make GCC happy.
-  return MMAComputeType::INVALID;
 }
 
 SmallVector<int64_t> MMAAttr::getADataDuplicate() const {
@@ -518,6 +521,145 @@ MMAAttr::SingleSubgroupLayout MMAAttr::getCSingleSubgroupLayoutOrder() const {
   }
   }
   return {};
+}
+
+// Generates amdgpu.mfma/wmma operation on the given inputs for this attribute
+// type.
+FailureOr<Value> MMAAttr::buildMmaOperation(OpBuilder &builder, Location loc,
+                                            Type resultType, Value lhs,
+                                            Value rhs, Value acc) const {
+  auto [aType, bType, cType] = getABCVectorTypes();
+  if (aType != lhs.getType() || bType != rhs.getType() ||
+      cType != acc.getType()) {
+    return failure();
+  }
+  // Fail if the result type does not match with the expected return type of
+  // the intrinsic. We expect the caller to handle type conversions externally.
+  if (cType != resultType) {
+    return failure();
+  }
+  switch (getIntrinsic().getValue()) {
+  case MMAIntrinsic::MFMA_F16_16x16x16_F32:
+  case MMAIntrinsic::MFMA_F16_32x32x8_F32: {
+    auto [m, n, k] = getMNKShape();
+    return builder
+        .create<amdgpu::MFMAOp>(loc, resultType, m, n, k, getBlockSize(), lhs,
+                                rhs, acc)
+        .getResult();
+  }
+  case MMAIntrinsic::WMMA_F16_16x16x16_F32: {
+    return builder.create<amdgpu::WMMAOp>(loc, resultType, lhs, rhs, acc)
+        .getResult();
+  }
+  }
+  return failure();
+}
+
+static SmallVector<int64_t>
+getRankReducedSingleSubgroupShape(const MMAAttr::SingleSubgroupLayout &counts) {
+  SmallVector<int64_t> rankReducedShape;
+  for (auto [outer, thread, element] :
+       llvm::zip_equal(counts.outer, counts.thread, counts.element)) {
+    if (outer != 1) {
+      rankReducedShape.push_back(outer);
+    }
+    rankReducedShape.push_back(thread * element);
+  }
+  return rankReducedShape;
+}
+
+// Generates amdgpu.mfma/wmma operation on the given inputs for this attribute
+// type.
+static LogicalResult populateCanonicalOffsetsSizesAndStrides(
+    OpBuilder &builder, Location loc, Value laneId,
+    ArrayRef<int64_t> permutation, MMAAttr::SingleSubgroupLayout counts,
+    MMAAttr::SingleSubgroupLayout orders,
+    SmallVector<OpFoldResult> &canonicalOffsets,
+    SmallVector<OpFoldResult> &canonicalSizes,
+    SmallVector<OpFoldResult> &canonicalStrides) {
+  SmallVector<int64_t> rankReducedShape;
+  for (auto [outer, thread, element] :
+       llvm::zip_equal(counts.outer, counts.thread, counts.element)) {
+    if (outer != 1) {
+      rankReducedShape.push_back(outer);
+    }
+    rankReducedShape.push_back(thread * element);
+  }
+
+  if (permutation.size() != rankReducedShape.size()) {
+    return failure();
+  }
+
+  OpFoldResult zero = builder.getIndexAttr(0);
+  OpFoldResult one = builder.getIndexAttr(1);
+  canonicalStrides.append(rankReducedShape.size(), one);
+
+  SmallVector<int64_t> threadDimSizes =
+      applyPermutation(counts.thread, orders.thread);
+  SmallVector<Value> basis;
+  for (int64_t dimSize : threadDimSizes) {
+    basis.push_back(builder.create<arith::ConstantIndexOp>(loc, dimSize));
+  }
+  SmallVector<Value> threadIds =
+      builder.create<affine::AffineDelinearizeIndexOp>(loc, laneId, basis)
+          .getResults();
+  applyPermutationToVector(threadIds, orders.thread);
+
+  int64_t idx = 0;
+  for (auto [outer, thread, element] :
+       llvm::zip_equal(counts.outer, counts.thread, counts.element)) {
+    if (outer != 1) {
+      canonicalSizes.push_back(builder.getIndexAttr(outer));
+      canonicalOffsets.push_back(zero);
+    }
+    canonicalSizes.push_back(builder.getIndexAttr(element));
+    canonicalOffsets.push_back(threadIds[idx++]);
+  }
+  applyPermutationToVector(canonicalOffsets, permutation);
+  applyPermutationToVector(canonicalSizes, permutation);
+  return success();
+}
+
+LogicalResult MMAAttr::populateOperandOffsetsSizesStrides(
+    OpBuilder &builder, Location loc, IREE::GPU::MMAFragment fragment,
+    Value laneId, ArrayRef<int64_t> permutation,
+    SmallVector<OpFoldResult> &offsets, SmallVector<OpFoldResult> &sizes,
+    SmallVector<OpFoldResult> &strides) const {
+  if (getIntrinsic().getValue() != MMAIntrinsic::MFMA_F16_16x16x16_F32) {
+    return failure();
+  }
+
+  MMAAttr::SingleSubgroupLayout counts;
+  MMAAttr::SingleSubgroupLayout orders;
+  switch (fragment) {
+  case IREE::GPU::MMAFragment::Lhs: {
+    counts = getASingleSubgroupLayoutCount();
+    orders = getASingleSubgroupLayoutOrder();
+    break;
+  }
+  case IREE::GPU::MMAFragment::Rhs: {
+    counts = getBSingleSubgroupLayoutCount();
+    orders = getBSingleSubgroupLayoutOrder();
+    break;
+  }
+  case IREE::GPU::MMAFragment::Acc: {
+    counts = getCSingleSubgroupLayoutCount();
+    orders = getCSingleSubgroupLayoutOrder();
+    break;
+  }
+  }
+
+  SmallVector<OpFoldResult> canonicalOffsets;
+  SmallVector<OpFoldResult> canonicalSizes;
+  if (failed(populateCanonicalOffsetsSizesAndStrides(
+          builder, loc, laneId, permutation, counts, orders, canonicalOffsets,
+          canonicalSizes, strides))) {
+    return failure();
+  }
+  offsets.append(canonicalOffsets);
+  sizes.append(canonicalSizes);
+
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -972,6 +1114,111 @@ MMAScheduleAttr::getContractionLayout(vector::ContractionOp contractOp) const {
       result = {aLayout, bLayout, cLayout};
   return result;
 }
+
+//===----------------------------------------------------------------------===//
+// Target Attributes
+//===----------------------------------------------------------------------===//
+
+std::optional<int> TargetAttr::getCUDAComputeCapability() const {
+  StringRef arch = getArch();
+  if (!arch.starts_with("sm_"))
+    return false;
+  APInt version;
+  if (arch.substr(3).getAsInteger(10, version)) {
+    return false;
+  }
+  return version.getZExtValue();
+}
+
+bool TargetAttr::supportsTF32InputMMAOps() const {
+  // TODO: scan the list of MMA ops to decude after plumbing through support
+  // for NVIDIA TensorCore MMA ops.
+  if (auto cc = getCUDAComputeCapability())
+    return cc >= 80;
+  return false;
+}
+
+bool TargetAttr::supportsSyncMMAOps() const {
+  if (auto cc = getCUDAComputeCapability())
+    return cc >= 80;
+  return false;
+}
+
+//===----------------------------------------------------------------------===//
+// Lowering Config Attributes
+//===----------------------------------------------------------------------===//
+
+constexpr StringLiteral kWorkgroupLevelName = "workgroup";
+constexpr StringLiteral kPartialReductionLevelName = "partial_reduction";
+constexpr StringLiteral kReductionLevelName = "reduction";
+constexpr StringLiteral kThreadLevelName = "thread";
+constexpr StringLiteral kSubgroupLevelName = "subgroup";
+constexpr StringLiteral kLaneLevelName = "lane";
+
+static StringRef getTilingLevelName(GPU::TilingLevel level) {
+  switch (level) {
+  case GPU::TilingLevel::Workgroup:
+    return kWorkgroupLevelName;
+  case GPU::TilingLevel::PartialReduction:
+    return kPartialReductionLevelName;
+  case GPU::TilingLevel::Reduction:
+    return kReductionLevelName;
+  case GPU::TilingLevel::Thread:
+    return kThreadLevelName;
+  case GPU::TilingLevel::Subgroup:
+    return kSubgroupLevelName;
+  case GPU::TilingLevel::Lane:
+    return kLaneLevelName;
+  }
+  assert(false && "Unknown tiling level");
+  return StringAttr();
+}
+
+static SmallVector<int64_t> getTileSizes(DictionaryAttr config,
+                                         GPU::TilingLevel level) {
+  auto sizes = config.getAs<ArrayAttr>(getTilingLevelName(level));
+  if (!sizes || !llvm::all_of(sizes.getValue(), llvm::IsaPred<IntegerAttr>)) {
+    return {};
+  }
+  return llvm::map_to_vector(sizes.getValue(), [](Attribute s) -> int64_t {
+    return cast<IntegerAttr>(s).getInt();
+  });
+}
+
+SmallVector<int64_t> LoweringConfigAttr::getWorkgroupTileSizes() const {
+  return getTileSizes(getAttributes(), GPU::TilingLevel::Workgroup);
+}
+
+SmallVector<int64_t>
+LoweringConfigAttr::getStaticTilingLevelSizes(unsigned level,
+                                              Operation *op) const {
+  if (level > llvm::to_underlying(GPU::TilingLevel::Lane)) {
+    return {};
+  }
+  return getTileSizes(getAttributes(), static_cast<GPU::TilingLevel>(level));
+}
+
+SmallVector<OpFoldResult>
+LoweringConfigAttr::getTilingLevelSizes(OpBuilder &b, unsigned level,
+                                        Operation *op) const {
+  if (level > llvm::to_underlying(GPU::TilingLevel::Lane)) {
+    return {};
+  }
+  SmallVector<int64_t> sizes =
+      getTileSizes(getAttributes(), static_cast<GPU::TilingLevel>(level));
+  return llvm::map_to_vector(
+      sizes, [&](int64_t s) -> OpFoldResult { return b.getIndexAttr(s); });
+}
+
+//===----------------------------------------------------------------------===//
+// LaneIdAttr
+//===----------------------------------------------------------------------===//
+
+int64_t LaneIdAttr::getMappingId() const { return getDim(); }
+
+bool LaneIdAttr::isLinearMapping() const { return true; }
+
+int64_t LaneIdAttr::getRelativeIndex() const { return getDim(); }
 
 //===----------------------------------------------------------------------===//
 // Attribute Registration
