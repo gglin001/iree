@@ -30,6 +30,7 @@
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -92,6 +93,12 @@ static llvm::cl::opt<bool> clEnableScalableVectorization(
                    "target (e.g., +sve, +sve2 and/or +sme feature flags)"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> clDisableArmSMETiling(
+    "iree-llvmcpu-disable-arm-sme-tiling",
+    llvm::cl::desc("Disables tiling for SME even if it is supported by the "
+                   "target (i.e., when the +sme feature flag is present)"),
+    llvm::cl::init(false));
+
 // Non-static options are used in other places.
 llvm::cl::opt<bool> clEnableTransformDialectJit(
     "iree-llvmcpu-enable-transform-dialect-jit",
@@ -113,17 +120,6 @@ enum class VectorPreProcStrategy {
   // Do not apply any vectorization pre-processing transformation.
   None
 };
-
-// NOTE: This flag is meant for testing + experimentation and should not be
-// used in deployment.
-static llvm::cl::opt<bool> clExperimentalArmForceSSVE(
-    "iree-experimental-llvmcpu-arm-force-ssve",
-    llvm::cl::desc(
-        "Controls whether to disable SME tiling when SME+SSVE are enabled "
-        "with +sme. As a result, IREE will effectively target SSVE "
-        "instead of SME. This flag is experimental and should only be "
-        "used for testing."),
-    llvm::cl::init(false));
 
 // Use this flag to override IREE's heuristics for selecting the pre-processing
 // strategy.
@@ -890,7 +886,7 @@ getDefaultDistributedLevelTileSizes(Operation *op,
 /// Splits the tile sizes in `parallelSizes` into `reductionSizes` for the
 /// reduction loops.
 static void splitParallelAndReductionTiles(
-    linalg::LinalgOp op, SmallVectorImpl<int64_t> &parallelSizes,
+    Operation *op, SmallVectorImpl<int64_t> &parallelSizes,
     SmallVectorImpl<int64_t> &reductionSizes,
     SmallVectorImpl<bool> *parallelScalableFlags = nullptr,
     SmallVectorImpl<bool> *reductionScalableFlags = nullptr) {
@@ -900,8 +896,9 @@ static void splitParallelAndReductionTiles(
     reductionScalableFlags->assign(parallelScalableFlags->begin(),
                                    parallelScalableFlags->end());
   }
+  TilingInterface tilingOp = cast<TilingInterface>(op);
   for (auto [index, iteratorType] :
-       llvm::enumerate(op.getIteratorTypesArray())) {
+       llvm::enumerate(tilingOp.getLoopIteratorTypes())) {
     if (iteratorType == utils::IteratorType::parallel) {
       reductionSizes[index] = 0;
       if (reductionScalableFlags)
@@ -1121,9 +1118,9 @@ setMatmulRootConfig(mlir::FunctionOpInterface entryPointFn,
   SmallVector<int64_t> parallelTileSizes = vecTileSizes;
   SmallVector<int64_t> reductionTileSizes;
   SmallVector<bool> reductionScalableFlags;
-  splitParallelAndReductionTiles(
-      cast<linalg::LinalgOp>(op.getOperation()), parallelTileSizes,
-      reductionTileSizes, &parallelScalableFlags, &reductionScalableFlags);
+  splitParallelAndReductionTiles(op, parallelTileSizes, reductionTileSizes,
+                                 &parallelScalableFlags,
+                                 &reductionScalableFlags);
 
   if (vecPreProcStrategy == VectorPreProcStrategy::None) {
     setVectorSizesForDynamicShapes(cast<linalg::LinalgOp>(op.getOperation()),
@@ -1183,7 +1180,11 @@ getDefaultMatmulVectorSizes(linalg::LinalgOp op, int64_t vectorSize,
                             SmallVectorImpl<bool> &scalableSizeFlags) {
   auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(op);
   if (isX86(targetAttr)) {
-    sizes.append({8, 32, 16});
+    if (hasAVX512fFeature(targetAttr)) {
+      sizes.append({8, 32, 16});
+    } else {
+      sizes.append({1, 1, vectorSize});
+    }
     return;
   }
 
@@ -1325,7 +1326,7 @@ getMatmulVectorSizes(mlir::FunctionOpInterface entryPointFn,
   // TODO: Compute vector tile sizes using heuristics.
 
   if (isAArch64(targetAttr)) {
-    if (clEnableScalableVectorization && !clExperimentalArmForceSSVE &&
+    if (clEnableScalableVectorization && !clDisableArmSMETiling &&
         hasSMEFeature(targetAttr)) {
       // Note: This may not pick any sizes (which will fallback to the scalable
       // vectorization heuristics below).
@@ -1588,10 +1589,7 @@ static TileSizesListType getMmt4dTileSizes(linalg::LinalgOp op) {
   SmallVector<int64_t> reductionTileSizes;
   splitParallelAndReductionTiles(op, parallelTileSizes, reductionTileSizes);
 
-  SmallVector<int64_t> vectorInnerParallelTileSizes(numLoops, 0);
-  return {distTileSizes,           cacheParallelTileSizes,
-          cacheReductionTileSizes, parallelTileSizes,
-          reductionTileSizes,      vectorInnerParallelTileSizes};
+  return {distTileSizes, parallelTileSizes, reductionTileSizes};
 }
 
 /// Sets the lowering configuration for dispatch region for linalg.mmt4d
@@ -1741,27 +1739,26 @@ static LogicalResult setRootConfig(mlir::FunctionOpInterface entryPointFn,
     llvm::dbgs() << "]\n";
   });
 
-  // TODO (Groverkss): Flash Attention 2 (current algorithm we use for
-  // attention) was originally designed for GPUs. N, K1 are the head dimension
-  // and are usually very small (64, 128, See AttentionOpDetail docs for more
-  // detail). For larger sizes, fusing attention doesn't have many gains (as
-  // pointed out by the original author). We should explore if we should tile N
-  // and K1 dimensions on CPU and if it has any gains. On GPUs, we don't tile
-  // these dimensions as subgroups can hold much larger register sizes.
-
   // Batch, M and N (parallel dimensions) are distributed on workgroups.
   DistributionHeuristicConfig config;
-  SmallVector<int64_t> distTileSizes = getDefaultDistributedLevelTileSizes(
-      attnOp, DistributionHeuristicConfig{});
+  int64_t vectorSize = getVectorSize(entryPointFn, attnOp.getOutputType());
+  config.maxTileSizes.resize(opInfo.getDomainRank(), clDefaultDistTileSize);
+  config.vectorSizeHints.resize(opInfo.getDomainRank(), vectorSize);
+  // Distribute batch dimensions completely on workgroups (tile_size = 1).
+  for (int batch : opInfo.getBatchDims()) {
+    config.maxTileSizes[batch] = 1;
+    config.vectorSizeHints[batch] = 1;
+  }
+  SmallVector<int64_t> distTileSizes =
+      getDefaultDistributedLevelTileSizes(attnOp, config);
 
   // Batch, M and N (parallel dimensions) are distributed on workgroups.
   SmallVector<int64_t> vecTileSizes(attnOp.getIterationDomainRank(), 1);
-  // Mark reduction dimensions not to distribute.
-  for (int64_t i :
-       llvm::concat<const int64_t>(opInfo.getK1Dims(), opInfo.getK2Dims())) {
+  // Due to the way attention works, K1 dimensions cannot be tiled. Mark k1
+  // reduction dimensions not to distribute.
+  for (int i : opInfo.getK1Dims()) {
     vecTileSizes[i] = 0;
   }
-  int64_t vectorSize = getVectorSize(entryPointFn, attnOp.getOutputType());
   for (auto i : llvm::seq<unsigned>(0, vecTileSizes.size())) {
     // Do not tile reduction dimensions.
     if (vecTileSizes[i] == 0) {
@@ -1773,18 +1770,29 @@ static LogicalResult setRootConfig(mlir::FunctionOpInterface entryPointFn,
         /*numElem=*/tileSize, vectorSize, vectorSize);
   }
 
-  // TODO (17467): Due to a bug in TileAndDecomposeAttention, N dimension
-  // cannot be tiled. Remove this once fixed.
-  for (int64_t i : opInfo.getNDims()) {
-    distTileSizes[i] = 0;
-    vecTileSizes[i] = 0;
+  // Tile the M dimension completely.
+  // TODO: This is a hack to prevent too large vector sizes. The largest vector
+  // generally produced is the Q vector, which is of shape: BATCH x M x K1.
+  // Since K1 cannot be tiled, the heuristics don't properly account for tiling
+  // M such that Q doesn't grow too large.
+  // Ideally, we should use something like limitVectorTileSizes, to fixup tile
+  // sizes. Currently, limitVectorTileSizes ignores static dimensions which are
+  // not tiled, which is why it's not currently used here.
+  for (int i : opInfo.getMDims()) {
+    vecTileSizes[i] = 1;
   }
 
-  TileSizesListType tileSizes = {distTileSizes, vecTileSizes};
+  SmallVector<int64_t> parallelTileSizes = vecTileSizes;
+  SmallVector<int64_t> reductionTileSizes;
+  splitParallelAndReductionTiles(attnOp, parallelTileSizes, reductionTileSizes);
 
-  // TODO: (Groverkss): Tile K2 here using reduction tiling interface once we
-  // have it. TileAndDecomposeAttention pass only tiles K2. I think it should
-  // be possible to tile K1 also, but need to explore it more.
+  LLVM_DEBUG(KD_DBGS() << "Vectorization/unrolling tile sizes (parallel): "
+                       << parallelTileSizes << "\n");
+  LLVM_DEBUG(KD_DBGS() << "Vectorization/unrolling tile sizes (reduction): "
+                       << reductionTileSizes << "\n");
+
+  TileSizesListType tileSizes = {distTileSizes, parallelTileSizes,
+                                 reductionTileSizes};
 
   return setOpConfigAndEntryPointFnTranslation(
       entryPointFn, attnOp, tileSizes,
@@ -1843,6 +1851,9 @@ setWinogradRootConfig(mlir::FunctionOpInterface entryPointFn,
   tileSizes.push_back(distTileSizes);
   SmallVector<int64_t> vecTileSizes(iterationRank, 1);
   tileSizes.push_back(vecTileSizes);
+  // Dummy tiling config for reduction level.
+  SmallVector<int64_t> reductionTileSizes(iterationRank, 0);
+  tileSizes.push_back(reductionTileSizes);
   return setOpConfigAndEntryPointFnTranslation(
       entryPointFn, winogradOp, tileSizes,
       DispatchLoweringPassPipeline::CPULinalgExtTileAndVectorize);
@@ -1970,6 +1981,104 @@ setTransformStrategyRootConfig(mlir::FunctionOpInterface entryPointFn,
   return success();
 }
 
+/// Utility to return the transpose vector `sizes` for X86. Empty `sizes` on
+/// return indicates failure.
+static void getTransposeX86VectorSizes(
+    linalg::GenericOp genericOp, IREE::HAL::ExecutableTargetAttr targetAttr,
+    ArrayRef<int64_t> minTileSizes, SmallVectorImpl<int64_t> &sizes) {
+  if (!hasAVX2Feature(targetAttr) ||
+      !x86TransposeLoweringPrecondition(genericOp))
+    return;
+
+  if (llvm::count_if(minTileSizes,
+                     [](int64_t tileSize) { return tileSize > 1; }) != 2) {
+    // Transpose patterns are not applicable if vectorizing more or less than
+    // two dims.
+    return;
+  }
+
+  // Make sure that the original tile sizes are greater than or equal to the
+  // tile sizes to be used for the transpose op (e.g., 8x8, 16x16, etc).
+  int64_t targetVectorSize = 8;
+  if (llvm::any_of(minTileSizes, [&](int64_t tileSize) {
+        return tileSize > 1 && tileSize < targetVectorSize;
+      })) {
+    return;
+  }
+
+  // Target 16x16 tile sizes if there are AVX512 features and all the tile sizes
+  // are greater than or equal to 16.
+  if (hasAVX512fFeature(targetAttr) &&
+      llvm::all_of(minTileSizes, [](int64_t tileSize) {
+        return tileSize == 1 || tileSize >= 16;
+      })) {
+    targetVectorSize = 16;
+  }
+
+  // Replace dims to be vectorized with the new tile sizes.
+  sizes.assign(minTileSizes.begin(), minTileSizes.end());
+  std::replace_if(
+      sizes.begin(), sizes.end(), [](int64_t tileSize) { return tileSize > 1; },
+      targetVectorSize);
+}
+
+/// Utility to return the transpose vector `sizes` for AArch64. Empty `sizes` on
+/// return indicates failure.
+/// NOTE: only SME is currently supported.
+static void getTransposeAArch64VectorSizes(
+    linalg::GenericOp genericOp, IREE::HAL::ExecutableTargetAttr targetAttr,
+    SmallVectorImpl<int64_t> &sizes, SmallVectorImpl<bool> &scalableFlags) {
+  if (!isLinalgGeneric2DTranspose(genericOp))
+    return;
+
+  auto elementType = nonWideningLinalgElementType(genericOp);
+  if (failed(elementType))
+    return;
+
+  if (hasSMEFeature(targetAttr) && clEnableScalableVectorization &&
+      !clDisableArmSMETiling) {
+    if (elementType->isF32()) {
+      sizes.append({4, 4});
+    } else if (elementType->isF64()) {
+      sizes.append({2, 2});
+    } else {
+      return;
+    }
+    scalableFlags.append({true, true});
+  }
+}
+
+/// Main utility to compute the transpose vector sizes.
+static std::optional<SizesAndScalableFlags>
+getTransposeVectorSizes(mlir::FunctionOpInterface entryPointFn,
+                        linalg::GenericOp genericOp,
+                        const LinalgOpInfo &linalgOpInfo,
+                        const TargetMLTransformInfo &targetMLTransInfo) {
+  SmallVector<int64_t> tileSizes;
+  SmallVector<bool> scalableFlags;
+  auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(entryPointFn);
+  if (isX86(targetAttr)) {
+    SmallVector<int64_t> minTileSizes = getMinTilingSizesForEachDim(
+        entryPointFn, genericOp, linalgOpInfo, targetMLTransInfo);
+    getTransposeX86VectorSizes(genericOp, targetAttr, minTileSizes, tileSizes);
+  } else if (isAArch64(targetAttr)) {
+    getTransposeAArch64VectorSizes(genericOp, targetAttr, tileSizes,
+                                   scalableFlags);
+  }
+
+  if (tileSizes.empty())
+    return std::nullopt;
+
+  // If scalable flags are empty, assume target doesn't care about scalability.
+  if (scalableFlags.empty())
+    scalableFlags = SmallVector<bool>(tileSizes.size(), false);
+
+  LLVM_DEBUG(KD_DBGS() << "Transpose vector sizes: " << tileSizes << "\n");
+  LLVM_DEBUG(KD_DBGS() << "Transpose vector scalable flags: " << scalableFlags
+                       << "\n");
+  return std::make_pair(tileSizes, scalableFlags);
+}
+
 /// Sets the lowering configuration for a generic op implementing a
 /// transposition to use CPUDoubleTilingExpert pipeline.
 static LogicalResult
@@ -1980,47 +2089,20 @@ setTransposeLikeOpRootConfig(mlir::FunctionOpInterface entryPointFn,
   assert(!getLoweringConfig(genericOp) &&
          "expected lowering_config is not set");
 
+  if (!linalgOpInfo.isTranspose())
+    return failure();
+
   LLVM_DEBUG(KD_DBGS() << "Setting transpose-like op root configuration\n");
 
-  auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(entryPointFn);
-  if (!hasAVX2Feature(targetAttr) ||
-      !x86TransposeLoweringPrecondition(genericOp)) {
+  std::optional<SizesAndScalableFlags> vecDims = getTransposeVectorSizes(
+      entryPointFn, genericOp, linalgOpInfo, targetMLTransInfo);
+  if (!vecDims)
     return failure();
-  }
+
+  auto [vecSizes, vecScalableDims] = *vecDims;
 
   DistributionHeuristicConfig distConfig;
-  distConfig.minTileSizes = getMinTilingSizesForEachDim(
-      entryPointFn, genericOp, linalgOpInfo, targetMLTransInfo);
-  if (llvm::count_if(distConfig.minTileSizes,
-                     [](int64_t tileSize) { return tileSize > 1; }) != 2) {
-    // Transpose patterns are not applicable if vectorizing more or less than
-    // two dims.
-    return failure();
-  }
-
-  // Make sure that the original tile sizes are greater than or equal to the
-  // tile sizes to be used for the transpose op (e.g., 8x8, 16x16, etc).
-  int64_t targetVectorSize = 8;
-  if (llvm::any_of(distConfig.minTileSizes, [&](int64_t tileSize) {
-        return tileSize > 1 && tileSize < targetVectorSize;
-      })) {
-    return failure();
-  }
-
-  // Target 16x16 tile sizes if there are AVX512 features and all the tile sizes
-  // are greater than or equal to 16.
-  if (hasAVX512fFeature(targetAttr) &&
-      llvm::all_of(distConfig.minTileSizes, [](int64_t tileSize) {
-        return tileSize == 1 || tileSize >= 16;
-      })) {
-    targetVectorSize = 16;
-  }
-
-  // Replace dims to be vectorized with the new tile sizes.
-  std::replace_if(
-      distConfig.minTileSizes.begin(), distConfig.minTileSizes.end(),
-      [](int64_t tileSize) { return tileSize > 1; }, targetVectorSize);
-
+  distConfig.minTileSizes = vecSizes;
   auto vecPreProcStrategy = getVectorPreProcStrategy(genericOp);
   LLVM_DEBUG(KD_DBGS() << "Vectorization pre-processing strategy "
                        << vecPreProcStrategy << "\n");
@@ -2037,13 +2119,17 @@ setTransposeLikeOpRootConfig(mlir::FunctionOpInterface entryPointFn,
   tileSizes.emplace_back(numTilingDims, 0);
   tileSizes.emplace_back(numTilingDims, 0);
 
+  ScalableTileFlagsListType scalableTileFlags;
+  scalableTileFlags.emplace_back(numTilingDims, false);
+  scalableTileFlags.emplace_back(vecScalableDims);
+
   // For non-tensor based ops use the Buffer ops pipeline.
   auto passPipeline =
       genericOp.hasPureTensorSemantics()
           ? DispatchLoweringPassPipeline::CPUDoubleTilingExpert
           : DispatchLoweringPassPipeline::CPUBufferOpsTileAndVectorize;
-  return setOpConfigAndEntryPointFnTranslation(entryPointFn, genericOp,
-                                               tileSizes, passPipeline);
+  return setOpConfigAndEntryPointFnTranslation(
+      entryPointFn, genericOp, tileSizes, scalableTileFlags, passPipeline);
 }
 
 /// Sets elementwise dispatches to use peeling approach. It scales the number of

@@ -9,6 +9,7 @@
 
 include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtBase.td"
 include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtInterfaces.td"
+include "mlir/Dialect/Linalg/IR/LinalgInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
@@ -674,6 +675,231 @@ def IREELinalgExt_AttentionOp : IREELinalgExt_Op<"attention",
 
     int64_t getIterationDomainRank() {
       return getQueryMap().getNumDims();
+    }
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// OnlineAttention
+//===----------------------------------------------------------------------===//
+
+def IREELinalgExt_OnlineAttentionOp : IREELinalgExt_PureOp<"online_attention",
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     DestinationStyleOpInterface, LinalgExtInterface,
+     DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
+     DeclareOpInterfaceMethods<AggregatedOpInterface, ["decomposeOperation"]>,
+     DeclareOpInterfaceMethods<TilingInterface,
+      ["getIterationDomain",
+       "getLoopIteratorTypes",
+       "getResultTilePosition",
+       "getTiledImplementation"]>]> {
+  let summary = "Online Attention operator";
+  let description = [{
+    Traditional scaled dot product attention computes:
+
+    attention(Q, K, V, scale) = softmax(Q @ K.T * scale) @ V
+
+    Online Attention on the other hand, uses an online normalizer instead of
+    softmax:
+
+    online_attention(Q, K, V, scale, running_max, running_sum)
+      = online_normalizer(Q @ K.T * scale, running_max, running_sum) @ V
+
+    The advantage of this online_normalizer is that it can be tiled along
+    it's reduction dimension, making the online_attention operator:
+      - Tilable along softmax reduction dimension
+      - Associative along softmax reduction dimension
+      - Commutative along softmax associative dimension
+
+    Note: The results of online_attention need to be combined after computing
+    it over the entire softmax reduction dimension by:
+      x, _, sum : results
+      x = (1 / sum) * x
+  }];
+
+  let arguments = (ins AnyShaped:$query,
+                       AnyShaped:$key,
+                       AnyShaped:$value,
+                       AnyFloat:$scale,
+                       AnyShaped:$output,
+                       AnyShaped:$max,
+                       AnyShaped:$sum,
+                       AffineMapArrayAttr:$indexing_maps
+  );
+
+  let results = (outs Variadic<AnyRankedTensor>:$results);
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = [{
+    attr-dict
+    `ins` `(` $query `,` $key `,` $value `,` $scale `:` type($query) `,` type($key) `,` type($value) `,` type($scale) `)`
+    `outs` `(` $output `,` $max `,` $sum `:` type($output) `,` type($max) `,` type($sum) `)`
+    (`->` type($results)^)?
+  }];
+
+  let extraClassDeclaration = [{
+    // Method to implement for specifying output range for
+    // DestinationStyleOpInterface
+    MutableOperandRange getDpsInitsMutable();
+
+    SmallVector<AffineMap> getIndexingMapsArray();
+
+    AffineMap getQueryMap() {
+      return getIndexingMapsArray()[0];
+    }
+    AffineMap getKeyMap() {
+      return getIndexingMapsArray()[1];
+    }
+    AffineMap getValueMap() {
+      return getIndexingMapsArray()[2];
+    }
+    AffineMap getOutputMap() {
+      return getIndexingMapsArray()[3];
+    }
+    AffineMap getMaxMap() {
+      return getIndexingMapsArray()[4];
+    }
+    AffineMap getSumMap() {
+      return getIndexingMapsArray()[5];
+    }
+
+    int64_t getIterationDomainRank() {
+      return getQueryMap().getNumDims();
+    }
+  }];
+}
+//===----------------------------------------------------------------------===//
+// Im2col
+//===----------------------------------------------------------------------===//
+
+def IREELinalgExt_Im2colOp : IREELinalgExt_Op<"im2col",
+    [DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
+     DeclareOpInterfaceMethods<AggregatedOpInterface, ["decomposeOperation"]>,
+     DeclareOpInterfaceMethods<TilingInterface,
+      ["getIterationDomain",
+       "getLoopIteratorTypes",
+       "getResultTilePosition",
+       "getTiledImplementation",
+       "generateResultTileValue"]>]> {
+  let summary = "Im2col operation for convolutions";
+  let description = [{
+    Im2col op for convolutions. The operation performs a transformation on the
+    input to convert it from a convolution input to an equivalent gemm input.
+    The op is defined by its input, output, some conv metadata, and some
+    indexing metadata. The `strides`, `dilations`, and `kernel_size` are taken
+    from the convolution from which this op is generated, and they define how
+    the input operand is indexed when the operation is decomposed. The shape of
+    the output should be `tensor<BxMxK>`, and the `m_pos`, `k_pos`, and
+    `batch_pos` indicate which input dimensions map to which output dimensions.
+
+    The `k_offset` is an offset within the output K dimension from which the
+    iteration space of the operation begins. This is used for tiling, since the
+    tiled implementation must leave the output K dimension untiled. Similarly,
+    `m_offset` is the offset within the output M dimension from which the
+    iteration space of the operation begins.
+    The iteration space is the full output shape of the im2col op, so if the
+    im2col op were tiled to loops with a scalar inner tile, it would look like
+    the following:
+    ```
+      %im2col = iree_linalg_ext.im2col
+          strides = [1, 1] dilations = [1, 1] kernel_size = [3, 3]
+          m_offset = [0] k_offset = [0]
+          batch_pos = [0] m_pos = [1, 2] k_pos = [3]
+          ins(%in : tensor<2x34x34x640xf32>)
+          outs(%out : tensor<2x1024x5760xf32>) -> tensor<2x1024x5760xf32>
+    ```
+    becomes:
+    ```
+      scf.for %arg0 = %c0 to %c2 step %c1
+        scf.for %arg1 = %c0 to %c1024 step %c1
+          scf.for %arg2 = %c0 to %c5760 step %c1
+            %im2col = iree_linalg_ext.im2col
+                strides = [1, 1] dilations = [1, 1] kernel_size = [3, 3]
+                m_offset = [%arg1] k_offset = [%arg2]
+                batch_pos = [0] m_pos = [1, 2] k_pos = [3]
+                ins(%in_tile : tensor<1x34x34x640xf32>)
+                outs(%out_tile : tensor<1x1x1xf32>) -> tensor<1x1x1xf32>
+    ```
+    Then, when the tiled op is decomposed, it becomes a loop over the iteration
+    space of the im2col op, whith an extract_slice from the `%in_tile` followed
+    by an insert_slice to the `%out_tile`. The indices for the extract slice are
+    computed using the `m_offset` and `k_offset` as:
+    (b, m, k) -> (b, M / 32 + K / (640*3), M % 32 + K % (640*3) / 640, K % 640)
+    Where `(b, m, k)` are the indices of the tiled op's iteration space, and
+    `M = m + m_offset` and `K = k + K_offset`.
+  }];
+
+  let arguments = (ins AnyShaped:$input, AnyShaped:$output,
+                       DenseI64ArrayAttr:$strides,
+                       DenseI64ArrayAttr:$dilations,
+                       Variadic<Index>:$kernel_size,
+                       DenseI64ArrayAttr:$static_kernel_size,
+                       Variadic<Index>:$m_offset,
+                       DenseI64ArrayAttr:$static_m_offset,
+                       Variadic<Index>:$k_offset,
+                       DenseI64ArrayAttr:$static_k_offset,
+                       DenseI64ArrayAttr:$batch_pos,
+                       DenseI64ArrayAttr:$m_pos,
+                       DenseI64ArrayAttr:$k_pos);
+
+  let results = (outs Variadic<AnyShaped>:$results);
+  let hasFolder = 1;
+  let assemblyFormat = [{
+    attr-dict
+    `strides` `=` $strides
+    `dilations` `=` $dilations
+    `kernel_size` `=`
+    custom<DynamicIndexList>($kernel_size, $static_kernel_size)
+    `m_offset` `=`
+    custom<DynamicIndexList>($m_offset, $static_m_offset)
+    `k_offset` `=`
+    custom<DynamicIndexList>($k_offset, $static_k_offset)
+    `batch_pos` `=` $batch_pos
+    `m_pos` `=` $m_pos
+    `k_pos` `=` $k_pos
+    `ins` `(` $input `:` type($input) `)`
+    `outs` `(` $output `:` type($output) `)`
+    (`->` type($results)^)?
+  }];
+
+  let builders = [
+    OpBuilder<(ins "Value":$input, "Value":$output,
+      "ArrayRef<int64_t>":$strides,
+      "ArrayRef<int64_t>":$dilations,
+      "ArrayRef<OpFoldResult>":$kernel_size,
+      "ArrayRef<OpFoldResult>":$m_offset,
+      "ArrayRef<OpFoldResult>":$k_offset,
+      "ArrayRef<int64_t>":$batch_dimensions,
+      "ArrayRef<int64_t>":$m_dimensions,
+      "ArrayRef<int64_t>":$k_dimensions)>
+  ];
+
+  let extraClassDeclaration = extraLinalgExtOpClassDeclaration # [{
+    ShapedType getInputType() {
+      return cast<ShapedType>(getInput().getType());
+    }
+    ShapedType getOutputType() {
+      return cast<ShapedType>(getOutput().getType());
+    }
+    int64_t getInputRank() {
+      return getInputType().getRank();
+    }
+    int64_t getOutputRank() {
+      return getOutputType().getRank();
+    }
+    // Return op metadata.
+    SmallVector<OpFoldResult> getMixedKernelSize();
+    SmallVector<OpFoldResult> getMixedMOffset();
+    SmallVector<OpFoldResult> getMixedKOffset();
+
+    // Set op metadata.
+    void setMixedKOffset(SmallVector<OpFoldResult> kOffset);
+    void setMixedMOffset(SmallVector<OpFoldResult> mOffset);
+
+    // Method to implement for specifying output range for
+    // DestinationStyleOpInterface
+    MutableOperandRange getDpsInitsMutable() {
+      return getOutputMutable();
     }
   }];
 }

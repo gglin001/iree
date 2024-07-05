@@ -51,11 +51,17 @@ static llvm::cl::opt<bool> clEnableFuseHorizontalContractions(
         "Enables horizontal fusion of contractions with one common operand"),
     llvm::cl::init(false));
 
-static llvm::cl::opt<bool> clEnableDemoteContractionInputsToBF16(
+static llvm::cl::opt<DemotionOption> clDemoteContractionInputsToBF16Strategy(
     "iree-global-opt-enable-demote-contraction-inputs-to-bf16",
-    llvm::cl::desc(
-        "Demote inputs (LHS, RHS) of linalg matmul-like ops from f32 to bf16."),
-    llvm::cl::init(false));
+    llvm::cl::desc("Demotes inputs (LHS, RHS) of contraction ops to BF16. "
+                   "Selects types of contraction ops to demote."),
+    llvm::cl::values(
+        clEnumValN(DemotionOption::All, "all", "Demote all contraction ops."),
+        clEnumValN(DemotionOption::Conv, "conv",
+                   "Only demote convolution ops."),
+        clEnumValN(DemotionOption::Matmul, "matmul", "Only demote matmul ops."),
+        clEnumValN(DemotionOption::None, "none", "Demote no contraction ops.")),
+    llvm::cl::init(DemotionOption::None));
 
 void buildGlobalOptExprHoistingPassPipeline(
     OpPassManager &passManager, const TransformOptions &transformOptions) {
@@ -116,12 +122,16 @@ void buildGlobalOptimizationPassPipeline(
       // dims as the unit dim folding pass updates indexing maps and is better
       // at working with generics. By this point we have already done any
       // specialized raising and the op names are no longer useful.
-      .addPass(createGeneralizeLinalgNamedOpsPass)
-      .addPass(IREE::Flow::createFoldUnitExtentDimsPass)
+      .addPass(createGeneralizeLinalgNamedOpsPass);
+
+  mainPassManager.addPass(IREE::Flow::createFoldUnitExtentDimsPass());
+  FunctionLikeNest(mainPassManager)
       .addPredicatedPass(clEnableFuseSiluHorizontalMatmul,
                          createFuseSiluHorizontalMatmulPass)
-      .addPredicatedPass(clEnableDemoteContractionInputsToBF16,
-                         createDemoteContractionInputsToBF16Pass)
+      .addPass([&]() {
+        return createDemoteContractionInputsToBF16Pass(
+            clDemoteContractionInputsToBF16Strategy);
+      })
       .addPass([&]() {
         return createFuseDequantizationMatmulPass(
             clEnableQuantizedMatmulReassociation);

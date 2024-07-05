@@ -226,6 +226,12 @@ createMemrefCopyToLinalgPass();
 /// Extracts lowering configs and translation info from user configs.
 std::unique_ptr<OperationPass<ModuleOp>> createMaterializeUserConfigsPass();
 
+/// Normalizes the iteration range of `scf.for` and `scf.forall` loops to
+/// [0, ub) += 1.
+std::unique_ptr<Pass>
+createNormalizeLoopBoundsPass(bool normalizeFor = true,
+                              bool normalizeForall = true);
+
 /// Pass to optimize vector transfer_read and transfer_write.
 std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createOptimizeVectorTransferPass(bool flatten = false);
@@ -235,6 +241,10 @@ std::unique_ptr<InterfacePass<FunctionOpInterface>> createPadDynamicAlloc();
 
 /// Pass to convert math operations to their polynomial approximation.
 std::unique_ptr<OperationPass<>> createPolynomialApproximationPass();
+
+/// Pass to propagate reshapes by expansion through all ops without explicit
+/// lowering configurations.
+std::unique_ptr<OperationPass<>> createPropagateReshapesByExpansionPass();
 
 /// Pass to reconcile TranslationInfo across multiple functions in a dispatch
 /// and set the appropriate values on the surrounding HAL ops.
@@ -281,6 +291,9 @@ createTransformDialectInterpreterPass(StringRef transformSequenceName = "");
 
 /// Pass to propagate type to avoid generating load/stores of illegal types.
 std::unique_ptr<InterfacePass<FunctionOpInterface>> createTypePropagationPass();
+
+/// Pass to vectorize memref.copy ops.
+std::unique_ptr<OperationPass<void>> createVectorizeMemrefCopyPass();
 
 /// Creates a pass to vectorize a very specific form of tensor.pad ops with
 /// control flows.
