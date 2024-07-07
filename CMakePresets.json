@@ -98,6 +98,20 @@
         "CMAKE_C_FLAGS": "-mcmodel=medany -O3 -march=rv64gc -mabi=lp64d $env{COMMON_CMAKE_C_FLAGS} -L -nostdlib -lgcc -lc -lm -lsemihost",
         "CMAKE_CXX_FLAGS": "-mcmodel=medany -O3 -march=rv64gc -mabi=lp64d $env{COMMON_CMAKE_C_FLAGS} -L -nostdlib -lgcc -lc -lm -lsemihost"
       }
+    },
+    {
+      "name": "iree_llvm_riscv_picolibc",
+      "inherits": "iree_llvm_riscv",
+      "environment": {
+        // `${fileDir}/picolibc` is picolibc build with riscv64-unknown-elf-gcc, build dir is `build-meson`
+        "PICOLIBC_DIR": "${fileDir}/picolibc",
+        "SPECS": "$env{PICOLIBC_DIR}/build-meson/picolibc.specs",
+        "LDSCRIPT": "${fileDir}/riscv.ld"
+      },
+      "cacheVariables": {
+        "CMAKE_C_FLAGS": "-mcmodel=medany -O3 -march=rv64gc -mabi=lp64d $env{COMMON_CMAKE_C_FLAGS} -specs=$env{SPECS} -T$env{LDSCRIPT} --oslib=semihost --crt0=semihost",
+        "CMAKE_CXX_FLAGS": "-mcmodel=medany -O3 -march=rv64gc -mabi=lp64d $env{COMMON_CMAKE_C_FLAGS} -specs=$env{SPECS} -T$env{LDSCRIPT} --oslib=semihost --crt0=semihost"
+      }
     }
   ]
 }
