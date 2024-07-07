@@ -52,6 +52,8 @@ iree_native_test(
 
 endif()
 
+return()
+
 iree_compiler_targeting_iree_arch(_IREE_COMPILER_TARGETING_ARM_32 "arm_32")
 iree_compiler_targeting_iree_arch(_IREE_COMPILER_TARGETING_ARM_64 "arm_64")
 iree_compiler_targeting_iree_arch(_IREE_COMPILER_TARGETING_RISCV_32 "riscv_32")

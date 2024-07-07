@@ -13,6 +13,7 @@
 #   compiler_plugins
 
 add_subdirectory(static_library)
+add_subdirectory(simple_embedding)
 return()
 
 add_subdirectory(custom_dispatch)
