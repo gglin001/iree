@@ -52,6 +52,42 @@ iree_native_test(
 
 endif()
 
+iree_cc_binary(
+  NAME
+    simple_embedding_embedded_sync
+  SRCS
+    "device_embedded_sync.c"
+    "simple_embedding.c"
+  DEPS
+    ::simple_embedding_test_bytecode_module_cpu_riscv_64_c
+    iree::base
+    iree::hal
+    iree::hal::drivers::local_sync::sync_driver
+    iree::hal::local
+    iree::hal::local::loaders::embedded_elf_loader
+    iree::modules::hal
+    iree::vm
+    iree::vm::bytecode::module
+)
+
+iree_bytecode_module(
+  NAME
+    simple_embedding_test_bytecode_module_cpu_riscv_64
+  SRC
+    "simple_embedding_test.mlir"
+  C_IDENTIFIER
+    "iree_samples_simple_embedding_test_module_cpu_riscv_64"
+  FLAGS
+    "--iree-hal-target-backends=llvm-cpu"
+    "--iree-llvmcpu-target-triple=riscv64-unknown-elf"
+    "--iree-llvmcpu-target-cpu-features=+m,+a,+f,+d,+c"
+    "--iree-llvmcpu-target-abi=lp64d"
+    "--iree-llvmcpu-debug-symbols=false"
+    "--iree-vm-bytecode-module-strip-source-map=true"
+    # "--iree-vm-emit-polyglot-zip=false"
+  PUBLIC
+)
+
 return()
 
 iree_compiler_targeting_iree_arch(_IREE_COMPILER_TARGETING_ARM_32 "arm_32")
