@@ -91,8 +91,9 @@
       "cacheVariables": {
         // `${fileDir}/riscv-gnu-toolchain` is riscv gnu toolchain for bare metal
         "CMAKE_SYSROOT": "${fileDir}/riscv-gnu-toolchain",
+        // TODO: why need empty `-L`
         "CMAKE_C_FLAGS": "-mcmodel=medany -O3 -march=rv64gc -mabi=lp64d -DIREE_PLATFORM_GENERIC=1 -DIREE_SYNCHRONIZATION_DISABLE_UNSAFE=1 -DIREE_FILE_IO_ENABLE=0 -DIREE_TIME_NOW_FN='{return 0;}' -DIREE_DEVICE_SIZE_T=uint64_t -DPRIdsz=PRIu64 -L -nostdlib -lgcc -lc -lm -lsemihost",
-        "CMAKE_CXX_FLAGS": "-mcmodel=medany -O3 -march=rv64gc -mabi=lp64d -DIREE_PLATFORM_GENERIC=1 -DIREE_SYNCHRONIZATION_DISABLE_UNSAFE=1 -DIREE_FILE_IO_ENABLE=0 -DIREE_TIME_NOW_FN='{return 0;}' -DIREE_DEVICE_SIZE_T=uint64_t -DPRIdsz=PRIu64 -nostdlib -lgcc -lc -lm -lsemihost"
+        "CMAKE_CXX_FLAGS": "-mcmodel=medany -O3 -march=rv64gc -mabi=lp64d -DIREE_PLATFORM_GENERIC=1 -DIREE_SYNCHRONIZATION_DISABLE_UNSAFE=1 -DIREE_FILE_IO_ENABLE=0 -DIREE_TIME_NOW_FN='{return 0;}' -DIREE_DEVICE_SIZE_T=uint64_t -DPRIdsz=PRIu64 -L -nostdlib -lgcc -lc -lm -lsemihost"
       }
     }
   ]
