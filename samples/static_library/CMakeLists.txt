@@ -4,16 +4,23 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-if(NOT IREE_TARGET_BACKEND_LLVM_CPU OR
-   NOT IREE_HAL_DRIVER_LOCAL_SYNC OR
-   NOT IREE_BUILD_COMPILER)
-  return()
-endif()
+# if(NOT IREE_TARGET_BACKEND_LLVM_CPU OR
+#    NOT IREE_HAL_DRIVER_LOCAL_SYNC OR
+#    NOT IREE_BUILD_COMPILER)
+#   return()
+# endif()
 
 ## Example with VM bytecode module.
 # Setup args for iree-compile.
 set(_COMPILE_ARGS)
 list(APPEND _COMPILE_ARGS "--iree-hal-target-backends=llvm-cpu")
+
+list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-triple=riscv64")
+# list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-abi=lp64")
+# list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-cpu-features=+m,+i")
+list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-abi=lp64d")
+list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-cpu-features=+i,+m,+a,+f,+d")
+
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-link-embedded=false")
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-link-static")
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-static-library-output-path=simple_mul.o")
@@ -100,6 +107,13 @@ endif()
 set(_COMPILE_ARGS)
 list(APPEND _COMPILE_ARGS "--output-format=vm-c")
 list(APPEND _COMPILE_ARGS "--iree-hal-target-backends=llvm-cpu")
+
+list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-triple=riscv64")
+# list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-abi=lp64")
+# list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-cpu-features=+m,+i")
+list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-abi=lp64d")
+list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-cpu-features=+i,+m,+a,+f,+d")
+
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-link-embedded=false")
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-link-static")
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-static-library-output-path=simple_mul_c_module.o")

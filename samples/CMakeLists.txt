@@ -12,6 +12,9 @@
 # included:
 #   compiler_plugins
 
+add_subdirectory(static_library)
+return()
+
 add_subdirectory(custom_dispatch)
 add_subdirectory(custom_module)
 add_subdirectory(dynamic_shapes)
