@@ -1,6 +1,8 @@
 # NOTE: not using bazel-to-cmake here because of the runtime unified rule.
 # We should figure out how to make bazel/cmake consistent with that.
 
+return()
+
 iree_cc_binary(
   NAME
     hello_world_file
