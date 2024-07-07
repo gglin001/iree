@@ -32,26 +32,26 @@ iree_cc_library(
   PUBLIC
 )
 
-# iree_cc_binary(
-#   NAME
-#     elf_module_test_binary
-#   SRCS
-#     "elf_module_test_main.c"
-#   DEPS
-#     ::elf_module
-#     iree::base
-#     iree::base::internal::cpu
-#     iree::hal::local::elf::testdata::elementwise_mul
-#     iree::hal::local::executable_environment
-#     iree::hal::local::executable_library
-# )
+iree_cc_binary(
+  NAME
+    elf_module_test_binary
+  SRCS
+    "elf_module_test_main.c"
+  DEPS
+    ::elf_module
+    iree::base
+    iree::base::internal::cpu
+    iree::hal::local::elf::testdata::elementwise_mul
+    iree::hal::local::executable_environment
+    iree::hal::local::executable_library
+)
 
-# iree_native_test(
-#   NAME
-#     "elf_module_test"
-#   SRC
-#     ::elf_module_test_binary
-# )
+iree_native_test(
+  NAME
+    "elf_module_test"
+  SRC
+    ::elf_module_test_binary
+)
 
 iree_cc_library(
   NAME

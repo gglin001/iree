@@ -163,27 +163,27 @@ iree_cc_library(
   PUBLIC
 )
 
-# iree_cc_binary(
-#   NAME
-#     flags_demo
-#   SRCS
-#     "flags_demo.c"
-#   DEPS
-#     ::flags
-#     iree::base
-# )
+iree_cc_binary(
+  NAME
+    flags_demo
+  SRCS
+    "flags_demo.c"
+  DEPS
+    ::flags
+    iree::base
+)
 
-# iree_lit_test_suite(
-#   NAME
-#     flags_test
-#   SRCS
-#     "flags_test.txt"
-#   TOOLS
-#     ::flags_demo
-#     FileCheck
-#   LABELS
-#     "hostonly"
-# )
+iree_lit_test_suite(
+  NAME
+    flags_test
+  SRCS
+    "flags_test.txt"
+  TOOLS
+    ::flags_demo
+    FileCheck
+  LABELS
+    "hostonly"
+)
 
 iree_cc_library(
   NAME
