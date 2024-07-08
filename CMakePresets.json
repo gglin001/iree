@@ -50,6 +50,7 @@
         "IREE_ERROR_ON_MISSING_SUBMODULES": false,
         "IREE_BUILD_TESTS": false,
         "IREE_BUILD_SAMPLES": true,
+        "IREE_BUILD_SAMPLES_RISCV": true,
         "IREE_BUILD_COMPILER": false,
         "IREE_ENABLE_WERROR_FLAG": false,
         "IREE_HOST_BIN_DIR": "${sourceDir}/build/tools",
@@ -81,6 +82,7 @@
       "inherits": "iree_llvm_riscv",
       "cacheVariables": {
         // `${fileDir}/riscv-gnu-toolchain` is riscv gnu toolchain for bare metal
+        // tested with https://github.com/riscv-software-src/homebrew-riscv
         "CMAKE_SYSROOT": "${fileDir}/riscv-gnu-toolchain",
         // TODO: why need empty `-L`
         "CMAKE_C_FLAGS": "-mcmodel=medany -O3 -march=rv64imac -mabi=lp64 $env{COMMON_CMAKE_C_FLAGS} -L -nostdlib -lgcc -lc -lm -lsemihost",
@@ -110,7 +112,7 @@
       },
       "cacheVariables": {
         "IREE_ENABLE_LLD": true,
-        // `${fileDir}/riscv-toolchain` is riscv toolchain for bare metal
+        // `${fileDir}/riscv-toolchain` is https://github.com/gglin001/riscv-toolchain
         "CMAKE_C_COMPILER": "${fileDir}/riscv-toolchain/bin/clang",
         "CMAKE_CXX_COMPILER": "${fileDir}/riscv-toolchain/bin/clang++",
         "CMAKE_AR": "${fileDir}/riscv-toolchain/bin/llvm-ar",

@@ -52,6 +52,7 @@ iree_native_test(
 
 endif()
 
+if(IREE_BUILD_SAMPLES_RISCV)
 iree_cc_binary(
   NAME
     simple_embedding_embedded_sync
@@ -89,6 +90,7 @@ iree_bytecode_module(
 )
 
 return()
+endif()
 
 iree_compiler_targeting_iree_arch(_IREE_COMPILER_TARGETING_ARM_32 "arm_32")
 iree_compiler_targeting_iree_arch(_IREE_COMPILER_TARGETING_ARM_64 "arm_64")

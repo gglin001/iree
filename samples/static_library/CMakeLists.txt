@@ -4,17 +4,20 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-# if(NOT IREE_TARGET_BACKEND_LLVM_CPU OR
-#    NOT IREE_HAL_DRIVER_LOCAL_SYNC OR
-#    NOT IREE_BUILD_COMPILER)
-#   return()
-# endif()
+if(NOT IREE_BUILD_SAMPLES_RISCV)
+if(NOT IREE_TARGET_BACKEND_LLVM_CPU OR
+   NOT IREE_HAL_DRIVER_LOCAL_SYNC OR
+   NOT IREE_BUILD_COMPILER)
+  return()
+endif()
+endif()
 
 ## Example with VM bytecode module.
 # Setup args for iree-compile.
 set(_COMPILE_ARGS)
 list(APPEND _COMPILE_ARGS "--iree-hal-target-backends=llvm-cpu")
 
+if(IREE_BUILD_SAMPLES_RISCV)
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-triple=riscv64")
 string(FIND "${CMAKE_C_FLAGS}" "lp64d" MABI_POS)
 if(${MABI_POS} GREATER -1)
@@ -23,6 +26,7 @@ if(${MABI_POS} GREATER -1)
 elseif()
   list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-abi=lp64")
   list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-cpu-features=+m,+i")
+endif()
 endif()
 
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-link-embedded=false")
@@ -106,8 +110,10 @@ if(NOT (IREE_OUTPUT_FORMAT_C OR IREE_HOST_BIN_DIR))
   return()
 endif()
 
+if(IREE_BUILD_SAMPLES_RISCV)
 # skip vm-c
 return()
+endif()
 
 ## Example with VM C module.
 # Setup args for iree-compile.
@@ -115,6 +121,7 @@ set(_COMPILE_ARGS)
 list(APPEND _COMPILE_ARGS "--output-format=vm-c")
 list(APPEND _COMPILE_ARGS "--iree-hal-target-backends=llvm-cpu")
 
+if(IREE_BUILD_SAMPLES_RISCV)
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-triple=riscv64")
 if(${MABI_POS} GREATER -1)
   list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-abi=lp64d")
@@ -122,6 +129,7 @@ if(${MABI_POS} GREATER -1)
 elseif()
   list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-abi=lp64")
   list(APPEND _COMPILE_ARGS "--iree-llvmcpu-target-cpu-features=+m,+i")
+endif()
 endif()
 
 list(APPEND _COMPILE_ARGS "--iree-llvmcpu-link-embedded=false")
