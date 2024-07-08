@@ -110,11 +110,6 @@ if(NOT (IREE_OUTPUT_FORMAT_C OR IREE_HOST_BIN_DIR))
   return()
 endif()
 
-if(IREE_BUILD_SAMPLES_RISCV)
-# skip vm-c
-return()
-endif()
-
 ## Example with VM C module.
 # Setup args for iree-compile.
 set(_COMPILE_ARGS)
