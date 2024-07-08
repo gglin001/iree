@@ -105,7 +105,6 @@
       "name": "iree_llvm_riscv_picolibc_clang",
       "inherits": "iree_llvm_riscv",
       "environment": {
-        "SYSROOT": "${fileDir}/riscv-toolchain/lib/clang-runtimes/riscv64-unknown-elf/rv64imac/lp64",
         "AA": "BB"
       },
       "cacheVariables": {
@@ -120,7 +119,6 @@
         "CMAKE_SYSROOT": "${fileDir}/riscv-toolchain/lib/clang-runtimes/riscv64-unknown-elf/rv64imac/lp64",
         "CMAKE_C_FLAGS": "--target=riscv64-unknown-elf -mcmodel=medany -O3 -march=rv64imac -mabi=lp64 $env{COMMON_CMAKE_C_FLAGS} -nostdlib  -lc -lm -lclang_rt.builtins -lcrt0-semihost -lsemihost -T${fileDir}/riscv.ld",
         "CMAKE_CXX_FLAGS": "--target=riscv64-unknown-elf -mcmodel=medany -O3 -march=rv64imac -mabi=lp64 $env{COMMON_CMAKE_C_FLAGS} -nostdlib -lc -lm -lclang_rt.builtins -lcrt0-semihost -lsemihost -T${fileDir}/riscv.ld"
-        // -I$env{SYSROOT}/include -L$env{SYSROOT}/lib
       }
     }
   ]
