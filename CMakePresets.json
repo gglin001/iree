@@ -121,6 +121,15 @@
         "CMAKE_C_FLAGS": "--target=riscv64-unknown-elf -mcmodel=medany -O3 -march=rv64imac -mabi=lp64 $env{COMMON_CMAKE_C_FLAGS} $env{EXTRA_CMAKE_C_FLAGS} -nostdlib  -lc -lm -lclang_rt.builtins -lcrt0-semihost -lsemihost -T${fileDir}/riscv.ld",
         "CMAKE_CXX_FLAGS": "--target=riscv64-unknown-elf -mcmodel=medany -O3 -march=rv64imac -mabi=lp64 $env{COMMON_CMAKE_C_FLAGS} $env{EXTRA_CMAKE_C_FLAGS} -nostdlib -lc -lm -lclang_rt.builtins -lcrt0-semihost -lsemihost -T${fileDir}/riscv.ld"
       }
+    },
+    {
+      "name": "iree_llvm_riscv_picolibc_clang_rv64ima_lp64",
+      "inherits": "iree_llvm_riscv_picolibc_clang",
+      "cacheVariables": {
+        "CMAKE_SYSROOT": "${fileDir}/riscv-toolchain/lib/clang-runtimes/riscv64-unknown-elf/rv64ima/lp64",
+        "CMAKE_C_FLAGS": "--target=riscv64-unknown-elf -mcmodel=medany -O3 -march=rv64ima -mabi=lp64 $env{COMMON_CMAKE_C_FLAGS} $env{EXTRA_CMAKE_C_FLAGS} -nostdlib  -lc -lm -lclang_rt.builtins -lcrt0-semihost -lsemihost -T${fileDir}/riscv.ld",
+        "CMAKE_CXX_FLAGS": "--target=riscv64-unknown-elf -mcmodel=medany -O3 -march=rv64ima -mabi=lp64 $env{COMMON_CMAKE_C_FLAGS} $env{EXTRA_CMAKE_C_FLAGS} -nostdlib -lc -lm -lclang_rt.builtins -lcrt0-semihost -lsemihost -T${fileDir}/riscv.ld"
+      }
     }
   ]
 }
