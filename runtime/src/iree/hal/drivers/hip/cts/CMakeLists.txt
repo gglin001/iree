@@ -10,7 +10,7 @@ endif()
 
 unset(IREE_HIP_TEST_COMPILER_FLAGS)
 list(APPEND IREE_HIP_TEST_COMPILER_FLAGS
-  "--iree-rocm-target-chip=${IREE_HIP_TEST_TARGET_CHIP}"
+  "--iree-hip-target=${IREE_HIP_TEST_TARGET_CHIP}"
 )
 
 iree_hal_cts_test_suite(
@@ -60,12 +60,13 @@ iree_hal_cts_test_suite(
   DEPS
     iree::hal::drivers::hip::registration
   EXCLUDED_TESTS
-  # These tests fail with:
-  #     UNAVAILABLE; missing hipDrvGraphAddMemcpyNode symbol;
-  #     cannot use graph-based command buffer
-  "command_buffer"
-  "command_buffer_dispatch"
-  "file"
+    # These tests fail with:
+    #     UNAVAILABLE; missing hipDrvGraphAddMemcpyNode symbol;
+    #     cannot use graph-based command buffer
+    "command_buffer_copy_buffer"
+    "command_buffer_dispatch"
+    "command_buffer_update_buffer"
+    "file"
     # HAL event is unimplemented for now.
     "event"
   LABELS

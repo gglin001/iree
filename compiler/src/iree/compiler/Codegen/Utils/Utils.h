@@ -13,6 +13,8 @@
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
+#include "mlir/Dialect/Vector/IR/ScalableValueBoundsConstraintSet.h"
+#include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/PatternMatch.h"
@@ -196,6 +198,14 @@ getSoftwarePipeliningAttrDict(MLIRContext *context,
 FailureOr<int64_t> getSoftwarePipelineDepth(DictionaryAttr);
 FailureOr<int64_t> getSoftwarePipelineStoreStage(DictionaryAttr);
 
+// Returns a small tiling factor for the given reduction `dimSize`.
+// Returns 0 to avoid tiling.
+int getReductionTilingFactor(int64_t dimSize);
+
+// Returns the minimal element bitwidth used in the operands and results of the
+// given Linalg op.
+int64_t getMinElementBitwidth(linalg::LinalgOp linalgOp);
+
 //===---------------------------------------------------------------------===//
 // Misc. utility functions.
 //===---------------------------------------------------------------------===//
@@ -225,13 +235,23 @@ void sinkOpsInCFG(const SmallVector<Operation *> &allocs,
 // the inputs.
 bool hasFusedLeadingOp(linalg::LinalgOp rootOp);
 
-struct VscaleRange {
-  unsigned min;
-  unsigned max;
-};
-
-std::optional<VscaleRange>
+std::optional<vector::VscaleRange>
 getDefaultVscaleRange(IREE::HAL::ExecutableTargetAttr targetAttr);
+
+using DimBound = vector::ConstantOrScalableBound;
+using DimBoundSize = DimBound::BoundSize;
+
+/// Should the scalable upper bound be rounded up to the nearest multiple of
+/// vscale?
+enum class RoundUpVscaleMultiple { No, Yes };
+
+/// Computes the upper bound of `dimNum` dim of the ShapedType value
+/// `shapedValue`. If the optional `vscaleRange` is provided then the computed
+/// bound can be a scalable quantity.
+FailureOr<DimBoundSize>
+computeDimUpperBound(Value shapedValue, unsigned dimNum,
+                     std::optional<vector::VscaleRange> vscaleRange,
+                     RoundUpVscaleMultiple = RoundUpVscaleMultiple::No);
 
 } // namespace mlir::iree_compiler
 

@@ -10,7 +10,6 @@
 #include "iree/hal/drivers/cuda/cuda_status_util.h"
 #include "iree/hal/drivers/cuda/native_executable.h"
 #include "iree/hal/drivers/cuda/nccl_channel.h"
-#include "iree/hal/drivers/cuda/pipeline_layout.h"
 #include "iree/hal/utils/collective_batch.h"
 #include "iree/hal/utils/resource_set.h"
 
@@ -22,7 +21,8 @@ typedef struct iree_hal_cuda_stream_command_buffer_t {
   const iree_hal_cuda_nccl_dynamic_symbols_t* nccl_symbols;
 
   // Per-stream CUDA tracing context.
-  iree_hal_cuda_tracing_context_t* tracing_context;
+  iree_hal_stream_tracing_context_t* tracing_context;
+  iree_hal_stream_tracing_context_event_list_t tracing_event_list;
 
   CUstream cu_stream;
 
@@ -37,14 +37,6 @@ typedef struct iree_hal_cuda_stream_command_buffer_t {
 
   // Iteratively constructed batch of collective operations.
   iree_hal_collective_batch_t collective_batch;
-
-  // The current set push constants.
-  int32_t push_constants[IREE_HAL_CUDA_MAX_PUSH_CONSTANT_COUNT];
-
-  // The current bound descriptor sets.
-  struct {
-    CUdeviceptr bindings[IREE_HAL_CUDA_MAX_DESCRIPTOR_SET_BINDING_COUNT];
-  } descriptor_sets[IREE_HAL_CUDA_MAX_DESCRIPTOR_SET_COUNT];
 } iree_hal_cuda_stream_command_buffer_t;
 
 static const iree_hal_command_buffer_vtable_t
@@ -58,16 +50,16 @@ iree_hal_cuda_stream_command_buffer_cast(
 }
 
 iree_status_t iree_hal_cuda_stream_command_buffer_create(
-    iree_hal_device_t* device,
+    iree_hal_allocator_t* device_allocator,
     const iree_hal_cuda_dynamic_symbols_t* cuda_symbols,
     const iree_hal_cuda_nccl_dynamic_symbols_t* nccl_symbols,
-    iree_hal_cuda_tracing_context_t* tracing_context,
+    iree_hal_stream_tracing_context_t* tracing_context,
     iree_hal_command_buffer_mode_t mode,
     iree_hal_command_category_t command_categories,
     iree_host_size_t binding_capacity, CUstream stream,
     iree_arena_block_pool_t* block_pool, iree_allocator_t host_allocator,
     iree_hal_command_buffer_t** out_command_buffer) {
-  IREE_ASSERT_ARGUMENT(device);
+  IREE_ASSERT_ARGUMENT(device_allocator);
   IREE_ASSERT_ARGUMENT(cuda_symbols);
   IREE_ASSERT_ARGUMENT(nccl_symbols);
   IREE_ASSERT_ARGUMENT(out_command_buffer);
@@ -83,17 +75,23 @@ iree_status_t iree_hal_cuda_stream_command_buffer_create(
 
   iree_hal_cuda_stream_command_buffer_t* command_buffer = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_allocator_malloc(host_allocator, sizeof(*command_buffer),
-                                (void**)&command_buffer));
+      z0,
+      iree_allocator_malloc(host_allocator,
+                            sizeof(*command_buffer) +
+                                iree_hal_command_buffer_validation_state_size(
+                                    mode, binding_capacity),
+                            (void**)&command_buffer));
 
   iree_hal_command_buffer_initialize(
-      device, mode, command_categories, IREE_HAL_QUEUE_AFFINITY_ANY,
-      binding_capacity, &iree_hal_cuda_stream_command_buffer_vtable,
-      &command_buffer->base);
+      device_allocator, mode, command_categories, IREE_HAL_QUEUE_AFFINITY_ANY,
+      binding_capacity, (uint8_t*)command_buffer + sizeof(*command_buffer),
+      &iree_hal_cuda_stream_command_buffer_vtable, &command_buffer->base);
   command_buffer->host_allocator = host_allocator;
   command_buffer->cuda_symbols = cuda_symbols;
   command_buffer->nccl_symbols = nccl_symbols;
   command_buffer->tracing_context = tracing_context;
+  command_buffer->tracing_event_list.head = NULL;
+  command_buffer->tracing_event_list.tail = NULL;
   command_buffer->cu_stream = stream;
   iree_arena_initialize(block_pool, &command_buffer->arena);
 
@@ -118,6 +116,9 @@ static void iree_hal_cuda_stream_command_buffer_destroy(
   iree_allocator_t host_allocator = command_buffer->host_allocator;
   IREE_TRACE_ZONE_BEGIN(z0);
 
+  iree_hal_stream_tracing_free(command_buffer->tracing_context,
+                               &command_buffer->tracing_event_list);
+
   iree_hal_collective_batch_deinitialize(&command_buffer->collective_batch);
   iree_hal_resource_set_free(command_buffer->resource_set);
   iree_arena_deinitialize(&command_buffer->arena);
@@ -130,6 +131,18 @@ bool iree_hal_cuda_stream_command_buffer_isa(
     iree_hal_command_buffer_t* command_buffer) {
   return iree_hal_resource_is(&command_buffer->resource,
                               &iree_hal_cuda_stream_command_buffer_vtable);
+}
+
+void iree_hal_cuda_stream_notify_submitted_commands(
+    iree_hal_command_buffer_t* base_command_buffer) {
+  iree_hal_cuda_stream_command_buffer_t* command_buffer =
+      iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
+  if (!command_buffer->tracing_context) {
+    return;
+  }
+
+  iree_hal_stream_tracing_notify_submitted(command_buffer->tracing_context,
+                                           &command_buffer->tracing_event_list);
 }
 
 // Flushes any pending batched collective operations.
@@ -147,7 +160,8 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_flush_collectives(
   IREE_TRACE_ZONE_BEGIN(z0);
   iree_status_t status = iree_hal_cuda_nccl_submit_batch(
       command_buffer->nccl_symbols, command_buffer->tracing_context,
-      &command_buffer->collective_batch, command_buffer->cu_stream);
+      &command_buffer->tracing_event_list, &command_buffer->collective_batch,
+      command_buffer->cu_stream);
   iree_hal_collective_batch_clear(&command_buffer->collective_batch);
   IREE_TRACE_ZONE_END(z0);
   return status;
@@ -159,8 +173,9 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_begin(
       iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
   (void)command_buffer;
 
-  IREE_CUDA_STREAM_TRACE_ZONE_BEGIN_EXTERNAL(
-      command_buffer->tracing_context, command_buffer->cu_stream,
+  IREE_HAL_STREAM_TRACE_ZONE_BEGIN_EXTERNAL(
+      command_buffer->tracing_context, &command_buffer->tracing_event_list,
+      IREE_HAL_STREAM_TRACING_VERBOSITY_COARSE,
       /*file_name=*/NULL, 0, /*line=*/0, "iree_hal_cuda_stream_command_buffer",
       strlen("iree_hal_cuda_stream_command_buffer"), /*name=*/NULL, 0);
 
@@ -195,8 +210,9 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_end(
                                        command_buffer->resource_set,
                                        &command_buffer->collective_batch);
 
-  IREE_CUDA_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
-                                  command_buffer->cu_stream);
+  IREE_HAL_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
+                                 &command_buffer->tracing_event_list,
+                                 IREE_HAL_STREAM_TRACING_VERBOSITY_COARSE);
 
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
@@ -210,11 +226,12 @@ static void iree_hal_cuda_stream_command_buffer_begin_debug_group(
       iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
   (void)command_buffer;
 
-  IREE_CUDA_STREAM_TRACE_ZONE_BEGIN_EXTERNAL(
-      command_buffer->tracing_context, command_buffer->cu_stream,
+  IREE_HAL_STREAM_TRACE_ZONE_BEGIN_EXTERNAL(
+      command_buffer->tracing_context, &command_buffer->tracing_event_list,
+      IREE_HAL_STREAM_TRACING_VERBOSITY_COARSE,
       location ? location->file.data : NULL, location ? location->file.size : 0,
-      location ? location->line : 0, /*func_name=*/NULL, 0, label.data,
-      label.size);
+      location ? location->line : 0,
+      /*func_name=*/NULL, 0, label.data, label.size);
 
   // TODO: pass along to CUPTI if available.
 }
@@ -227,8 +244,9 @@ static void iree_hal_cuda_stream_command_buffer_end_debug_group(
 
   // TODO: pass along to CUPTI if available.
 
-  IREE_CUDA_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
-                                  command_buffer->cu_stream);
+  IREE_HAL_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
+                                 &command_buffer->tracing_event_list,
+                                 IREE_HAL_STREAM_TRACING_VERBOSITY_COARSE);
 }
 
 static iree_status_t iree_hal_cuda_stream_command_buffer_execution_barrier(
@@ -291,7 +309,8 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_wait_events(
 }
 
 static iree_status_t iree_hal_cuda_stream_command_buffer_discard_buffer(
-    iree_hal_command_buffer_t* base_command_buffer, iree_hal_buffer_t* buffer) {
+    iree_hal_command_buffer_t* base_command_buffer,
+    iree_hal_buffer_ref_t buffer_ref) {
   // We could mark the memory as invalidated so that if managed CUDA does not
   // try to copy it back to the host.
   return iree_ok_status();
@@ -299,8 +318,7 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_discard_buffer(
 
 static iree_status_t iree_hal_cuda_stream_command_buffer_fill_buffer(
     iree_hal_command_buffer_t* base_command_buffer,
-    iree_hal_buffer_t* target_buffer, iree_device_size_t target_offset,
-    iree_device_size_t length, const void* pattern,
+    iree_hal_buffer_ref_t target_ref, const void* pattern,
     iree_host_size_t pattern_length) {
   iree_hal_cuda_stream_command_buffer_t* command_buffer =
       iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
@@ -311,11 +329,11 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_fill_buffer(
       iree_hal_cuda_stream_command_buffer_flush_collectives(command_buffer));
 
   CUdeviceptr target_device_buffer = iree_hal_cuda_buffer_device_pointer(
-      iree_hal_buffer_allocated_buffer(target_buffer));
-  target_offset += iree_hal_buffer_byte_offset(target_buffer);
+      iree_hal_buffer_allocated_buffer(target_ref.buffer));
+  iree_device_size_t target_offset =
+      iree_hal_buffer_byte_offset(target_ref.buffer) + target_ref.offset;
   CUdeviceptr dst = target_device_buffer + target_offset;
-  size_t num_elements = length / pattern_length;
-
+  size_t num_elements = target_ref.length / pattern_length;
   switch (pattern_length) {
     case 4: {
       IREE_CUDA_RETURN_AND_END_ZONE_IF_ERROR(
@@ -353,8 +371,7 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_fill_buffer(
 
 static iree_status_t iree_hal_cuda_stream_command_buffer_update_buffer(
     iree_hal_command_buffer_t* base_command_buffer, const void* source_buffer,
-    iree_host_size_t source_offset, iree_hal_buffer_t* target_buffer,
-    iree_device_size_t target_offset, iree_device_size_t length) {
+    iree_host_size_t source_offset, iree_hal_buffer_ref_t target_ref) {
   iree_hal_cuda_stream_command_buffer_t* command_buffer =
       iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
   IREE_TRACE_ZONE_BEGIN(z0);
@@ -373,20 +390,21 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_update_buffer(
   if (command_buffer->arena.block_pool) {
     uint8_t* storage = NULL;
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
-        z0,
-        iree_arena_allocate(&command_buffer->arena, length, (void**)&storage));
-    memcpy(storage, src, length);
+        z0, iree_arena_allocate(&command_buffer->arena, target_ref.length,
+                                (void**)&storage));
+    memcpy(storage, src, target_ref.length);
     src = storage;
   }
 
   // Issue the copy using the scratch memory as the source.
   CUdeviceptr target_device_buffer = iree_hal_cuda_buffer_device_pointer(
-      iree_hal_buffer_allocated_buffer(target_buffer));
+      iree_hal_buffer_allocated_buffer(target_ref.buffer));
   CUdeviceptr dst = target_device_buffer +
-                    iree_hal_buffer_byte_offset(target_buffer) + target_offset;
+                    iree_hal_buffer_byte_offset(target_ref.buffer) +
+                    target_ref.offset;
   IREE_CUDA_RETURN_AND_END_ZONE_IF_ERROR(
       z0, command_buffer->cuda_symbols,
-      cuMemcpyHtoDAsync(dst, src, length, command_buffer->cu_stream),
+      cuMemcpyHtoDAsync(dst, src, target_ref.length, command_buffer->cu_stream),
       "cuMemcpyHtoDAsync");
 
   IREE_TRACE_ZONE_END(z0);
@@ -395,9 +413,7 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_update_buffer(
 
 static iree_status_t iree_hal_cuda_stream_command_buffer_copy_buffer(
     iree_hal_command_buffer_t* base_command_buffer,
-    iree_hal_buffer_t* source_buffer, iree_device_size_t source_offset,
-    iree_hal_buffer_t* target_buffer, iree_device_size_t target_offset,
-    iree_device_size_t length) {
+    iree_hal_buffer_ref_t source_ref, iree_hal_buffer_ref_t target_ref) {
   iree_hal_cuda_stream_command_buffer_t* command_buffer =
       iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
   IREE_TRACE_ZONE_BEGIN(z0);
@@ -406,18 +422,20 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_copy_buffer(
       z0,
       iree_hal_cuda_stream_command_buffer_flush_collectives(command_buffer));
 
-  CUdeviceptr target_device_buffer = iree_hal_cuda_buffer_device_pointer(
-      iree_hal_buffer_allocated_buffer(target_buffer));
-  target_offset += iree_hal_buffer_byte_offset(target_buffer);
   CUdeviceptr source_device_buffer = iree_hal_cuda_buffer_device_pointer(
-      iree_hal_buffer_allocated_buffer(source_buffer));
-  source_offset += iree_hal_buffer_byte_offset(source_buffer);
-  CUdeviceptr dst = target_device_buffer + target_offset;
+      iree_hal_buffer_allocated_buffer(source_ref.buffer));
+  iree_device_size_t source_offset =
+      iree_hal_buffer_byte_offset(source_ref.buffer) + source_ref.offset;
+  CUdeviceptr target_device_buffer = iree_hal_cuda_buffer_device_pointer(
+      iree_hal_buffer_allocated_buffer(target_ref.buffer));
+  iree_device_size_t target_offset =
+      iree_hal_buffer_byte_offset(target_ref.buffer) + target_ref.offset;
   CUdeviceptr src = source_device_buffer + source_offset;
+  CUdeviceptr dst = target_device_buffer + target_offset;
 
   IREE_CUDA_RETURN_AND_END_ZONE_IF_ERROR(
       z0, command_buffer->cuda_symbols,
-      cuMemcpyAsync(dst, src, length, command_buffer->cu_stream),
+      cuMemcpyAsync(dst, src, target_ref.length, command_buffer->cu_stream),
       "cuMemcpyAsync");
 
   IREE_TRACE_ZONE_END(z0);
@@ -426,13 +444,22 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_copy_buffer(
 
 static iree_status_t iree_hal_cuda_stream_command_buffer_collective(
     iree_hal_command_buffer_t* base_command_buffer, iree_hal_channel_t* channel,
-    iree_hal_collective_op_t op, uint32_t param,
-    iree_hal_buffer_binding_t send_binding,
-    iree_hal_buffer_binding_t recv_binding, iree_device_size_t element_count) {
+    iree_hal_collective_op_t op, uint32_t param, iree_hal_buffer_ref_t send_ref,
+    iree_hal_buffer_ref_t recv_ref, iree_device_size_t element_count) {
   iree_hal_cuda_stream_command_buffer_t* command_buffer =
       iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
   IREE_TRACE_ZONE_BEGIN(z0);
 
+  iree_hal_buffer_binding_t send_binding = {
+      .buffer = send_ref.buffer,
+      .offset = send_ref.offset,
+      .length = send_ref.length,
+  };
+  iree_hal_buffer_binding_t recv_binding = {
+      .buffer = recv_ref.buffer,
+      .offset = recv_ref.offset,
+      .length = recv_ref.length,
+  };
   iree_status_t status = iree_hal_collective_batch_append(
       &command_buffer->collective_batch, channel, op, param, send_binding,
       recv_binding, element_count);
@@ -441,66 +468,11 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_collective(
   return status;
 }
 
-static iree_status_t iree_hal_cuda_stream_command_buffer_push_constants(
-    iree_hal_command_buffer_t* base_command_buffer,
-    iree_hal_pipeline_layout_t* pipeline_layout, iree_host_size_t offset,
-    const void* values, iree_host_size_t values_length) {
-  iree_hal_cuda_stream_command_buffer_t* command_buffer =
-      iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
-  IREE_TRACE_ZONE_BEGIN(z0);
-
-  iree_host_size_t constant_base_index = offset / sizeof(int32_t);
-  for (iree_host_size_t i = 0; i < values_length / sizeof(int32_t); i++) {
-    command_buffer->push_constants[i + constant_base_index] =
-        ((uint32_t*)values)[i];
-  }
-
-  IREE_TRACE_ZONE_END(z0);
-  return iree_ok_status();
-}
-
-static iree_status_t iree_hal_cuda_stream_command_buffer_push_descriptor_set(
-    iree_hal_command_buffer_t* base_command_buffer,
-    iree_hal_pipeline_layout_t* pipeline_layout, uint32_t set,
-    iree_host_size_t binding_count,
-    const iree_hal_descriptor_set_binding_t* bindings) {
-  if (binding_count > IREE_HAL_CUDA_MAX_DESCRIPTOR_SET_BINDING_COUNT) {
-    return iree_make_status(
-        IREE_STATUS_RESOURCE_EXHAUSTED,
-        "exceeded available binding slots for push "
-        "descriptor set #%" PRIu32 "; requested %" PRIhsz " vs. maximal %d",
-        set, binding_count, IREE_HAL_CUDA_MAX_DESCRIPTOR_SET_BINDING_COUNT);
-  }
-
-  iree_hal_cuda_stream_command_buffer_t* command_buffer =
-      iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
-  IREE_TRACE_ZONE_BEGIN(z0);
-
-  CUdeviceptr* current_bindings = command_buffer->descriptor_sets[set].bindings;
-  for (iree_host_size_t i = 0; i < binding_count; i++) {
-    const iree_hal_descriptor_set_binding_t* binding = &bindings[i];
-    CUdeviceptr device_ptr = 0;
-    if (binding->buffer) {
-      IREE_RETURN_AND_END_ZONE_IF_ERROR(
-          z0, iree_hal_resource_set_insert(command_buffer->resource_set, 1,
-                                           &binding->buffer));
-
-      CUdeviceptr device_buffer = iree_hal_cuda_buffer_device_pointer(
-          iree_hal_buffer_allocated_buffer(binding->buffer));
-      iree_device_size_t offset = iree_hal_buffer_byte_offset(binding->buffer);
-      device_ptr = device_buffer + offset + binding->offset;
-    }
-    current_bindings[binding->binding] = device_ptr;
-  }
-
-  IREE_TRACE_ZONE_END(z0);
-  return iree_ok_status();
-}
-
 static iree_status_t iree_hal_cuda_stream_command_buffer_dispatch(
     iree_hal_command_buffer_t* base_command_buffer,
     iree_hal_executable_t* executable, int32_t entry_point,
-    uint32_t workgroup_x, uint32_t workgroup_y, uint32_t workgroup_z) {
+    const uint32_t workgroup_count[3], iree_const_byte_span_t constants,
+    iree_hal_buffer_ref_list_t bindings, iree_hal_dispatch_flags_t flags) {
   iree_hal_cuda_stream_command_buffer_t* command_buffer =
       iree_hal_cuda_stream_command_buffer_cast(base_command_buffer);
   IREE_TRACE_ZONE_BEGIN(z0);
@@ -511,33 +483,34 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_dispatch(
 
   // Lookup kernel parameters used for side-channeling additional launch
   // information from the compiler.
-  iree_hal_cuda_kernel_info_t kernel_info;
+  const iree_hal_cuda_kernel_params_t* kernel_params = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_hal_cuda_native_executable_entry_point_kernel_info(
-              executable, entry_point, &kernel_info));
+      z0, iree_hal_cuda_native_executable_lookup_kernel_params(
+              executable, entry_point, &kernel_params));
 
-  IREE_CUDA_STREAM_TRACE_ZONE_BEGIN_EXTERNAL(
-      command_buffer->tracing_context, command_buffer->cu_stream,
-      kernel_info.source_filename.data, kernel_info.source_filename.size,
-      kernel_info.source_line, kernel_info.function_name.data,
-      kernel_info.function_name.size,
+  IREE_HAL_STREAM_TRACE_ZONE_BEGIN_EXTERNAL(
+      command_buffer->tracing_context, &command_buffer->tracing_event_list,
+      IREE_HAL_STREAM_TRACING_VERBOSITY_FINE,
+      kernel_params->debug_info.source_filename.data,
+      kernel_params->debug_info.source_filename.size,
+      kernel_params->debug_info.source_line,
+      kernel_params->debug_info.function_name.data,
+      kernel_params->debug_info.function_name.size,
       /*name=*/NULL, 0);
 
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_hal_resource_set_insert(command_buffer->resource_set, 1,
                                        &executable));
 
-  // The total number of descriptors across all descriptor sets.
-  iree_host_size_t descriptor_count =
-      iree_hal_cuda_pipeline_layout_total_binding_count(kernel_info.layout);
-  // The total number of push constants.
-  iree_host_size_t push_constant_count =
-      iree_hal_cuda_pipeline_layout_push_constant_count(kernel_info.layout);
   // We append push constants to the end of descriptors to form a linear chain
   // of kernel arguments.
-  iree_host_size_t kernel_params_count = descriptor_count + push_constant_count;
+  iree_host_size_t kernel_params_count =
+      kernel_params->binding_count + kernel_params->constant_count;
   iree_host_size_t kernel_params_length = kernel_params_count * sizeof(void*);
 
+  // TODO: use packed parameters instead of the indirection mechanism - this
+  // would avoid additional driver overhead to reflect and repack them all.
+  //
   // Per CUDA API requirements, we need two levels of indirection for passing
   // kernel arguments in.
   //   "If the kernel has N parameters, then kernelParams needs to be an array
@@ -557,53 +530,48 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_dispatch(
       z0, iree_arena_allocate(&command_buffer->arena, total_size,
                               (void**)&storage_base));
   void** params_ptr = (void**)storage_base;
-
-  // Set up kernel arguments to point to the payload slots.
   CUdeviceptr* payload_ptr =
       (CUdeviceptr*)((uint8_t*)params_ptr + kernel_params_length);
   for (size_t i = 0; i < kernel_params_count; i++) {
     params_ptr[i] = &payload_ptr[i];
   }
-
-  // Copy descriptors from all sets to the end of the current segment for later
-  // access.
-  iree_host_size_t set_count =
-      iree_hal_cuda_pipeline_layout_descriptor_set_count(kernel_info.layout);
-  for (iree_host_size_t i = 0; i < set_count; ++i) {
-    // TODO: cache this information in the kernel info to avoid recomputation.
-    iree_host_size_t binding_count =
-        iree_hal_cuda_descriptor_set_layout_binding_count(
-            iree_hal_cuda_pipeline_layout_descriptor_set_layout(
-                kernel_info.layout, i));
-    iree_host_size_t index =
-        iree_hal_cuda_pipeline_layout_base_binding_index(kernel_info.layout, i);
-    memcpy(payload_ptr + index, command_buffer->descriptor_sets[i].bindings,
-           binding_count * sizeof(CUdeviceptr));
+  for (iree_host_size_t i = 0; i < bindings.count; i++) {
+    const iree_hal_buffer_ref_t* binding = &bindings.values[i];
+    CUdeviceptr device_ptr = 0;
+    if (binding->buffer) {
+      IREE_RETURN_AND_END_ZONE_IF_ERROR(
+          z0, iree_hal_resource_set_insert(command_buffer->resource_set, 1,
+                                           &binding->buffer));
+      CUdeviceptr device_buffer = iree_hal_cuda_buffer_device_pointer(
+          iree_hal_buffer_allocated_buffer(binding->buffer));
+      iree_device_size_t offset = iree_hal_buffer_byte_offset(binding->buffer);
+      device_ptr = device_buffer + offset + binding->offset;
+    }
+    payload_ptr[i] = device_ptr;
   }
 
-  // Append the push constants to the kernel arguments.
-  iree_host_size_t base_index =
-      iree_hal_cuda_pipeline_layout_push_constant_index(kernel_info.layout);
   // As commented in the above, what each kernel parameter points to is a
   // CUdeviceptr, which as the size of a pointer on the target machine. we are
   // just storing a 32-bit value for the push constant here instead. So we must
   // process one element each type, for 64-bit machines.
-  for (iree_host_size_t i = 0; i < push_constant_count; i++) {
-    *((uint32_t*)params_ptr[base_index + i]) =
-        command_buffer->push_constants[i];
+  for (iree_host_size_t i = 0; i < kernel_params->constant_count; i++) {
+    *((uint32_t*)params_ptr[kernel_params->binding_count + i]) =
+        ((const uint32_t*)constants.data)[i];
   }
 
   IREE_CUDA_RETURN_AND_END_ZONE_IF_ERROR(
       z0, command_buffer->cuda_symbols,
-      cuLaunchKernel(kernel_info.function, workgroup_x, workgroup_y,
-                     workgroup_z, kernel_info.block_size[0],
-                     kernel_info.block_size[1], kernel_info.block_size[2],
-                     kernel_info.shared_memory_size, command_buffer->cu_stream,
-                     params_ptr, NULL),
+      cuLaunchKernel(kernel_params->function, workgroup_count[0],
+                     workgroup_count[1], workgroup_count[2],
+                     kernel_params->block_dims[0], kernel_params->block_dims[1],
+                     kernel_params->block_dims[2],
+                     kernel_params->block_shared_memory_size,
+                     command_buffer->cu_stream, params_ptr, NULL),
       "cuLaunchKernel");
 
-  IREE_CUDA_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
-                                  command_buffer->cu_stream);
+  IREE_HAL_STREAM_TRACE_ZONE_END(command_buffer->tracing_context,
+                                 &command_buffer->tracing_event_list,
+                                 IREE_HAL_STREAM_TRACING_VERBOSITY_FINE);
 
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
@@ -612,20 +580,10 @@ static iree_status_t iree_hal_cuda_stream_command_buffer_dispatch(
 static iree_status_t iree_hal_cuda_stream_command_buffer_dispatch_indirect(
     iree_hal_command_buffer_t* base_command_buffer,
     iree_hal_executable_t* executable, int32_t entry_point,
-    iree_hal_buffer_t* workgroups_buffer,
-    iree_device_size_t workgroups_offset) {
+    iree_hal_buffer_ref_t workgroups_ref, iree_const_byte_span_t constants,
+    iree_hal_buffer_ref_list_t bindings, iree_hal_dispatch_flags_t flags) {
   return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
-                          "need cuda implementation of dispatch indirect");
-}
-
-static iree_status_t iree_hal_cuda_stream_command_buffer_execute_commands(
-    iree_hal_command_buffer_t* base_command_buffer,
-    iree_hal_command_buffer_t* base_commands,
-    iree_hal_buffer_binding_table_t binding_table) {
-  // TODO(#10144): support indirect command buffers with deferred command
-  // buffers or graphs. We likely just want to switch to graphs.
-  return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
-                          "indirect command buffers not yet implemented");
+                          "indirect dispatch not yet implemented");
 }
 
 static const iree_hal_command_buffer_vtable_t
@@ -646,12 +604,7 @@ static const iree_hal_command_buffer_vtable_t
         .update_buffer = iree_hal_cuda_stream_command_buffer_update_buffer,
         .copy_buffer = iree_hal_cuda_stream_command_buffer_copy_buffer,
         .collective = iree_hal_cuda_stream_command_buffer_collective,
-        .push_constants = iree_hal_cuda_stream_command_buffer_push_constants,
-        .push_descriptor_set =
-            iree_hal_cuda_stream_command_buffer_push_descriptor_set,
         .dispatch = iree_hal_cuda_stream_command_buffer_dispatch,
         .dispatch_indirect =
             iree_hal_cuda_stream_command_buffer_dispatch_indirect,
-        .execute_commands =
-            iree_hal_cuda_stream_command_buffer_execute_commands,
 };

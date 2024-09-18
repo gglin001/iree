@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
@@ -87,8 +88,6 @@ LogicalResult gpuDistributeSharedMemoryCopy(mlir::FunctionOpInterface funcOp);
 // get the index size.
 std::unique_ptr<InterfacePass<FunctionOpInterface>>
 createGPUCheckResourceUsagePass(
-    std::function<unsigned(mlir::FunctionOpInterface)> getSharedMemoryLimit =
-        nullptr,
     std::function<unsigned(mlir::FunctionOpInterface)> getIndexBitwidth =
         nullptr);
 
@@ -99,17 +98,10 @@ createGPUTensorAlloc(GPUPromoteSharedMemPattern promoteSharedMemPattern =
                          GPUPromoteSharedMemPattern::ContractionOpPattern);
 
 // Distributes vector ops to all threads/warps in a GPU workgroup.
-// `getWarpSize` is for deciding the warp size to use; it takes the
-// current function containing those vector ops as the argument.
-// If nullptr, warp size 32 will be used.
-// TODO: This kind of call back function is a really really bad idea
-// This should be easier to resolve than doing this.
 std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createConvertVectorReductionToGPUPass(
-    bool expandSubgroupReduction = true,
-    std::function<int(mlir::FunctionOpInterface)> getWarpSize = nullptr);
+createConvertVectorReductionToGPUPass(bool expandSubgroupReduction = true);
 
-enum class ReorderWorkgroupsStrategy { None, Swizzle, Transpose };
+using IREE::GPU::ReorderWorkgroupsStrategy;
 
 /// Reorders workgroup IDs.
 std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>

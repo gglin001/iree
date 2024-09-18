@@ -1,4 +1,4 @@
-// RUN: iree-compile --iree-preprocessing-transform-spec-filename=%p/mlp_spec.mlir  %s | \
+// RUN: iree-compile --iree-preprocessing-transform-spec-filename=%p/mlp_spec.mlir %s | \
 // RUN: iree-run-module --device=local-sync \
 // RUN:     --executable_plugin=$IREE_BINARY_DIR/samples/custom_dispatch/cpu/mlp_plugin/mlp_plugin$IREE_DYLIB_EXT \
 // RUN:     --module=- \
@@ -21,11 +21,10 @@
 // hence we only support llvm-cpu here.
 #cpu_target = #hal.device.target<"llvm-cpu", [
   #x86_64_target
-]>
+]> : !hal.device
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module @example attributes {hal.device.targets = [#cpu_target]} {
-
   // CHECK-LABEL: EXEC @mlp_invocation
   //       CHECK: [Plugin]: M = 2, N = 2, K = 2, doRelu = 1
   //       CHECK: 2x2xf32=[-12 -0][-0 -12]

@@ -243,10 +243,11 @@ static iree_status_t iree_hal_webgpu_device_create_command_buffer(
     iree_hal_command_buffer_t** out_command_buffer) {
   iree_hal_webgpu_device_t* device = iree_hal_webgpu_device_cast(base_device);
   return iree_hal_webgpu_command_buffer_create(
-      (iree_hal_device_t*)device, device->handle, mode, command_categories,
-      queue_affinity, binding_capacity, &device->large_block_pool,
-      &device->staging_buffer, &device->bind_group_cache, &device->builtins,
-      device->host_allocator, out_command_buffer);
+      iree_hal_device_allocator(base_device), device->handle, mode,
+      command_categories, queue_affinity, binding_capacity,
+      &device->large_block_pool, &device->staging_buffer,
+      &device->bind_group_cache, &device->builtins, device->host_allocator,
+      out_command_buffer);
 }
 
 static iree_status_t iree_hal_webgpu_device_create_descriptor_set_layout(
@@ -262,9 +263,11 @@ static iree_status_t iree_hal_webgpu_device_create_descriptor_set_layout(
 }
 
 static iree_status_t iree_hal_webgpu_device_create_event(
-    iree_hal_device_t* base_device, iree_hal_event_t** out_event) {
+    iree_hal_device_t* base_device, iree_hal_queue_affinity_t queue_affinity,
+    iree_hal_event_flags_t flags, iree_hal_event_t** out_event) {
   iree_hal_webgpu_device_t* device = iree_hal_webgpu_device_cast(base_device);
-  return iree_hal_webgpu_nop_event_create(device->host_allocator, out_event);
+  return iree_hal_webgpu_nop_event_create(queue_affinity, flags,
+                                          device->host_allocator, out_event);
 }
 
 static iree_status_t iree_hal_webgpu_device_create_executable_cache(
@@ -292,19 +295,19 @@ static iree_status_t iree_hal_webgpu_device_import_file(
 }
 
 static iree_status_t iree_hal_webgpu_device_create_pipeline_layout(
-    iree_hal_device_t* base_device, iree_host_size_t push_constants,
+    iree_hal_device_t* base_device, iree_host_size_t constants,
     iree_host_size_t set_layout_count,
     iree_hal_descriptor_set_layout_t* const* set_layouts,
     iree_hal_pipeline_layout_t** out_pipeline_layout) {
   iree_hal_webgpu_device_t* device = iree_hal_webgpu_device_cast(base_device);
   return iree_hal_webgpu_pipeline_layout_create(
-      device->handle, set_layout_count, set_layouts, push_constants,
+      device->handle, set_layout_count, set_layouts, constants,
       &device->staging_buffer, device->host_allocator, out_pipeline_layout);
 }
 
 static iree_status_t iree_hal_webgpu_device_create_semaphore(
     iree_hal_device_t* base_device, uint64_t initial_value,
-    iree_hal_semaphore_t** out_semaphore) {
+    iree_hal_semaphore_flags_t flags, iree_hal_semaphore_t** out_semaphore) {
   iree_hal_webgpu_device_t* device = iree_hal_webgpu_device_cast(base_device);
   return iree_hal_webgpu_nop_semaphore_create(
       initial_value, device->host_allocator, out_semaphore);
@@ -394,7 +397,8 @@ static iree_status_t iree_hal_webgpu_device_queue_execute(
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
     iree_host_size_t command_buffer_count,
-    iree_hal_command_buffer_t* const* command_buffers) {
+    iree_hal_command_buffer_t* const* command_buffers,
+    iree_hal_buffer_binding_table_t const* binding_tables) {
   iree_hal_webgpu_device_t* device = iree_hal_webgpu_device_cast(base_device);
 
   // TODO(benvanik): this currently assumes we are synchronizing on semaphores

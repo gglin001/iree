@@ -43,41 +43,43 @@ module {
 
 // -----
 
-module {
-  func.func @interleave_and_bitcast_lowering() {
-    %cst = arith.constant dense<4> : vector<4x2xi8>
-    %cst_0 = arith.constant dense<0> : vector<4x4xi4>
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %c2 = arith.constant 2 : index
-    %c3 = arith.constant 3 : index
-    %c4096 = arith.constant 4096 : index
-    %c8192 = arith.constant 8192 : index
-    %0 = hal.interface.binding.subspan set(0) binding(0) type(storage_buffer) alignment(64) offset(%c4096) flags(ReadOnly) : memref<128xi8, strided<[1], offset: 4096>>
-    %1 = hal.interface.binding.subspan set(0) binding(1) type(storage_buffer) alignment(64) offset(%c8192) : memref<256x64xi8, strided<[64, 1], offset: 8192>>
-    %2 = vector.load %0[%c0] : memref<128xi8, strided<[1], offset: 4096>>, vector<2xi8>
-    %3 = vector.bitcast %2 : vector<2xi8> to vector<4xi4>
-    %4 = vector.insert %3, %cst_0 [3] : vector<4xi4> into vector<4x4xi4>
-    %5 = vector.bitcast %4 : vector<4x4xi4> to vector<4x2xi8>
-    %6 = arith.shli %5, %cst : vector<4x2xi8>
-    %7 = arith.shrsi %6, %cst : vector<4x2xi8>
-    %8 = arith.shrsi %5, %cst : vector<4x2xi8>
-    %9 = vector.interleave %7, %8 : vector<4x2xi8> -> vector<4x4xi8>
-    %10 = vector.extract %9[0] : vector<4xi8> from vector<4x4xi8>
-    %11 = vector.extract %9[1] : vector<4xi8> from vector<4x4xi8>
-    %12 = vector.extract %9[2] : vector<4xi8> from vector<4x4xi8>
-    %13 = vector.extract %9[3] : vector<4xi8> from vector<4x4xi8>
-    vector.store %10, %1[%c0, %c0] : memref<256x64xi8, strided<[64, 1], offset: 8192>>, vector<4xi8>
-    vector.store %11, %1[%c1, %c0] : memref<256x64xi8, strided<[64, 1], offset: 8192>>, vector<4xi8>
-    vector.store %12, %1[%c2, %c0] : memref<256x64xi8, strided<[64, 1], offset: 8192>>, vector<4xi8>
-    vector.store %13, %1[%c3, %c0] : memref<256x64xi8, strided<[64, 1], offset: 8192>>, vector<4xi8>
-    return
-  }
+#pipeline_layout = #hal.pipeline.layout<bindings = [
+  #hal.pipeline.binding<storage_buffer>,
+  #hal.pipeline.binding<storage_buffer>
+]>
+func.func @interleave_and_bitcast_lowering() {
+  %cst = arith.constant dense<4> : vector<4x2xi8>
+  %cst_0 = arith.constant dense<0> : vector<4x4xi4>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  %c3 = arith.constant 3 : index
+  %c4096 = arith.constant 4096 : index
+  %c8192 = arith.constant 8192 : index
+  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c4096) flags(ReadOnly) : memref<128xi8, strided<[1], offset: 4096>>
+  %out_buffer = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c8192) : memref<256x64xi4, strided<[64, 1], offset: 8192>>
+  %2 = vector.load %0[%c0] : memref<128xi8, strided<[1], offset: 4096>>, vector<2xi8>
+  %3 = vector.bitcast %2 : vector<2xi8> to vector<4xi4>
+  %4 = vector.insert %3, %cst_0 [3] : vector<4xi4> into vector<4x4xi4>
+  %5 = vector.bitcast %4 : vector<4x4xi4> to vector<4x2xi8>
+  %6 = arith.shli %5, %cst : vector<4x2xi8>
+  %7 = arith.shrsi %6, %cst : vector<4x2xi8>
+  %8 = arith.shrsi %5, %cst : vector<4x2xi8>
+
+  // Ops that should be lowered
+  %9 = vector.interleave %7, %8 : vector<4x2xi8> -> vector<4x4xi8>
+  %14 = vector.bitcast %9 : vector<4x4xi8> to vector<4x8xi4>
+
+  vector.store %14, %out_buffer[%c0, %c0] : memref<256x64xi4, strided<[64, 1], offset: 8192>>, vector<4x8xi4>
+  return
 }
 
 // Make sure we can lower multi-dimensional `vector.interleave` and its
 // corresponding multi-dimensional `vector.bitcast`.
 
 // CHECK-LABEL: llvm.func @interleave_and_bitcast_lowering(
-//   CHECK-NOT:   vector.bitcast %{{.*}} : vector<4x4xi4> to vector<4x2xi8>
+// vector.interleave should be gone entirely
 //   CHECK-NOT:   vector.interleave
+// 2D vector.bitcast tha followed should be replaced with 1D vector.bitcast
+//       CHECK:   llvm.bitcast {{.*}} : vector<4xi8> to vector<8xi4>
+//   CHECK-NOT:   vector.bitcast %{{.*}} : vector<4x4xi8> to vector<4x8xi4>

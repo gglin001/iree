@@ -5,10 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include <cstdint>
-#include "iree-dialects/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/Common/GPU/GPUPatterns.h"
 #include "iree/compiler/Codegen/Common/GPU/GPUVectorDistribution.h"
 #include "iree/compiler/Codegen/Common/VectorLayoutAnalysis.h"
+#include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtDialect.h"
+#include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -96,12 +97,11 @@ static SmallVector<Value> getTransferIndicesFromNestedLayout(
         b.getIndexAttr(outerVectorOffsets[i]), threadIndices[i]};
     // The order in which a vector dimension is "tiled" is
     // subgroups -> batches -> outer vectors -> threads -> elements
-    SmallVector<int64_t> sizes = {vectorLayout.getSubgroupsPerWorkgroup()[i],
-                                  vectorLayout.getBatchesPerSubgroup()[i],
-                                  vectorLayout.getOutersPerBatch()[i],
-                                  vectorLayout.getThreadsPerOuter()[i]};
+    SmallVector<int64_t> sizes = {
+        vectorLayout.getSubgroupTile()[i], vectorLayout.getBatchTile()[i],
+        vectorLayout.getOuterTile()[i], vectorLayout.getThreadTile()[i]};
     slicedIndices[pos] = linearizeIndex(b, indices[pos], ids, sizes,
-                                        vectorLayout.getElementsPerThread()[i]);
+                                        vectorLayout.getElementTile()[i]);
   }
   return slicedIndices;
 }
@@ -178,7 +178,7 @@ struct DistributeTransferRead final
     // The shape of the vector we read is pre-permutation. The permutation is
     // a transpose on the resulting read vector.
     auto innerVectorType =
-        VectorType::get(vectorLayout.getElementsPerThread(), elementType);
+        VectorType::get(vectorLayout.getElementTile(), elementType);
 
     // Initialize the full distributed vector for unrolling the batch/outer
     // vector dimensions.
@@ -335,7 +335,7 @@ struct DistributeBroadcast final : OpDistributionPattern<vector::BroadcastOp> {
     Value distributedSource = getDistributed(rewriter, srcVector, sourceLayout);
 
     VectorType broadcastTargetType =
-        VectorType::get(vectorLayout.getElementsPerThread(), elementType);
+        VectorType::get(vectorLayout.getElementTile(), elementType);
 
     int64_t sourceRank = sourceLayout.getRank();
 
@@ -386,7 +386,7 @@ static int64_t getShuffleOffset(NestedLayoutAttr layout, int64_t dim) {
 }
 
 static int64_t getShuffleWidth(NestedLayoutAttr layout, int64_t dim) {
-  return layout.getThreadsPerOuter()[dim];
+  return layout.getThreadTile()[dim];
 }
 
 /// The lowering for multi_reduction is done in two steps:
@@ -394,7 +394,8 @@ static int64_t getShuffleWidth(NestedLayoutAttr layout, int64_t dim) {
 ///      the reduction dimensions. This is the batch, outer and element dims.
 ///   2. Thread Reduce: Each thread reduces result of step 1 across threads
 ///      by doing a butterfly shuffle.
-///
+///   3. Accumulator Reduce: Each thread reduces it's intermediate reduced
+///      results with the accumulator it holds.
 /// Currently, reduction across warps is not supported, but it would just add
 /// another step, Warp Reduce, where threads do an atomic addition on a buffer.
 struct DistributeMultiReduction final
@@ -454,9 +455,11 @@ struct DistributeMultiReduction final
     for (int i = 0; i < 3; ++i) {
       distributedReductionMask.append(reducedDims.begin(), reducedDims.end());
     }
-
+    Value localInit = getCombiningIdentityValue(
+        loc, rewriter, multiReduceOp.getKind(), disAcc.getType());
     auto localReduction = rewriter.create<vector::MultiDimReductionOp>(
-        loc, disSrc, disAcc, distributedReductionMask, multiReduceOp.getKind());
+        loc, disSrc, localInit, distributedReductionMask,
+        multiReduceOp.getKind());
     auto locallyReduced = dyn_cast<VectorValue>(localReduction.getResult());
 
     assert(locallyReduced && "result should have been a vector");
@@ -469,15 +472,24 @@ struct DistributeMultiReduction final
     VectorValue flat =
         rewriter.create<vector::ShapeCastOp>(loc, flatVecType, locallyReduced);
 
+    // Do inter-thread/warp reduce.
     FailureOr<VectorValue> threadReduced = doThreadReduction(
         rewriter, srcLayout, flat, multiReduceOp.getKind(), reducedDims);
     if (failed(threadReduced)) {
       return failure();
     }
 
+    // Do reduction against accumulator, which needs to be done after thread
+    // reduction.
     VectorValue unflattened = rewriter.create<vector::ShapeCastOp>(
         loc, shaped, threadReduced.value());
-    replaceOpWithDistributedValues(rewriter, multiReduceOp, unflattened);
+    Value accReduction = vector::makeArithReduction(
+        rewriter, loc, multiReduceOp.getKind(), unflattened, disAcc);
+    auto accReduced = dyn_cast<VectorValue>(accReduction);
+    if (!accReduced) {
+      return failure();
+    }
+    replaceOpWithDistributedValues(rewriter, multiReduceOp, accReduced);
 
     return failure();
   }

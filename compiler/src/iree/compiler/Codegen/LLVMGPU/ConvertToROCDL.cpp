@@ -8,7 +8,6 @@
 #include "iree/compiler/Codegen/Common/Transforms.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
 #include "iree/compiler/Codegen/LLVMGPU/ConvertToLLVM.h"
-#include "iree/compiler/Codegen/LLVMGPU/PassDetail.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "mlir/Conversion/AMDGPUToROCDL/AMDGPUToROCDL.h"
@@ -40,8 +39,11 @@
 
 namespace mlir::iree_compiler {
 
+#define GEN_PASS_DEF_CONVERTTOROCDLPASS
+#include "iree/compiler/Codegen/LLVMGPU/Passes.h.inc"
+
 static llvm::cl::opt<int>
-    clROCMIndexingBits("iree-rocm-index-bits",
+    clROCMIndexingBits("iree-hip-index-bits",
                        llvm::cl::desc("Set the bit width of indices in ROCm."),
                        llvm::cl::init(64));
 
@@ -70,12 +72,31 @@ static void populateConvertGPUToAMDGPUPatterns(RewritePatternSet &patterns) {
 
 } // namespace
 
+// Function to check valid data types on the ROCm backend.
+static LogicalResult validateDataTypes(Operation *op) {
+  auto operandTypes = llvm::to_vector(op->getOperandTypes());
+  auto resultTypes = llvm::to_vector(op->getResultTypes());
+  if (llvm::any_of(llvm::concat<Type>(operandTypes, resultTypes),
+                   llvm::IsaPred<Float8E4M3FNType, Float8E5M2Type>)) {
+    op->emitOpError()
+        << "F8E5M2 and F8E4M3FN types are not supported on "
+           "the ROCm backend; try F8E5M2FNUZ or F8E4M3FNUZ instead.";
+    return failure();
+  }
+
+  return success();
+}
+
 /// A pass that replaces all occurrences of GPU device operations with their
 /// corresponding ROCDL equivalent.
 ///
 /// This pass only handles device code and is not meant to be run on GPU host
 /// code.
-struct ConvertToROCDLPass : public ConvertToROCDLBase<ConvertToROCDLPass> {
+struct ConvertToROCDLPass final
+    : impl::ConvertToROCDLPassBase<ConvertToROCDLPass> {
+  using impl::ConvertToROCDLPassBase<
+      ConvertToROCDLPass>::ConvertToROCDLPassBase;
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
         .insert<IREE::GPU::IREEGPUDialect, LLVM::LLVMDialect,
@@ -83,6 +104,11 @@ struct ConvertToROCDLPass : public ConvertToROCDLBase<ConvertToROCDLPass> {
   }
   void runOnOperation() override {
     ModuleOp m = getOperation();
+
+    m.walk([&](Operation *op) {
+      if (failed(validateDataTypes(op)))
+        return signalPassFailure();
+    });
 
     if (clROCMIndexingBits != 32 && clROCMIndexingBits != 64) {
       m.emitOpError() << "unsupported: ROCm index bit widths must either be "
@@ -117,8 +143,15 @@ struct ConvertToROCDLPass : public ConvertToROCDLBase<ConvertToROCDLPass> {
       RewritePatternSet patterns(&getContext());
       // These patterns only convert a subset of arith that target specific
       // rocdl intrinsics (e.g. fp8 conversions).
+      StringRef chipset = getGPUTargetAttr(m).getArch();
+      FailureOr<amdgpu::Chipset> maybeChipset = amdgpu::Chipset::parse(chipset);
+      if (failed(maybeChipset)) {
+        m.emitOpError() << "Invalid chipset name: " << chipset;
+        return signalPassFailure();
+      }
       arith::populateArithToAMDGPUConversionPatterns(
-          patterns, /*saturateFP8Truncf=*/false);
+          patterns, /*convertFP8Arithmetic=*/true, /*saturateFP8Truncf=*/false,
+          /*allowPackedF16Rtz=*/false, /*chipset=*/*maybeChipset);
       populateConvertGPUToAMDGPUPatterns(patterns);
       populateConvertSharedMemoryAllocOps(patterns);
       populateDropSharedMemoryDeallocOpPatterns(patterns);
@@ -203,9 +236,4 @@ struct ConvertToROCDLPass : public ConvertToROCDLBase<ConvertToROCDLPass> {
     LDBG("After converting to dynamic shared memory\n" << m);
   }
 };
-
-std::unique_ptr<OperationPass<ModuleOp>> createConvertToROCDLPass() {
-  return std::make_unique<ConvertToROCDLPass>();
-}
-
 } // namespace mlir::iree_compiler

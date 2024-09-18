@@ -13,16 +13,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "iree/compiler/Codegen/Common/Passes.h"
-#include "iree/compiler/Codegen/SPIRV/PassDetail.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/SPIRV/Passes.h"
-#include "iree/compiler/Codegen/SPIRV/Utils.h"
-#include "iree/compiler/Codegen/Transforms/Transforms.h"
+#include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Conversion/VectorToSPIRV/VectorToSPIRV.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/SPIRV/IR/SPIRVAttributes.h"
+#include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
 #include "mlir/Dialect/SPIRV/IR/TargetAndABI.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
@@ -36,6 +35,9 @@
 #define DEBUG_TYPE "iree-spirv-initial-vector-lowering"
 
 namespace mlir::iree_compiler {
+
+#define GEN_PASS_DEF_SPIRVINITIALVECTORLOWERINGPASS
+#include "iree/compiler/Codegen/SPIRV/Passes.h.inc"
 
 namespace {
 
@@ -202,9 +204,9 @@ SmallVector<int64_t> getNativeVectorShapeImpl(vector::MultiDimReductionOp op) {
   // Unroll all reduction dimensions by size 1 for vector.multi_reduction.
   VectorType srcVectorType = op.getSourceVectorType();
   auto nativeSize = llvm::to_vector(srcVectorType.getShape());
-  auto dims = op.getReductionDims().getAsValueRange<IntegerAttr>();
-  for (const auto &dimAttr : dims) {
-    nativeSize[dimAttr.getZExtValue()] = 1;
+  ArrayRef<int64_t> dims = op.getReductionDims();
+  for (const int64_t dim : dims) {
+    nativeSize[dim] = 1;
   }
   return nativeSize;
 }
@@ -260,39 +262,30 @@ void populateVectorUnrollPatterns(RewritePatternSet &patterns,
 
 /// Returns true when the target environment support integer dot product ops.
 bool supportsIntegerDotProductOps(mlir::FunctionOpInterface fn) {
-  spirv::TargetEnvAttr targetEnvAttr = getSPIRVTargetEnvAttr(fn);
-  if (!targetEnvAttr) {
-    // Alternatively, check if the function op itself has a target env
-    // attribute. This may be preferred in tests.
-    targetEnvAttr =
-        fn->getAttrOfType<spirv::TargetEnvAttr>(spirv::getTargetEnvAttrName());
-    if (!targetEnvAttr)
-      return false;
-  }
-
-  spirv::TargetEnv targetEnv(targetEnvAttr);
-  if (!targetEnv.allows(spirv::Extension::SPV_KHR_integer_dot_product))
+  // First check if the function op itself has a target env attribute. This may
+  // be preferred in tests.
+  auto targetEnvAttr =
+      fn->getAttrOfType<IREE::GPU::TargetAttr>("iree.gpu.target");
+  if (!targetEnvAttr)
+    targetEnvAttr = getGPUTargetAttr(fn);
+  if (!targetEnvAttr)
     return false;
 
-  // Query all the dot prod capabilities except for the packed one -- none of
-  // the vectorization patterns need it.
-  if (!targetEnv.allows(spirv::Capability::DotProduct))
-    return false;
-  if (!targetEnv.allows(spirv::Capability::DotProductInput4x8Bit))
-    return false;
-  if (!targetEnv.allows(spirv::Capability::DotProductInputAll))
+  if (!IREE::GPU::bitEnumContainsAll(targetEnvAttr.getWgp().getDot().getValue(),
+                                     IREE::GPU::DotProductOps::DP4xI8ToI32))
     return false;
 
   return true;
 }
 
-class SPIRVInitialLoweringPass
-    : public SPIRVInitialVectorLoweringBase<SPIRVInitialLoweringPass> {
+class SPIRVInitialLoweringPass final
+    : public impl::SPIRVInitialVectorLoweringPassBase<
+          SPIRVInitialLoweringPass> {
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
     // vector.gather lowering patterns target scf ops.
     registry.insert<linalg::LinalgDialect, vector::VectorDialect,
-                    scf::SCFDialect>();
+                    scf::SCFDialect, spirv::SPIRVDialect>();
   }
 
   void runOnOperation() override {
@@ -321,6 +314,7 @@ public:
       // cancel them or embed into contract ops. Embedding in the flexible
       // contract ops will help to sustain the structure through various
       // transformations.
+      vector::populateSinkVectorOpsPatterns(patterns);
       vector::populateVectorReductionToContractPatterns(patterns);
       // Pull in patterns to canonicalize transfer ops.
       vector::populateVectorTransferPermutationMapLoweringPatterns(patterns);
@@ -511,10 +505,4 @@ public:
 };
 
 } // namespace
-
-std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createSPIRVInitialVectorLoweringPass() {
-  return std::make_unique<SPIRVInitialLoweringPass>();
-}
-
 } // namespace mlir::iree_compiler

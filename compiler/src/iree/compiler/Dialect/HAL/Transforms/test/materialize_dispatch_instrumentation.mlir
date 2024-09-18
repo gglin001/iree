@@ -1,10 +1,10 @@
 // RUN: iree-opt --split-input-file --pass-pipeline='builtin.module(iree-hal-materialize-dispatch-instrumentation{buffer-size=64mib})' %s | FileCheck %s
 
 module attributes {hal.device.targets = [
-  #hal.device.target<"llvm-cpu", [
+  #hal.device.target<"local", [
     #hal.executable.target<"llvm-cpu", "embedded-elf-arm_64">,
     #hal.executable.target<"llvm-cpu", "embedded-elf-x86_64">
-  ]>
+  ]> : !hal.device
 ]} {
 
   // Instrumentation storage buffer allocated at startup (defaults to 64MB + footer):

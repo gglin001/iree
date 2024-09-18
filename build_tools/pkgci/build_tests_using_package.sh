@@ -27,7 +27,7 @@
 set -xeuo pipefail
 
 
-PACKAGE_DIR="$1"
+BINARY_DIR="$1"
 BUILD_DIR="${BUILD_DIR:-build-tests}"
 
 source build_tools/scripts/install_lit.sh
@@ -37,8 +37,8 @@ export IREE_CPU_DISABLE="${IREE_CPU_DISABLE:-0}"
 # GPU drivers and tests are disabled by default.
 export IREE_VULKAN_DISABLE="${IREE_VULKAN_DISABLE:-1}"
 export IREE_METAL_DISABLE="${IREE_METAL_DISABLE:-1}"
-export IREE_CUDA_DISABLE="${IREE_CUDA_DISABLE:-1}"
-export IREE_HIP_DISABLE="${IREE_HIP_DISABLE:-1}"
+export IREE_CUDA_ENABLE="${IREE_CUDA_ENABLE:-0}"
+export IREE_HIP_ENABLE="${IREE_HIP_ENABLE:-0}"
 export IREE_HIP_TEST_TARGET_CHIP="${IREE_HIP_TEST_TARGET_CHIP:-}"
 
 # Set cmake options based on disabled features.
@@ -53,11 +53,11 @@ fi
 if (( IREE_METAL_DISABLE == 1 )); then
   cmake_config_options+=("-DIREE_HAL_DRIVER_METAL=OFF")
 fi
-if (( IREE_CUDA_DISABLE == 1 )); then
-  cmake_config_options+=("-DIREE_HAL_DRIVER_CUDA=OFF")
+if (( IREE_CUDA_ENABLE == 1 )); then
+  cmake_config_options+=("-DIREE_HAL_DRIVER_CUDA=ON")
 fi
-if (( IREE_HIP_DISABLE == 1 )); then
-  cmake_config_options+=("-DIREE_HAL_DRIVER_HIP=OFF")
+if (( IREE_HIP_ENABLE == 1 )); then
+  cmake_config_options+=("-DIREE_HAL_DRIVER_HIP=ON")
 fi
 if [[ -n "${IREE_HIP_TEST_TARGET_CHIP}" ]]; then
   cmake_config_options+=("-DIREE_HIP_TEST_TARGET_CHIP=${IREE_HIP_TEST_TARGET_CHIP}")
@@ -76,7 +76,7 @@ cmake_args=(
   "-DIREE_BUILD_PYTHON_BINDINGS=OFF"
   "-DIREE_BUILD_COMPILER=OFF"
   "-DIREE_BUILD_ALL_CHECK_TEST_MODULES=OFF"
-  "-DIREE_HOST_BIN_DIR=${PACKAGE_DIR?}/bin"
+  "-DIREE_HOST_BIN_DIR=${BINARY_DIR?}"
   "-DLLVM_EXTERNAL_LIT=${LLVM_EXTERNAL_LIT?}"
 )
 cmake_args+=(${cmake_config_options[@]})

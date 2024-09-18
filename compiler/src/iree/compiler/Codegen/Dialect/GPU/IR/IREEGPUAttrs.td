@@ -131,6 +131,7 @@ class IREEGPU_MmaVectorLayoutAttr<string attrname, string mmaintrinsic> :
     "getSubgroupSize",
     "buildMmaOperation",
     "populateOperandOffsetsSizesStrides",
+    "materializeOperandConcreteShape",
   ]>
 ]> {
   let cppNamespace = "::mlir::iree_compiler::IREE::GPU";
@@ -171,6 +172,7 @@ class IREEGPU_MmaVectorLayoutAttr<string attrname, string mmaintrinsic> :
 
 //===----------------------------------------------------------------------===//
 // MMA intrinsic
+//===----------------------------------------------------------------------===//
 
 class IREEGPU_MmaEnumAttr<EnumAttrInfo enumInfo, string name = "">
   : EnumAttr<IREEGPU_Dialect, enumInfo, name>;
@@ -185,12 +187,8 @@ def IREEGPU_MMAAttr : IREEGPU_MmaVectorLayoutAttr<"MMA", "MMAIntrinsicAttr"> {
   let description = !strconcat(baseDescription, [{
     This mma variant describes configurations for MMA ops. The |intrinsic|
     field specifies which particular MMA intrinsic this refers to, with each
-    intrinsic implicating a specific MNK shape and operand types. The intrinsic
-    enum name describes these fields as
-
-    <InputType>_MxNxK_<CType>
-
-    Where the element type for the `A` and `B` matrices are both `InputType`.
+    intrinsic implicating a specific MNK shape and operand types.
+    See IREEGPUEnums.td for the definition of the intrinsics.
   }]);
 
   let hasCustomAssemblyFormat = 1;
@@ -203,23 +201,61 @@ def IREEGPU_MMAAttr : IREEGPU_MmaVectorLayoutAttr<"MMA", "MMAIntrinsicAttr"> {
   let extraClassDeclaration = [{
     int64_t getBlockSize() const;
 
-    // Partial nested layout for an MMA intrinsic's matrix input/output inside
-    // a single subgroup.
-    struct SingleSubgroupLayout {
-      SmallVector<int64_t, 2> outer;
-      SmallVector<int64_t, 2> thread;
-      SmallVector<int64_t, 2> tstrides;
-      SmallVector<int64_t, 2> element;
-    };
-
     // Returns the A/B/C matrix's partial nested layout shape inside a single
     // subgroup. Shape at each outer/thread/element level is a 2-D value,
     // following canonical matmul order--(M, K) for A, (K, N) for B, and
     // (M, N) for C.
-    SingleSubgroupLayout getASingleSubgroupLayout() const;
-    SingleSubgroupLayout getBSingleSubgroupLayout() const;
-    SingleSubgroupLayout getCSingleSubgroupLayout() const;
+    MMASingleSubgroupLayout getASingleSubgroupLayout() const;
+    MMASingleSubgroupLayout getBSingleSubgroupLayout() const;
+    MMASingleSubgroupLayout getCSingleSubgroupLayout() const;
   }];
+}
+
+def IREEGPU_DataTiledMMAAttr :
+    AttrDef<IREEGPU_Dialect, "DataTiledMMA", [
+  DeclareAttrInterfaceMethods<IREEGPU_MmaInterfaceAttr, [
+    "getABCElementTypes",
+    // TODO: Implement the interface method. The current implementation just
+    // returns {VectorType(), VectorType(), VectorType()} now because the dummy
+    // implementation is required by the MmaInterfaceAttr.
+    "getABCVectorTypes",
+    "getMNKShape",
+    "getSubgroupSize",
+    // TODO: Implement the interface method.
+    // "populateOperandOffsetsSizesStrides",
+  ]>
+]> {
+  let mnemonic = "data_tiled_mma_layout";
+  let cppNamespace = "::mlir::iree_compiler::IREE::GPU";
+
+  let description = [{
+    This mma variant represents MMA ops with data-tiling details. The
+    |intrinsic| field specifies which particular MMA intrinsic is targeted by
+    the data-tiling.
+
+    The tile swizzling already happens, so the attribute does not need to
+    implement materializeOperandConcreteShape interface method. E.g., if the
+    target intrinsic is MFMA_F32_16x16x4_F32:
+      - The inner tile shape of LHS is 4x16.
+      - The inner tile shape of RHS is 4x16.
+      - The inner tile shape of ACC is 4x16x4.
+
+    Furthermore, the unrolling and interleaving can be represented with the
+    attribute. In the concept of data-tiling, we always unroll the parallel
+    dimensions (i.e., M, N dimensions) to be outermost, and interleave the
+    unrolled K dimension. I.e., the unrolled K dimension becomes the innermost
+    dimension. The constraint can be relaxed based on data-tiling needs. The
+    additional information can be added to `parameters`.
+  }];
+
+  let assemblyFormat = "`<` struct(params) `>`";
+
+  let parameters = (ins
+    "::mlir::iree_compiler::IREE::GPU::MMAIntrinsicAttr":$intrinsic,
+    "int64_t":$unroll_m,
+    "int64_t":$unroll_n,
+    "int64_t":$unroll_k
+  );
 }
 
 def IREEGPU_MMAOpsArrayAttr : ArrayOfAttr<
@@ -229,6 +265,7 @@ def IREEGPU_MMAOpsArrayAttr : ArrayOfAttr<
 
 //===----------------------------------------------------------------------===//
 // MMA schedule
+//===----------------------------------------------------------------------===//
 
 def IREEGPU_MmaScheduleAttr : AttrDef<IREEGPU_Dialect, "MMASchedule"> {
   let mnemonic = "mma_schedule";
@@ -252,12 +289,14 @@ def IREEGPU_MmaScheduleAttr : AttrDef<IREEGPU_Dialect, "MMASchedule"> {
     ::mlir::FailureOr<::std::tuple<VectorExt::VectorLayoutInterface,
                                  VectorExt::VectorLayoutInterface,
                                  VectorExt::VectorLayoutInterface>>
-      getContractionLayout(::mlir::vector::ContractionOp contractOp) const;
+      getContractionLayout(::mlir::iree_compiler::VectorContractOpInfo &opInfo,
+                           ::mlir::linalg::LinalgOp contractOp) const;
   }];
 }
 
 //===----------------------------------------------------------------------===//
 // Workgroup processor level description
+//===----------------------------------------------------------------------===//
 
 def IREEGPU_TargetWgpAttr : AttrDef<IREEGPU_Dialect, "TargetWgp"> {
   let summary = "Workgroup processor level target description";
@@ -289,6 +328,8 @@ def IREEGPU_TargetWgpAttr : AttrDef<IREEGPU_Dialect, "TargetWgp"> {
     "uint32_t":$max_thread_count_per_workgroup,
     // The maximal number of shared memory bytes we can allocate per workgroup.
     "uint32_t":$max_workgroup_memory_bytes,
+    // Tthe maximum number of workgroups per X/Y/Z dimension in a dispatch.
+    "DenseI32ArrayAttr":$max_workgroup_counts,
 
     // An optional extra dict
     // This field allows to inject more features/limits not supported in the
@@ -362,14 +403,43 @@ def IREEGPU_TargetAttr : AttrDef<IREEGPU_Dialect, "Target"> {
   let assemblyFormat = "`<` struct(params) `>`";
 
   let extraClassDeclaration = [{
-    int getPreferredSubgroupSize() const {
-      return getWgp().getSubgroupSizeChoices().asArrayRef().front();
+    // Subgroup size related APIs
+
+    int getMinSubgroupSize() const {
+      return *llvm::min_element(getWgp().getSubgroupSizeChoices().asArrayRef());
     }
+    int getMaxSubgroupSize() const {
+      return *llvm::max_element(getWgp().getSubgroupSizeChoices().asArrayRef());
+    }
+    // Returns the preferred subgroup size. If the target supports multiple
+    // subgroup sizes, pick the smallest one.
+    //
+    // AMD RDNA GPUs supports multiple subgroup sizes and the preferred one
+    // differ given the API--HIP prefers 32 while Vulkan prefers 64.
+    // We force Vulkan side to use 32 to be consistent with the HIP backend;
+    // might have implications on perf.
+    int getPreferredSubgroupSize() const {
+      return *llvm::min_element(getWgp().getSubgroupSizeChoices().asArrayRef());
+    }
+
+    // Hardware feature related APIs
 
     bool supportsSubgroupShuffle() const {
       return bitEnumContainsAll(getWgp().getSubgroup().getValue(),
                                 SubgroupOps::Shuffle);
     }
+
+    // Vendor querying APIs
+
+    bool isAMD() const {
+      return getArch().starts_with("gfx") || getArch().starts_with("rdna");
+    }
+    bool isApple() const { return getArch().starts_with("apple"); }
+    bool isARM() const { return getArch().starts_with("valhall"); }
+    bool isNVIDIA() const { return getArch().starts_with("sm_"); }
+    bool isQualcomm() const { return getArch().starts_with("adreno"); }
+
+    // CUDA specific querying APIs
 
     std::optional<int> getCUDAComputeCapability() const;
     // Returns true if this target supports TensoreCore MMA ops with TF32
@@ -395,6 +465,56 @@ def IREEGPU_LaneIdAttr : AttrDef<IREEGPU_Dialect, "LaneId", [
   let assemblyFormat = "`<` $dim `>`";
   let description = [{
     An attribute for mapping scf.forall ops to subgroup lanes.
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// GPU Pipeline Options
+//===----------------------------------------------------------------------===//
+
+def IREEGPU_ReorderWorkgroupsStrategyAttr :
+    EnumAttr<IREEGPU_Dialect, IREEGPU_ReorderWorkgroupsStrategy, ""> {
+  let assemblyFormat = "``$value";
+  let cppNamespace = "::mlir::iree_compiler::IREE::GPU";
+}
+
+def IREEGPU_GPUPipelineOptionsAttr : AttrDef<IREEGPU_Dialect, "GPUPipelineOptions"> {
+  let summary = "GPU pipeline options attribute.";
+  let description = [{
+    This attributes describes lowering pipeline specific configuration options:
+    * prefetch_shared_memory: Boolean option indicating whether or not to run
+      the loop prefetching pass in the lowering pipeline.
+    * no_reduce_shared_memory_bank_conflicts: Boolean option indicating whether
+      or not to skip the bank conflict reduction pass in the lowering pipeline.
+    * reorder_workgroups_strategy: Enum attribute indicating which strategy to
+      choose for the workgroup reordering pass. Options are `None`, `Swizzle`,
+      and `Transpose`.
+  }];
+
+  let mnemonic = "pipeline_options";
+  let cppNamespace = "::mlir::iree_compiler::IREE::GPU";
+
+  let parameters = (ins
+    OptionalParameter<"BoolAttr">:$prefetch_shared_memory,
+    OptionalParameter<"BoolAttr">:$no_reduce_shared_memory_bank_conflicts,
+    OptionalParameter<"ReorderWorkgroupsStrategyAttr">:$reorder_workgroups_strategy
+  );
+
+  let builders = [
+    AttrBuilder<(ins
+        CArg<"bool", "false">:$prefetch_shared_memory,
+        CArg<"bool", "false">:$no_reduce_shared_memory_bank_conflicts,
+        CArg<"std::optional<ReorderWorkgroupsStrategy>", "{}">:$reorder_workgroups_strategy)>
+  ];
+
+  let assemblyFormat = "`<` struct(params) `>`";
+
+  let extraClassDeclaration = [{
+    // Returns the key name for GPUPipelineOptionsAttr in the translation info
+    // config dictionary.
+    static StringRef getDictKeyName() {
+      return "gpu_pipeline_options";
+    }
   }];
 }
 

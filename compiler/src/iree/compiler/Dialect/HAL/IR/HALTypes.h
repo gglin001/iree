@@ -33,6 +33,13 @@
 
 namespace mlir::iree_compiler::IREE::HAL {
 
+class DeviceTargetAttr;
+class TargetRegistry;
+
+using BuildDeviceTargetMatchFn = std::function<Value(
+    Location loc, Value device, IREE::HAL::DeviceTargetAttr targetAttr,
+    OpBuilder &builder)>;
+
 #include "iree/compiler/Dialect/HAL/IR/HALAttrInterfaces.h.inc" // IWYU pragma: export
 #include "iree/compiler/Dialect/HAL/IR/HALOpInterfaces.h.inc" // IWYU pragma: export
 #include "iree/compiler/Dialect/HAL/IR/HALTypeInterfaces.h.inc" // IWYU pragma: export
@@ -104,16 +111,10 @@ struct CommandBufferType
   static constexpr StringLiteral name = "hal.command_buffer";
 };
 
-struct DescriptorSetLayoutType
-    : public Type::TypeBase<DescriptorSetLayoutType, Type, TypeStorage> {
-  using Base::Base;
-
-  static constexpr StringLiteral name = "hal.descriptor_set_layout";
-};
-
 struct DeviceType
     : public Type::TypeBase<DeviceType, Type, TypeStorage,
-                            mlir::OpTrait::IREE::Util::ImplicitlyCaptured> {
+                            mlir::OpTrait::IREE::Util::ImplicitlyCaptured,
+                            IREE::Util::ReferenceTypeInterface::Trait> {
   using Base::Base;
 
   static constexpr StringLiteral name = "hal.device";
@@ -150,13 +151,6 @@ struct FileType : public Type::TypeBase<FileType, Type, TypeStorage> {
   static constexpr StringLiteral name = "hal.file";
 };
 
-struct PipelineLayoutType
-    : public Type::TypeBase<PipelineLayoutType, Type, TypeStorage> {
-  using Base::Base;
-
-  static constexpr StringLiteral name = "hal.pipeline_layout";
-};
-
 struct SemaphoreType : public Type::TypeBase<SemaphoreType, Type, TypeStorage> {
   using Base::Base;
 
@@ -170,8 +164,17 @@ struct SemaphoreType : public Type::TypeBase<SemaphoreType, Type, TypeStorage> {
 // A tuple containing runtime values for a descriptor set binding.
 // The buffer specified may be either a !hal.buffer or an index of a binding
 // table slot to source the buffer from.
-struct DescriptorSetBindingValue {
+struct PipelineBindingValue {
   Value ordinal;
+  Value buffer;
+  Value byteOffset;
+  Value byteLength;
+};
+
+// A tuple containing runtime values for a binding.
+// The buffer specified may be either a !hal.buffer or an index of a binding
+// table slot to source the buffer from.
+struct BindingValue {
   Value buffer;
   Value byteOffset;
   Value byteLength;
@@ -217,14 +220,14 @@ operator<<(AsmPrinter &printer,
 
 template <>
 struct FieldParser<
-    std::optional<mlir::iree_compiler::IREE::HAL::DescriptorSetLayoutFlags>> {
-  static FailureOr<mlir::iree_compiler::IREE::HAL::DescriptorSetLayoutFlags>
+    std::optional<mlir::iree_compiler::IREE::HAL::PipelineLayoutFlags>> {
+  static FailureOr<mlir::iree_compiler::IREE::HAL::PipelineLayoutFlags>
   parse(AsmParser &parser) {
     std::string value;
     if (parser.parseKeywordOrString(&value))
       return failure();
     auto result = mlir::iree_compiler::IREE::HAL::symbolizeEnum<
-        mlir::iree_compiler::IREE::HAL::DescriptorSetLayoutFlags>(value);
+        mlir::iree_compiler::IREE::HAL::PipelineLayoutFlags>(value);
     if (!result.has_value())
       return failure();
     return result.value();
@@ -232,8 +235,7 @@ struct FieldParser<
 };
 static inline AsmPrinter &operator<<(
     AsmPrinter &printer,
-    std::optional<mlir::iree_compiler::IREE::HAL::DescriptorSetLayoutFlags>
-        param) {
+    std::optional<mlir::iree_compiler::IREE::HAL::PipelineLayoutFlags> param) {
   printer << (param.has_value()
                   ? mlir::iree_compiler::IREE::HAL::stringifyEnum(param.value())
                   : StringRef{""});
@@ -283,11 +285,6 @@ operator<<(AsmPrinter &printer,
 //===----------------------------------------------------------------------===//
 
 namespace mlir::iree_compiler::IREE::HAL {
-
-// Returns the assigned bindings via the `hal.interface.bindings` attribute
-// on the operation or default bindings in set 0 with bindings [0, count).
-SmallVector<IREE::HAL::InterfaceBindingAttr>
-getInterfaceBindingAttrs(Operation *op, size_t resourceCount);
 
 } // namespace mlir::iree_compiler::IREE::HAL
 

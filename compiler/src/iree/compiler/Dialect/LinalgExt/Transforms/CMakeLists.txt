@@ -25,19 +25,22 @@ iree_cc_library(
   HDRS
     "Passes.h"
     "Passes.h.inc"
+    "Transforms.h"
   SRCS
     "AggregatedOpInterfaceImpl.cpp"
+    "ConvertConv2DToIm2ColOp.cpp"
     "ConvertConv2DToWinograd.cpp"
     "ConvertToLoops.cpp"
     "DecomposeAttention.cpp"
     "DecomposeIm2col.cpp"
     "DecomposeWinogradPass.cpp"
     "PadContractionToBlockSize.cpp"
-    "PassDetail.h"
     "Passes.cpp"
+    "ReshapeFusion.cpp"
     "SplitReduction.cpp"
     "TileAttention.cpp"
     "TilingInterfaceImpl.cpp"
+    "TransposeFusion.cpp"
   DEPS
     ::PassesIncGen
     IREEInputDialect

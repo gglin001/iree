@@ -41,31 +41,10 @@ DictionaryAttr getTargetConfigAttr(Operation *op) {
   return targetAttr.getConfiguration();
 }
 
-spirv::TargetEnvAttr getSPIRVTargetEnvAttr(Operation *op) {
-  DictionaryAttr config = getTargetConfigAttr(op);
-  if (!config)
-    return nullptr;
-  return config.getAs<spirv::TargetEnvAttr>(spirv::getTargetEnvAttrName());
-}
-
-UnitAttr getIndirectBindingsAttr(Operation *op) {
-  DictionaryAttr config = getTargetConfigAttr(op);
-  if (!config)
-    return nullptr;
-
-  return config.getAs<UnitAttr>("hal.bindings.indirect");
-}
-
-std::optional<int> getSPIRVSubgroupSize(mlir::FunctionOpInterface funcOp) {
-  std::optional<int64_t> subgroupSize = getSubgroupSize(funcOp);
-  if (subgroupSize) {
-    return subgroupSize.value();
-  }
-
-  spirv::TargetEnvAttr target = getSPIRVTargetEnvAttr(funcOp);
-  if (!target)
-    return std::nullopt;
-  return target.getResourceLimits().getSubgroupSize();
+bool usesIndirectBindingsAttr(Operation *op) {
+  auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(op);
+  return targetAttr ? targetAttr.getFormat().getValue().ends_with("-ptr")
+                    : false;
 }
 
 FailureOr<SmallVector<int64_t>>

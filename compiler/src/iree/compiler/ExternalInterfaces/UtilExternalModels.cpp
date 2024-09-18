@@ -313,8 +313,6 @@ void registerUtilExternalModels(DialectRegistry &registry) {
         LinalgOpTiedOpInterface<IREE::LinalgExt::FftOp>>(*context);
     IREE::LinalgExt::ScanOp::attachInterface<
         LinalgOpTiedOpInterface<IREE::LinalgExt::ScanOp>>(*context);
-    IREE::LinalgExt::ReverseOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::ReverseOp>>(*context);
     IREE::LinalgExt::TopkOp::attachInterface<
         LinalgOpTiedOpInterface<IREE::LinalgExt::TopkOp>>(*context);
     IREE::LinalgExt::WinogradInputTransformOp::attachInterface<
@@ -338,8 +336,7 @@ void registerUtilExternalModels(DialectRegistry &registry) {
   registry.addExtension(
       +[](MLIRContext *context, IREE::Encoding::IREEEncodingDialect *dialect) {
         UnhoistableOpInterfaceHelper<
-            IREE::Encoding::SetEncodingOp,
-            IREE::Encoding::UpperBoundTileSizeOp>::registerOpInterface(context);
+            IREE::Encoding::SetEncodingOp>::registerOpInterface(context);
       });
   // Register hoistable type interfaces for linalg ops.
   // We have a specific allow-list for Linalg ops because we want to consider
@@ -369,8 +366,8 @@ void registerUtilExternalModels(DialectRegistry &registry) {
         // Never hoist empty and other pure metadata ops as a leaf. It's fine to
         // hoist them as a part of a larger constant tree that does actual work.
         HoistableNonLeafOpInterfaceHelper<
-            tensor::EmptyOp, tensor::ExpandShapeOp,
-            tensor::CollapseShapeOp>::registerOpInterface(context);
+            tensor::EmptyOp, tensor::ExpandShapeOp, tensor::CollapseShapeOp,
+            tensor::ExtractSliceOp>::registerOpInterface(context);
         // Cases of trivial pack/unpack should be handled as canonicalizations
         // before we get here, thus we're safe to always hoist.
         AlwaysHoistableOpInterfaceHelper<

@@ -33,7 +33,6 @@ vm.import private @allocator.allocate(
   %buffer_usage : i32,
   %allocation_size : i64
 ) -> !vm.ref<!hal.buffer>
-attributes {minimum_version = 1 : i32}
 
 // Imports a host byte buffer into a device visible buffer.
 // If try!=0 then returns null if the given memory type cannot be mapped.
@@ -48,7 +47,6 @@ vm.import private @allocator.import(
   %offset : i64,
   %length : i64
 ) -> !vm.ref<!hal.buffer>
-attributes {minimum_version = 1 : i32}
 
 //===----------------------------------------------------------------------===//
 // iree_hal_buffer_t
@@ -199,8 +197,12 @@ vm.import private @command_buffer.create(
   %device : !vm.ref<!hal.device>,
   %modes : i32,
   %command_categories : i32,
+  %queue_affinity : i64,
   %binding_capacity : i32
 ) -> !vm.ref<!hal.command_buffer>
+attributes {
+  minimum_version = 5 : i32  // command buffer API version
+}
 
 // Finalizes recording into the command buffer and prepares it for submission.
 // No more commands can be recorded afterward.
@@ -230,18 +232,35 @@ vm.import private @command_buffer.execution_barrier(
 )
 
 // Fills the target buffer with the given repeating value.
+// NOTE: order slightly differs from op in order to get better arg alignment.
 vm.import private @command_buffer.fill_buffer(
   %command_buffer : !vm.ref<!hal.command_buffer>,
   %target_buffer : !vm.ref<!hal.buffer>,
   %target_offset : i64,
   %length : i64,
+  %target_buffer_slot : i32,
   %pattern : i32,
   %pattern_length: i32
 )
 
+// Updates a device buffer with the captured contents of a host buffer.
+// NOTE: order slightly differs from op in order to get better arg alignment.
+vm.import private @command_buffer.update_buffer(
+  %command_buffer : !vm.ref<!hal.command_buffer>,
+  %source_buffer : !vm.buffer,
+  %source_offset : i64,
+  %target_buffer : !vm.ref<!hal.buffer>,
+  %target_offset : i64,
+  %length : i64,
+  %target_buffer_slot : i32
+)
+
 // Copies a range of one buffer to another.
+// NOTE: order slightly differs from op in order to get better arg alignment.
 vm.import private @command_buffer.copy_buffer(
   %command_buffer : !vm.ref<!hal.command_buffer>,
+  %source_buffer_slot : i32,
+  %target_buffer_slot : i32,
   %source_buffer : !vm.ref<!hal.buffer>,
   %source_offset : i64,
   %target_buffer : !vm.ref<!hal.buffer>,
@@ -256,30 +275,15 @@ vm.import private @command_buffer.collective(
   %channel : !vm.ref<!hal.channel>,
   %op : i32,
   %param : i32,
+  %send_buffer_slot : i32,
+  %recv_buffer_slot : i32,
   %send_buffer : !vm.ref<!hal.buffer>,
+  %recv_buffer : !vm.ref<!hal.buffer>,
   %send_offset : i64,
   %send_length : i64,
-  %recv_buffer : !vm.ref<!hal.buffer>,
   %recv_offset : i64,
   %recv_length : i64,
   %element_count : i64
-)
-
-// Pushes constants for consumption by dispatches.
-vm.import private @command_buffer.push_constants(
-  %command_buffer : !vm.ref<!hal.command_buffer>,
-  %pipeline_layout : !vm.ref<!hal.pipeline_layout>,
-  %offset : i32,
-  %values : i32 ...
-)
-
-// Pushes a descriptor set to the given set number.
-vm.import private @command_buffer.push_descriptor_set(
-  %command_buffer : !vm.ref<!hal.command_buffer>,
-  %pipeline_layout : !vm.ref<!hal.pipeline_layout>,
-  %set : i32,
-  // <binding, slot, buffer, offset, length>
-  %bindings : tuple<i32, i32, !vm.ref<!hal.buffer>, i64, i64>...
 )
 
 // Dispatches an execution request.
@@ -289,7 +293,11 @@ vm.import private @command_buffer.dispatch(
   %entry_point : i32,
   %workgroup_x : i32,
   %workgroup_y : i32,
-  %workgroup_z : i32
+  %workgroup_z : i32,
+  %flags : i64,
+  %constants : i32 ...,
+  // <reserved, slot, buffer, offset, length>
+  %bindings : tuple<i32, i32, !vm.ref<!hal.buffer>, i64, i64>...
 )
 
 // Dispatches an execution request with the dispatch parameters loaded from the
@@ -298,30 +306,14 @@ vm.import private @command_buffer.dispatch.indirect(
   %command_buffer : !vm.ref<!hal.command_buffer>,
   %executable : !vm.ref<!hal.executable>,
   %entry_point : i32,
+  %workgroups_buffer_slot : i32,
   %workgroups_buffer : !vm.ref<!hal.buffer>,
-  %workgroups_offset : i64
+  %workgroups_offset : i64,
+  %flags : i64,
+  %constants : i32 ...,
+  // <reserved, slot, buffer, offset, length>
+  %bindings : tuple<i32, i32, !vm.ref<!hal.buffer>, i64, i64>...
 )
-
-// Executes a secondary command buffer with the given binding table.
-vm.import private @command_buffer.execute.commands(
-  %command_buffer : !vm.ref<!hal.command_buffer>,
-  %commands : !vm.ref<!hal.command_buffer>,
-  // <buffer, offset, length>
-  %bindings : tuple<!vm.ref<!hal.buffer>, i64, i64>...
-)
-
-//===----------------------------------------------------------------------===//
-// iree_hal_descriptor_set_layout_t
-//===----------------------------------------------------------------------===//
-
-// Creates a descriptor set layout that defines the bindings used within a set.
-vm.import private @descriptor_set_layout.create(
-  %device : !vm.ref<!hal.device>,
-  %flags : i32,
-  // <binding, type, flags>
-  %bindings : tuple<i32, i32, i32>...
-) -> !vm.ref<!hal.descriptor_set_layout>
-attributes {nosideeffects}
 
 //===----------------------------------------------------------------------===//
 // iree_hal_device_t
@@ -407,6 +399,19 @@ vm.import private @device.queue.execute(
   %command_buffers : !vm.ref<!hal.command_buffer>...
 )
 
+// Executes a command buffer on a device queue with the given binding table.
+// No commands will execute until the wait fence has been reached and the signal
+// fence will be signaled when all commands have completed.
+vm.import private @device.queue.execute.indirect(
+  %device : !vm.ref<!hal.device>,
+  %queue_affinity : i64,
+  %wait_fence : !vm.ref<!hal.fence>,
+  %signal_fence : !vm.ref<!hal.fence>,
+  %command_buffer : !vm.ref<!hal.command_buffer>,
+  // <buffer, offset, length>
+  %binding_table : tuple<!vm.ref<!hal.buffer>, i64, i64>...
+)
+
 // Flushes any locally-pending submissions in the queue.
 // When submitting many queue operations this can be used to eagerly flush
 // earlier submissions while later ones are still being constructed.
@@ -420,16 +425,10 @@ vm.import private @device.queue.flush(
 //===----------------------------------------------------------------------===//
 
 vm.import private @devices.count() -> i32
-attributes {
-  minimum_version = 2 : i32,
-  nosideeffects
-}
+attributes {nosideeffects}
 
 vm.import private @devices.get(%index : i32) -> !vm.ref<!hal.device>
-attributes {
-  minimum_version = 2 : i32,
-  nosideeffects
-}
+attributes {nosideeffects}
 
 //===----------------------------------------------------------------------===//
 // iree_hal_executable_t
@@ -440,10 +439,11 @@ vm.import private @executable.create(
   %device : !vm.ref<!hal.device>,
   %executable_format : !vm.buffer,
   %executable_data : !vm.buffer,
-  %constants : !vm.buffer,
-  %pipeline_layouts : !vm.ref<!hal.pipeline_layout>...
+  %constants : !vm.buffer
 ) -> !vm.ref<!hal.executable>
-attributes {nosideeffects}
+attributes {
+  nosideeffects
+}
 
 //===----------------------------------------------------------------------===//
 // iree_hal_fence_t
@@ -486,18 +486,5 @@ vm.import private @fence.await(
   %fences : !vm.ref<!hal.fence> ...
 ) -> i32
 attributes {vm.yield}
-
-//===----------------------------------------------------------------------===//
-// iree_hal_pipeline_layout_t
-//===----------------------------------------------------------------------===//
-
-// Creates an pipeline layout from the given descriptor sets and push constant
-// required size.
-vm.import private @pipeline_layout.create(
-  %device : !vm.ref<!hal.device>,
-  %push_constants : i32,
-  %set_layouts : !vm.ref<!hal.descriptor_set_layout>...
-) -> !vm.ref<!hal.pipeline_layout>
-attributes {nosideeffects}
 
 }  // module

@@ -6,7 +6,6 @@
 
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
-#include "iree/compiler/Codegen/LLVMGPU/PassDetail.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "iree/compiler/Codegen/Utils/VectorOpUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -21,17 +20,22 @@
 
 namespace mlir::iree_compiler {
 
+#define GEN_PASS_DEF_LLVMGPUCASTTYPETOFITMMAPASS
+#include "iree/compiler/Codegen/LLVMGPU/Passes.h.inc"
+
 namespace {
 
-struct UpcastContractOutput : OpRewritePattern<vector::ContractionOp> {
-  UpcastContractOutput(MLIRContext *context,
-                       IREE::GPU::MmaInterfaceAttr intrinsic,
-                       PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), intrinsic(intrinsic) {}
+struct UpcastContractOutput final : OpRewritePattern<vector::ContractionOp> {
+  using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(vector::ContractionOp contractOp,
                                 PatternRewriter &rewriter) const override {
-    VectorContractOpInfo opInfo(contractOp);
+    auto maybeOpInfo = VectorContractOpInfo::inferFromIndexingMaps(
+        contractOp.getIndexingMapsArray());
+    if (failed(maybeOpInfo)) {
+      return rewriter.notifyMatchFailure(contractOp, "not a contraction");
+    }
+    VectorContractOpInfo opInfo = maybeOpInfo.value();
 
     auto srcCType = dyn_cast<VectorType>(contractOp.getAccType());
     if (!srcCType) {
@@ -40,6 +44,12 @@ struct UpcastContractOutput : OpRewritePattern<vector::ContractionOp> {
     auto srcAType = contractOp.getLhsType();
     auto srcBType = contractOp.getRhsType();
 
+    auto intrinsic = contractOp->getAttrOfType<IREE::GPU::MmaInterfaceAttr>(
+        "iree.amdgpu.mma");
+    if (!intrinsic) {
+      return rewriter.notifyMatchFailure(
+          contractOp, "could not find iree.amdgpu.mma attribute on contract");
+    }
     auto [dstAElemType, dstBElemType, dstCElemType] =
         intrinsic.getABCElementTypes();
 
@@ -63,18 +73,16 @@ struct UpcastContractOutput : OpRewritePattern<vector::ContractionOp> {
     auto newContractOp = rewriter.create<vector::ContractionOp>(
         loc, contractOp.getLhs(), contractOp.getRhs(), extOp,
         contractOp.getIndexingMaps(), contractOp.getIteratorTypes());
+    newContractOp->setDiscardableAttrs(
+        contractOp->getDiscardableAttrDictionary());
     rewriter.replaceOpWithNewOp<arith::TruncFOp>(contractOp, srcCType,
                                                  newContractOp);
     return success();
   }
-
-private:
-  IREE::GPU::MmaInterfaceAttr intrinsic;
 };
 
-struct LLVMGPUCastTypeToFitMMAPass
-    : public LLVMGPUCastTypeToFitMMABase<LLVMGPUCastTypeToFitMMAPass> {
-public:
+struct LLVMGPUCastTypeToFitMMAPass final
+    : impl::LLVMGPUCastTypeToFitMMAPassBase<LLVMGPUCastTypeToFitMMAPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<vector::VectorDialect>();
     registry.insert<arith::ArithDialect>();
@@ -89,17 +97,24 @@ public:
         func->getAttrOfType<IREE::GPU::MMAScheduleAttr>(scheduleAttrName);
     if (!scheduleAttr) {
       DictionaryAttr configDict = getTranslationInfo(func).getConfiguration();
-      scheduleAttr = dyn_cast_or_null<IREE::GPU::MMAScheduleAttr>(
-          configDict.get(scheduleAttrName));
+      if (configDict) {
+        scheduleAttr = dyn_cast_or_null<IREE::GPU::MMAScheduleAttr>(
+            configDict.get(scheduleAttrName));
+      }
     }
-    if (!scheduleAttr) {
-      func.emitError() << "missing mma_schedule\n";
-      return signalPassFailure();
+
+    // Import mma type from dispatch schedule attribute if present.
+    if (scheduleAttr) {
+      func.walk([&](vector::ContractionOp contract) {
+        if (!contract->hasAttr("iree.amdgpu.mma")) {
+          contract->setAttr("iree.amdgpu.mma", scheduleAttr.getIntrinsic());
+        }
+      });
     }
 
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
-    patterns.add<UpcastContractOutput>(context, scheduleAttr.getIntrinsic());
+    patterns.add<UpcastContractOutput>(context);
 
     if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns)))) {
       return signalPassFailure();
@@ -107,9 +122,4 @@ public:
   }
 };
 } // namespace
-std::unique_ptr<InterfacePass<FunctionOpInterface>>
-createLLVMGPUCastTypeToFitMMAPass() {
-  return std::make_unique<LLVMGPUCastTypeToFitMMAPass>();
-}
-
 } // namespace mlir::iree_compiler

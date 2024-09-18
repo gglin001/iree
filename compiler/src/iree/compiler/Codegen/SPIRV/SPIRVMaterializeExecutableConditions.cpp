@@ -4,7 +4,6 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree/compiler/Codegen/SPIRV/PassDetail.h"
 #include "iree/compiler/Codegen/SPIRV/Passes.h"
 #include "iree/compiler/Codegen/SPIRV/Utils.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
@@ -20,6 +19,9 @@
 #include <cstdint>
 
 namespace mlir::iree_compiler {
+
+#define GEN_PASS_DEF_SPIRVMATERIALIZEEXECUTABLECONDITIONSPASS
+#include "iree/compiler/Codegen/SPIRV/Passes.h.inc"
 
 namespace {
 
@@ -76,7 +78,7 @@ struct KernelFeatures {
 // and updates features.
 //
 // Note that the device queries used here should match the ones used in
-// iree_hal_vulkan_get_device_properties() on the runtime side.
+// iree_hal_vulkan_query_device_properties() on the runtime side.
 LogicalResult mapToDeviceQuery(IREE::HAL::ExecutableExportOp entryPoint,
                                spirv::Capability cap,
                                KernelFeatures &features) {
@@ -269,7 +271,7 @@ SmallVector<std::string> getDeviceQueries(const KernelFeatures &features) {
 }
 
 struct SPIRVMaterializeExecutableConditionsPass final
-    : SPIRVMaterializeExecutableConditionsBase<
+    : impl::SPIRVMaterializeExecutableConditionsPassBase<
           SPIRVMaterializeExecutableConditionsPass> {
   void runOnOperation() override {
     IREE::HAL::ExecutableVariantOp variantOp = getOperation();
@@ -334,10 +336,4 @@ struct SPIRVMaterializeExecutableConditionsPass final
 };
 
 } // namespace
-
-std::unique_ptr<OperationPass<IREE::HAL::ExecutableVariantOp>>
-createSPIRVMaterializeExecutableConditionsPass() {
-  return std::make_unique<SPIRVMaterializeExecutableConditionsPass>();
-}
-
 } // namespace mlir::iree_compiler

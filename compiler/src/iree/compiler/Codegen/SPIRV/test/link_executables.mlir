@@ -8,11 +8,9 @@
 
 #vulkan_target = #hal.executable.target<"vulkan-spirv", "vulkan-spirv-fb", {iree.spirv.features = ["vulkan-spirv"]}>
 
-#pipeline_layout = #hal.pipeline.layout<push_constants = 1, sets = [
-  #hal.descriptor_set.layout<0, bindings = [
-    #hal.descriptor_set.binding<0, storage_buffer>,
-    #hal.descriptor_set.binding<1, storage_buffer>
-  ]>
+#pipeline_layout = #hal.pipeline.layout<constants = 1, bindings = [
+  #hal.pipeline.binding<storage_buffer>,
+  #hal.pipeline.binding<storage_buffer>
 ]>
 
 hal.executable private @dispatch_0 {
@@ -81,7 +79,8 @@ func.func @basic_linking() -> () attributes {
 } {
   %c0 = arith.constant 0 : index
   %device = hal.devices.get %c0 : !hal.device
-  %cmd = hal.command_buffer.create device(%device : !hal.device) mode("OneShot") categories("Transfer|Dispatch") : !hal.command_buffer attributes {
+  %affinity = arith.constant -1 : i64
+  %cmd = hal.command_buffer.create device(%device : !hal.device) mode("OneShot") categories("Transfer|Dispatch") affinity(%affinity) : !hal.command_buffer attributes {
     testing.op.a = @dispatch_0,
     testing.op.b = @dispatch_0::@spirv,
     testing.op.c = @dispatch_0::@spirv::@dispatch_0
@@ -93,15 +92,16 @@ func.func @basic_linking() -> () attributes {
   %dispatch_0_ordinal = hal.executable.export.ordinal target(@dispatch_0::@spirv::@dispatch_0) : index
   %dispatch_1_ordinal = hal.executable.export.ordinal target(@dispatch_1::@spirv::@dispatch_1) : index
   %dispatch_2_ordinal = hal.executable.export.ordinal target(@dispatch_2::@spirv::@dispatch_2) : index
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_0_exe : !hal.executable)[%dispatch_0_ordinal] workgroups([%c1, %c1, %c1])
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_1_exe : !hal.executable)[%dispatch_1_ordinal] workgroups([%c1, %c1, %c1])
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_2_exe : !hal.executable)[%dispatch_2_ordinal] workgroups([%c1, %c1, %c1])
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_0_exe : !hal.executable)[%dispatch_0_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_1_exe : !hal.executable)[%dispatch_1_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_2_exe : !hal.executable)[%dispatch_2_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
   return
 }
 util.initializer {
   %c0 = arith.constant 0 : index
   %device = hal.devices.get %c0 : !hal.device
-  %cmd = hal.command_buffer.create device(%device : !hal.device) mode("OneShot") categories("Transfer|Dispatch") : !hal.command_buffer
+  %affinity = arith.constant -1 : i64
+  %cmd = hal.command_buffer.create device(%device : !hal.device) mode("OneShot") categories("Transfer|Dispatch") affinity(%affinity) : !hal.command_buffer
   %c1 = arith.constant 1 : index
   %dispatch_0_exe = hal.executable.lookup device(%device : !hal.device) executable(@dispatch_0) : !hal.executable
   %dispatch_1_exe = hal.executable.lookup device(%device : !hal.device) executable(@dispatch_1) : !hal.executable
@@ -109,9 +109,9 @@ util.initializer {
   %dispatch_0_ordinal = hal.executable.export.ordinal target(@dispatch_0::@spirv::@dispatch_0) : index
   %dispatch_1_ordinal = hal.executable.export.ordinal target(@dispatch_1::@spirv::@dispatch_1) : index
   %dispatch_2_ordinal = hal.executable.export.ordinal target(@dispatch_2::@spirv::@dispatch_2) : index
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_0_exe : !hal.executable)[%dispatch_0_ordinal] workgroups([%c1, %c1, %c1])
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_1_exe : !hal.executable)[%dispatch_1_ordinal] workgroups([%c1, %c1, %c1])
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_2_exe : !hal.executable)[%dispatch_2_ordinal] workgroups([%c1, %c1, %c1])
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_0_exe : !hal.executable)[%dispatch_0_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_1_exe : !hal.executable)[%dispatch_1_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_2_exe : !hal.executable)[%dispatch_2_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
   util.return
 }
 
@@ -163,8 +163,8 @@ util.initializer {
 // CHECK-DAG:     %[[DISPATCH_1_ORDINAL:.+]] = hal.executable.export.ordinal target(@link_executables_linked_spirv::@vulkan_spirv_fb::@dispatch_1)
 // CHECK-DAG:     %[[DISPATCH_2_ORDINAL:.+]] = hal.executable.export.ordinal target(@link_executables_linked_spirv::@vulkan_spirv_fb::@dispatch_2)
 // CHECK:         hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_0_EXE]] : !hal.executable)[%[[DISPATCH_0_ORDINAL]]] workgroups([%c1, %c1, %c1])
-// CHECK-NEXT:    hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_1_EXE]] : !hal.executable)[%[[DISPATCH_1_ORDINAL]]] workgroups([%c1, %c1, %c1])
-// CHECK-NEXT:    hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_2_EXE]] : !hal.executable)[%[[DISPATCH_2_ORDINAL]]] workgroups([%c1, %c1, %c1])
+// CHECK:         hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_1_EXE]] : !hal.executable)[%[[DISPATCH_1_ORDINAL]]] workgroups([%c1, %c1, %c1])
+// CHECK:         hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_2_EXE]] : !hal.executable)[%[[DISPATCH_2_ORDINAL]]] workgroups([%c1, %c1, %c1])
 //
 // CHECK:       util.initializer
 // CHECK-DAG:     %[[DISPATCH_0_EXE:.+]] = hal.executable.lookup device(%{{.+}}) executable(@link_executables_linked_spirv) : !hal.executable
@@ -174,8 +174,8 @@ util.initializer {
 // CHECK-DAG:     %[[DISPATCH_1_ORDINAL:.+]] = hal.executable.export.ordinal target(@link_executables_linked_spirv::@vulkan_spirv_fb::@dispatch_1)
 // CHECK-DAG:     %[[DISPATCH_2_ORDINAL:.+]] = hal.executable.export.ordinal target(@link_executables_linked_spirv::@vulkan_spirv_fb::@dispatch_2)
 // CHECK:         hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_0_EXE]] : !hal.executable)[%[[DISPATCH_0_ORDINAL]]] workgroups([%c1, %c1, %c1])
-// CHECK-NEXT:    hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_1_EXE]] : !hal.executable)[%[[DISPATCH_1_ORDINAL]]] workgroups([%c1, %c1, %c1])
-// CHECK-NEXT:    hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_2_EXE]] : !hal.executable)[%[[DISPATCH_2_ORDINAL]]] workgroups([%c1, %c1, %c1])
+// CHECK:         hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_1_EXE]] : !hal.executable)[%[[DISPATCH_1_ORDINAL]]] workgroups([%c1, %c1, %c1])
+// CHECK:         hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%[[DISPATCH_2_EXE]] : !hal.executable)[%[[DISPATCH_2_ORDINAL]]] workgroups([%c1, %c1, %c1])
 
 // -----
 
@@ -191,11 +191,9 @@ util.initializer {
 #vulkan_target_1 = #hal.executable.target<"vulkan-spirv", "vulkan-spirv-fb", {
   iree.spirv.features = ["vulkan-spirv", "subgroup=1"]}>
 
-#pipeline_layout = #hal.pipeline.layout<push_constants = 1, sets = [
-  #hal.descriptor_set.layout<0, bindings = [
-    #hal.descriptor_set.binding<0, storage_buffer>,
-    #hal.descriptor_set.binding<1, storage_buffer>
-  ]>
+#pipeline_layout = #hal.pipeline.layout<constants = 1, bindings = [
+  #hal.pipeline.binding<storage_buffer>,
+  #hal.pipeline.binding<storage_buffer>
 ]>
 
 hal.executable private @dispatch_0 {
@@ -291,7 +289,8 @@ hal.executable private @dispatch_3 {
 func.func @two_target_environments() -> () {
   %c0 = arith.constant 0 : index
   %device = hal.devices.get %c0 : !hal.device
-  %cmd = hal.command_buffer.create device(%device : !hal.device) mode("OneShot") categories("Transfer|Dispatch") : !hal.command_buffer
+  %affinity = arith.constant -1 : i64
+  %cmd = hal.command_buffer.create device(%device : !hal.device) mode("OneShot") categories("Transfer|Dispatch") affinity(%affinity) : !hal.command_buffer
   %c1 = arith.constant 1 : index
   %dispatch_0_exe = hal.executable.lookup device(%device : !hal.device) executable(@dispatch_0) : !hal.executable
   %dispatch_1_exe = hal.executable.lookup device(%device : !hal.device) executable(@dispatch_1) : !hal.executable
@@ -301,10 +300,10 @@ func.func @two_target_environments() -> () {
   %dispatch_1_ordinal = hal.executable.export.ordinal target(@dispatch_1::@spirv::@dispatch_1) : index
   %dispatch_2_ordinal = hal.executable.export.ordinal target(@dispatch_2::@spirv::@dispatch_2) : index
   %dispatch_3_ordinal = hal.executable.export.ordinal target(@dispatch_3::@spirv::@dispatch_3) : index
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_0_exe : !hal.executable)[%dispatch_0_ordinal] workgroups([%c1, %c1, %c1])
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_1_exe : !hal.executable)[%dispatch_1_ordinal] workgroups([%c1, %c1, %c1])
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_2_exe : !hal.executable)[%dispatch_2_ordinal] workgroups([%c1, %c1, %c1])
-  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_3_exe : !hal.executable)[%dispatch_3_ordinal] workgroups([%c1, %c1, %c1])
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_0_exe : !hal.executable)[%dispatch_0_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_1_exe : !hal.executable)[%dispatch_1_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_2_exe : !hal.executable)[%dispatch_2_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
+  hal.command_buffer.dispatch<%cmd : !hal.command_buffer> target(%dispatch_3_exe : !hal.executable)[%dispatch_3_ordinal] workgroups([%c1, %c1, %c1]) bindings([(%c0 : index)[%c0, %c0]]) flags(None)
   return
 }
 
@@ -384,11 +383,9 @@ func.func @two_target_environments() -> () {
 #vulkan_target_2 = #hal.executable.target<"vulkan-spirv", "vulkan-spirv-fb", {
   iree.spirv.features = ["vulkan-spirv", "subgroup=2"]}>
 
-#pipeline_layout = #hal.pipeline.layout<push_constants = 1, sets = [
-  #hal.descriptor_set.layout<0, bindings = [
-    #hal.descriptor_set.binding<0, storage_buffer>,
-    #hal.descriptor_set.binding<1, storage_buffer>
-  ]>
+#pipeline_layout = #hal.pipeline.layout<constants = 1, bindings = [
+  #hal.pipeline.binding<storage_buffer>,
+  #hal.pipeline.binding<storage_buffer>
 ]>
 
 hal.executable private @dispatch_0 {

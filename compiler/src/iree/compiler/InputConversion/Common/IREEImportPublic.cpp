@@ -14,7 +14,6 @@
 #include "iree/compiler/Dialect/Util/IR/UtilDialect.h"
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
-#include "iree/compiler/InputConversion/Common/PassDetail.h"
 #include "iree/compiler/InputConversion/Common/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -25,10 +24,14 @@
 
 namespace mlir::iree_compiler::InputConversion {
 
+#define GEN_PASS_DEF_IREEIMPORTPUBLICPASS
+#include "iree/compiler/InputConversion/Common/Passes.h.inc"
+
 namespace {
 
-struct IREEImportPublicPass
-    : public IREEImportPublicBase<IREEImportPublicPass> {
+class IREEImportPublicPass final
+    : public impl::IREEImportPublicPassBase<IREEImportPublicPass> {
+public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<IREE::Input::IREEInputDialect, IREE::Flow::FlowDialect,
                     IREE::HAL::HALDialect, IREE::Util::UtilDialect,
@@ -78,57 +81,47 @@ convertDescriptorType(IREE::Input::DescriptorType src) {
   }
 }
 
-static std::optional<IREE::HAL::DescriptorFlags>
+static IREE::HAL::DescriptorFlags
 convertDescriptorFlags(std::optional<IREE::Input::DescriptorFlags> src) {
   if (!src.has_value())
-    return std::nullopt;
+    return IREE::HAL::DescriptorFlags::None;
   switch (*src) {
+  default:
   case IREE::Input::DescriptorFlags::None:
     return IREE::HAL::DescriptorFlags::None;
   case IREE::Input::DescriptorFlags::ReadOnly:
     return IREE::HAL::DescriptorFlags::ReadOnly;
-  default:
-    return std::nullopt;
   }
 }
 
-static IREE::HAL::DescriptorSetBindingAttr
-convertDescriptorSetBinding(IREE::Input::DescriptorSetBindingAttr src) {
-  return IREE::HAL::DescriptorSetBindingAttr::get(
-      src.getContext(), src.getOrdinal(), convertDescriptorType(src.getType()),
+static IREE::HAL::PipelineBindingAttr
+convertPipelineBinding(IREE::Input::PipelineBindingAttr src) {
+  return IREE::HAL::PipelineBindingAttr::get(
+      src.getContext(), convertDescriptorType(src.getType()),
       convertDescriptorFlags(src.getFlags()));
 }
 
-static std::optional<IREE::HAL::DescriptorSetLayoutFlags>
-convertDescriptorSetLayoutFlags(
-    std::optional<IREE::Input::DescriptorSetLayoutFlags> src) {
+static std::optional<IREE::HAL::PipelineLayoutFlags> convertPipelineLayoutFlags(
+    std::optional<IREE::Input::PipelineLayoutFlags> src) {
   if (!src.has_value())
     return std::nullopt;
   switch (*src) {
-  case IREE::Input::DescriptorSetLayoutFlags::None:
-    return IREE::HAL::DescriptorSetLayoutFlags::None;
-  case IREE::Input::DescriptorSetLayoutFlags::Indirect:
-    return IREE::HAL::DescriptorSetLayoutFlags::Indirect;
+  case IREE::Input::PipelineLayoutFlags::None:
+    return IREE::HAL::PipelineLayoutFlags::None;
+  case IREE::Input::PipelineLayoutFlags::Indirect:
+    return IREE::HAL::PipelineLayoutFlags::Indirect;
   default:
     return std::nullopt;
   }
-}
-
-static IREE::HAL::DescriptorSetLayoutAttr
-convertDescriptorSetLayout(IREE::Input::DescriptorSetLayoutAttr src) {
-  return IREE::HAL::DescriptorSetLayoutAttr::get(
-      src.getContext(), src.getOrdinal(),
-      convertAttributes<IREE::HAL::DescriptorSetBindingAttr>(
-          src.getBindings(), convertDescriptorSetBinding),
-      convertDescriptorSetLayoutFlags(src.getFlags()));
 }
 
 static IREE::HAL::PipelineLayoutAttr
 convertPipelineLayout(IREE::Input::PipelineLayoutAttr src) {
   return IREE::HAL::PipelineLayoutAttr::get(
-      src.getContext(), src.getPushConstants(),
-      convertAttributes<IREE::HAL::DescriptorSetLayoutAttr>(
-          src.getSetLayouts(), convertDescriptorSetLayout));
+      src.getContext(),
+      convertAttributes<IREE::HAL::PipelineBindingAttr>(src.getBindings(),
+                                                        convertPipelineBinding),
+      src.getConstants(), convertPipelineLayoutFlags(src.getFlags()));
 }
 
 static IREE::HAL::ExecutableObjectAttr
@@ -209,13 +202,15 @@ class TensorImportPattern
       // the work.
       rewriter.replaceOpWithNewOp<IREE::HAL::TensorImportOp>(
           srcOp, resultType, adaptor.getSource(), TypeAttr::get(resultType),
-          /*name=*/nullptr);
+          /*name=*/nullptr,
+          /*affinity=*/nullptr);
     } else {
       // Dynamic dims explicitly provided (or wrong, in which case the verifier
       // will get it).
       rewriter.replaceOpWithNewOp<IREE::HAL::TensorImportOp>(
           srcOp, resultType, adaptor.getSource(), TypeAttr::get(resultType),
-          adaptor.getTargetDims(), /*wait_fence=*/Value{}, /*name=*/nullptr);
+          adaptor.getTargetDims(), /*wait_fence=*/Value{}, /*name=*/nullptr,
+          /*affinity=*/nullptr);
     }
     return success();
   }
@@ -237,14 +232,16 @@ class TensorExportPattern
       // the work.
       rewriter.replaceOpWithNewOp<IREE::HAL::TensorExportOp>(
           srcOp, resultType, adaptor.getSource(),
-          TypeAttr::get(adaptor.getSource().getType()), /*name=*/nullptr);
+          TypeAttr::get(adaptor.getSource().getType()), /*name=*/nullptr,
+          /*affinity=*/nullptr);
     } else {
       // Dynamic dims explicitly provided (or wrong, in which case the verifier
       // will get it).
       rewriter.replaceOpWithNewOp<IREE::HAL::TensorExportOp>(
           srcOp, resultType, adaptor.getSource(),
           TypeAttr::get(adaptor.getSource().getType()), adaptor.getSourceDims(),
-          /*name=*/nullptr);
+          /*name=*/nullptr,
+          /*affinity=*/nullptr);
     }
     return success();
   }
@@ -349,10 +346,8 @@ class FuncFuncOpPattern : public OpConversionPattern<func::FuncOp> {
 
     // Allowlist of function attributes to retain when importing funcs.
     constexpr const char *kRetainedAttributes[] = {
-        "iree.reflection",
-        "vm.fallback",
-        "vm.signature",
-        "vm.version",
+        "iree.reflection", "stream.affinity", "vm.fallback",
+        "vm.signature",    "vm.version",
     };
     auto retainedAttributes = ArrayRef<const char *>(
         kRetainedAttributes,
@@ -594,10 +589,6 @@ void IREEImportPublicPass::runOnOperation() {
 
   if (failed(applyFullConversion(getOperation(), target, std::move(patterns))))
     signalPassFailure();
-}
-
-std::unique_ptr<OperationPass<ModuleOp>> createIREEImportPublicPass() {
-  return std::make_unique<IREEImportPublicPass>();
 }
 
 } // namespace mlir::iree_compiler::InputConversion

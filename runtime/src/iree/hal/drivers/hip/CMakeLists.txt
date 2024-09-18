@@ -40,18 +40,12 @@ iree_cc_library(
     "native_executable.h"
     "nop_executable_cache.c"
     "nop_executable_cache.h"
-    "pending_queue_actions.c"
-    "pending_queue_actions.h"
-    "pipeline_layout.c"
-    "pipeline_layout.h"
     "rccl_channel.c"
     "rccl_channel.h"
     "stream_command_buffer.c"
     "stream_command_buffer.h"
     "timepoint_pool.c"
     "timepoint_pool.h"
-    "tracing.c"
-    "tracing.h"
   INCLUDES
     "${HIP_API_HEADERS_ROOT}"
   DEPS
@@ -67,14 +61,17 @@ iree_cc_library(
     iree::base::internal::wait_handle
     iree::base::internal::flatcc::parsing
     iree::hal
-    iree::hal::drivers::utils
     iree::hal::utils::collective_batch
+    iree::hal::utils::executable_debug_info
     iree::hal::utils::deferred_command_buffer
+    iree::hal::utils::deferred_work_queue
     iree::hal::utils::file_transfer
     iree::hal::utils::memory_file
     iree::hal::utils::resource_set
     iree::hal::utils::semaphore_base
-    iree::schemas::rocm_executable_def_c_fbs
+    iree::hal::utils::stream_tracing
+    iree::schemas::executable_debug_info_c_fbs
+    iree::schemas::hip_executable_def_c_fbs
   PUBLIC
 )
 

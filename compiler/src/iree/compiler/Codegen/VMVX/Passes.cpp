@@ -8,7 +8,6 @@
 
 #include "iree/compiler/Codegen/Common/CPU/Passes.h"
 #include "iree/compiler/Codegen/Common/Passes.h"
-#include "iree/compiler/Codegen/VMVX/PassDetail.h"
 #include "iree/compiler/Codegen/VMVX/Passes.h"
 #include "iree/compiler/Dialect/LinalgExt/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -37,6 +36,7 @@ static llvm::cl::opt<bool> clEnableUKernelsDecomposeLinalgGeneric(
 
 static void addTileAndDistributePasses(OpPassManager &funcPassManager) {
   funcPassManager.addPass(createTileAndDistributeToWorkgroupsPass());
+  funcPassManager.addPass(createCSEPass());
   funcPassManager.addPass(createConvertToDestinationPassingStylePass());
   funcPassManager.addPass(createFoldAffineMinInDistributedLoopsPass());
   funcPassManager.addPass(createCanonicalizerPass());

@@ -117,11 +117,22 @@ static LogicalResult tileAndDistributeToThreads(TilingInterface consumerOp,
   IRRewriter rewriter(context);
   SmallVector<OpFoldResult> tileSizesOfr =
       getAsIndexOpFoldResult(context, tileSizes);
+  scf::SCFTilingOptions tilingOptions;
+  tilingOptions.setTileSizes(tileSizesOfr);
+  scf::SCFTileAndFuseOptions tileAndFuseOptions;
+  tileAndFuseOptions.setTilingOptions(tilingOptions);
+  tileAndFuseOptions.setFusionControlFn(
+      [](tensor::ExtractSliceOp sliceOp, OpResult origProducer,
+         bool isDestinationOperand)
+          -> std::optional<scf::SCFTileAndFuseOptions::ControlFnResult> {
+        if (isa<tensor::PadOp>(origProducer.getOwner())) {
+          return std::nullopt;
+        }
+        return scf::SCFTileAndFuseOptions::ControlFnResult{false};
+      });
   FailureOr<scf::SCFTileAndFuseResult> tileAndFuseResult =
-      scf::tileConsumerAndFuseProducersUsingSCF(
-          rewriter, consumerOp,
-          scf::SCFTileAndFuseOptions().setTilingOptions(
-              scf::SCFTilingOptions().setTileSizes(tileSizesOfr)));
+      scf::tileConsumerAndFuseProducersUsingSCF(rewriter, consumerOp,
+                                                tileAndFuseOptions);
 
   if (failed(tileAndFuseResult)) {
     return consumerOp.emitOpError("failed tiling and fusing producers");

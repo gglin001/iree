@@ -74,7 +74,8 @@ bool isLinalgGeneric2DTranspose(linalg::GenericOp genericOp) {
   // Check that the two indexing maps are a permutation of each other.
   SmallVector<AffineMap> indexingMaps = genericOp.getIndexingMapsArray();
   bool isTranspose =
-      indexingMaps[0].isPermutation() && indexingMaps[1].isIdentity();
+      (indexingMaps[0].isPermutation() && indexingMaps[1].isIdentity()) ||
+      (indexingMaps[1].isPermutation() && indexingMaps[0].isIdentity());
   if (!isTranspose)
     return false;
 
@@ -91,6 +92,18 @@ bool isLinalgGeneric2DTranspose(linalg::GenericOp genericOp) {
     return false;
 
   return true;
+}
+
+bool mayHaveUndefinedBehaviorInMasking(Operation *op) {
+  // Those operations will be lowered to division or related instructions,
+  // and they might result in divide-by-zero.
+  if (isa<mlir::arith::RemSIOp, mlir::arith::RemUIOp, mlir::arith::DivSIOp,
+          mlir::arith::DivUIOp, mlir::arith::CeilDivSIOp,
+          mlir::arith::CeilDivUIOp, mlir::arith::FloorDivSIOp,
+          mlir::arith::DivFOp, mlir::arith::RemFOp>(op)) {
+    return true;
+  }
+  return false;
 }
 
 } // namespace mlir::iree_compiler

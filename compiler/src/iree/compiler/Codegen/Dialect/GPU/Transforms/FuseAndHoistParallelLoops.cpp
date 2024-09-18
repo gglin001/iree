@@ -16,8 +16,13 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
+#define DEBUG_TYPE "iree-gpu-fuse-and-hoist-parallel-loops"
+#define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
+#define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace mlir::iree_compiler::IREE::GPU {
 
@@ -114,6 +119,34 @@ struct FuseTilableDestinationProducers final : OpRewritePattern<scf::ForallOp> {
   }
 };
 
+struct FuseTilableSliceProducers final
+    : OpRewritePattern<tensor::ExtractSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tensor::ExtractSliceOp sliceOp,
+                                PatternRewriter &rewriter) const override {
+    if (sliceOp->use_empty()) {
+      return failure();
+    }
+    auto tilableProducer = sliceOp.getSource().getDefiningOp<TilingInterface>();
+    if (!tilableProducer) {
+      return failure();
+    }
+
+    auto parentForall = sliceOp->getParentOfType<scf::ForallOp>();
+    if (!parentForall) {
+      return failure();
+    }
+
+    SmallVector<LoopLikeOpInterface> loops = {parentForall};
+    std::optional<scf::SCFFuseProducerOfSliceResult> fusionResult =
+        mlir::scf::tileAndFuseProducerOfSlice(rewriter, sliceOp, loops);
+    if (!fusionResult) {
+      return failure();
+    }
+    return success();
+  }
+};
+
 struct FuseTilableForallConsumers final
     : OpInterfaceRewritePattern<TilingInterface> {
   using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
@@ -163,6 +196,8 @@ struct FuseTilableForallConsumers final
 void FuseAndHoistParallelLoopsPass::runOnOperation() {
   MLIRContext *context = &getContext();
 
+  FunctionOpInterface funcOp = getOperation();
+
   // First run the hoisting and fusion patterns.
   {
     RewritePatternSet patterns(context);
@@ -171,11 +206,12 @@ void FuseAndHoistParallelLoopsPass::runOnOperation() {
     patterns.add<FuseForalls>(context);
     patterns.add<FuseTilableForallConsumers>(context);
     populateForallLoopHoistingPattern(patterns);
-    if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                            std::move(patterns)))) {
+    if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
       return signalPassFailure();
     }
   }
+
+  LDBG("After fusing and hoisting loops\n" << funcOp);
 
   // After hoisting parallel loops, try to fuse in any newly revealed consumers
   // and destinations.
@@ -187,11 +223,26 @@ void FuseAndHoistParallelLoopsPass::runOnOperation() {
     patterns.add<FuseTilableForallConsumers>(context);
     tensor::populateFoldTensorEmptyPatterns(patterns);
     scf::ForallOp::getCanonicalizationPatterns(patterns, context);
-    if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                            std::move(patterns)))) {
+    if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
       return signalPassFailure();
     }
   }
+
+  LDBG("After fusing new consumers\n" << funcOp);
+
+  // Finally try to do any new producer fusions.
+  {
+    RewritePatternSet patterns(context);
+    patterns.add<FuseTilableDestinationProducers>(context);
+    patterns.add<FuseTilableSliceProducers>(context);
+    tensor::populateFoldTensorEmptyPatterns(patterns);
+    scf::ForallOp::getCanonicalizationPatterns(patterns, context);
+    if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
+      return signalPassFailure();
+    }
+  }
+
+  LDBG("After fusing new producers\n" << funcOp);
 }
 
 } // namespace mlir::iree_compiler::IREE::GPU

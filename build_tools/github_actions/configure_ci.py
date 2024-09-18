@@ -52,8 +52,6 @@ import yaml
 # Add build_tools python dir to the search path.
 sys.path.insert(0, str(pathlib.Path(__file__).parent.with_name("python")))
 
-from benchmark_suites.iree import benchmark_presets
-
 
 # We don't get StrEnum till Python 3.11
 @enum.unique
@@ -65,9 +63,6 @@ class Trailer(str, enum.Enum):
     EXTRA_JOBS = "ci-extra"
     EXACTLY_JOBS = "ci-exactly"
     RUNNER_ENV = "runner-env"
-    BENCHMARK_EXTRA = "benchmark-extra"
-    # Trailer to prevent benchmarks from always running on LLVM integration PRs.
-    SKIP_LLVM_INTEGRATE_BENCHMARK = "skip-llvm-integrate-benchmark"
 
     # Before Python 3.12, it the native __contains__ doesn't work for checking
     # member values like this and it's not possible to easily override this.
@@ -124,45 +119,18 @@ CONTROL_JOBS = frozenset(["setup", "summary"])
 # They may also run on presubmit only under certain conditions.
 DEFAULT_POSTSUBMIT_ONLY_JOBS = frozenset(
     [
-        "build_test_all_arm64",
-        # "build_test_all_windows",  # Currently disabled
-        # "build_test_all_macos_arm64",  # Currently disabled
-        "build_test_all_macos_x86_64",
-        # Due to the outstock of A100, only run this test in postsubmit.
-        "test_nvidia_a100",
-        # Due to the instability issues at the current runner,
-        # only run this test in postsubmit.
-        "test_amd_w7900",
+        # None.
     ]
 )
 
 # Jobs to run in presumbit if files under the corresponding path see changes.
 # Each tuple consists of the CI job name and a list of file paths to match.
-# The file paths should be specified using Unix shell-style wildcards.
+# The file paths should be specified using Unix shell-style wildcards. Sample:
+#   ("test_nvidia_a100", ["compiler/plugins/target/CUDA/*"]),
+# Note: these jobs should also be included in DEFAULT_POSTSUBMIT_ONLY_JOBS.
 PRESUBMIT_TOUCH_ONLY_JOBS = [
-    # Currently disabled
-    # ("build_test_all_macos_arm64", ["runtime/src/iree/hal/drivers/metal/*"]),
-    # Currently disabled
-    # (
-    #     "build_test_all_windows",
-    #     ["*win32*", "*windows*", "*msvc*", "runtime/src/iree/builtins/ukernel/*"],
-    # ),
+    # None.
 ]
-
-# Default presets enabled in CI.
-DEFAULT_BENCHMARK_PRESET_GROUP = [
-    preset
-    for preset in benchmark_presets.DEFAULT_PRESETS
-    # RISC-V benchmarks haven't been supported in CI workflow.
-    if preset not in [benchmark_presets.RISCV]
-] + ["comp-stats"]
-DEFAULT_BENCHMARK_PRESET = "default"
-LARGE_BENCHMARK_PRESET_GROUP = benchmark_presets.LARGE_PRESETS
-# All available benchmark preset options including experimental presets.
-BENCHMARK_PRESET_OPTIONS = (
-    benchmark_presets.ALL_EXECUTION_PRESETS + benchmark_presets.ALL_COMPILATION_PRESETS
-)
-BENCHMARK_LABEL_PREFIX = "benchmarks"
 
 PR_DESCRIPTION_TEMPLATE = string.Template("${title}\n\n${body}")
 
@@ -481,93 +449,26 @@ def get_enabled_jobs(
             f" '{Trailer.EXTRA_JOBS}', but found {ambiguous_jobs}"
         )
 
-    default_jobs = all_jobs - DEFAULT_POSTSUBMIT_ONLY_JOBS
+    enabled_jobs = all_jobs - DEFAULT_POSTSUBMIT_ONLY_JOBS
 
     if not modifies_non_skip_paths(modified_paths):
         print(
             "Not including any jobs by default because all modified files"
             " are marked as excluded."
         )
-        default_jobs = frozenset()
+        enabled_jobs = frozenset()
     else:
         # Add jobs if the monitored files are changed.
         for modified_path in modified_paths:
             for job, match_paths in PRESUBMIT_TOUCH_ONLY_JOBS:
                 for match_path in match_paths:
                     if fnmatch.fnmatch(modified_path, match_path):
-                        default_jobs |= {job}
+                        print(
+                            f"Enabling '{job}' since '{modified_path}' matches pattern '{match_path}'"
+                        )
+                        enabled_jobs |= {job}
 
-    return (default_jobs | extra_jobs) - skip_jobs
-
-
-def get_benchmark_presets(
-    trailers: Mapping[str, str],
-    labels: Sequence[str],
-    is_pr: bool,
-    is_llvm_integrate_pr: bool,
-) -> str:
-    """Parses and validates the benchmark presets from trailers.
-
-    Args:
-      trailers: trailers from PR description.
-      labels: list of PR labels.
-      is_pr: is pull request event.
-      is_llvm_integrate_pr: is LLVM integration PR.
-
-    Returns:
-      A comma separated preset string, which later will be parsed by
-      build_tools/benchmarks/export_benchmark_config.py.
-    """
-
-    skip_llvm_integrate_benchmark = Trailer.SKIP_LLVM_INTEGRATE_BENCHMARK in trailers
-    if skip_llvm_integrate_benchmark:
-        print(
-            f"Skipping default benchmarking on LLVM integration because PR "
-            f"description has '{Trailer.SKIP_LLVM_INTEGRATE_BENCHMARK}'"
-            f" trailer."
-        )
-
-    if not is_pr:
-        preset_options = {DEFAULT_BENCHMARK_PRESET}
-        print(f"Using benchmark presets '{preset_options}' for non-PR run")
-    elif is_llvm_integrate_pr and not skip_llvm_integrate_benchmark:
-        # Run all benchmark presets for LLVM integration PRs.
-        preset_options = {DEFAULT_BENCHMARK_PRESET}
-        print(f"Using benchmark preset '{preset_options}' for LLVM integration PR")
-    else:
-        preset_options = set(
-            label.split(":", maxsplit=1)[1]
-            for label in labels
-            if label.startswith(BENCHMARK_LABEL_PREFIX + ":")
-        )
-        trailer = trailers.get(Trailer.BENCHMARK_EXTRA)
-        if trailer is not None:
-            preset_options = preset_options.union(
-                option.strip() for option in trailer.split(",")
-            )
-            print(
-                f"Using benchmark preset '{preset_options}' from trailers"
-                f" and labels"
-            )
-
-    if DEFAULT_BENCHMARK_PRESET in preset_options:
-        preset_options.remove(DEFAULT_BENCHMARK_PRESET)
-        preset_options.update(DEFAULT_BENCHMARK_PRESET_GROUP)
-
-    if preset_options.intersection(DEFAULT_BENCHMARK_PRESET_GROUP):
-        # The is a sugar to run the compilation benchmarks when any default
-        # benchmark preset is present.
-        preset_options.add("comp-stats")
-
-    preset_options = sorted(preset_options)
-    for preset_option in preset_options:
-        if preset_option not in BENCHMARK_PRESET_OPTIONS:
-            raise ValueError(
-                f"Unknown benchmark preset option: '{preset_option}'.\n"
-                f"Available options: '{BENCHMARK_PRESET_OPTIONS}'."
-            )
-
-    return ",".join(preset_options)
+    return (enabled_jobs | extra_jobs) - skip_jobs
 
 
 def main():
@@ -584,9 +485,6 @@ def main():
     base_ref = os.environ["BASE_REF"]
 
     try:
-        benchmark_presets = get_benchmark_presets(
-            trailers, labels, is_pr, is_llvm_integrate_pr
-        )
         all_jobs = parse_jobs_from_workflow_file(workflow_file)
         enabled_jobs = get_enabled_jobs(
             trailers,
@@ -604,7 +502,6 @@ def main():
         "runner-env": get_runner_env(trailers),
         "runner-group": "presubmit" if is_pr else "postsubmit",
         "write-caches": "0" if is_pr else "1",
-        "benchmark-presets": benchmark_presets,
     }
 
     set_output(output)

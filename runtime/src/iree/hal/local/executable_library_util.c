@@ -17,19 +17,6 @@ iree_status_t iree_hal_executable_library_verify(
                         IREE_HAL_EXECUTABLE_CACHING_MODE_DISABLE_VERIFICATION);
   if (disable_verification) return iree_ok_status();
 
-  // Check that there's one pipeline layout per export. Multiple exports may
-  // share the same layout but it still needs to be declared.
-  // NOTE: pipeline layouts are optional but if provided must be consistent.
-  if (executable_params->pipeline_layout_count > 0) {
-    if (library->exports.count != executable_params->pipeline_layout_count) {
-      return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
-                              "executable provides %u entry points but caller "
-                              "provided %" PRIhsz "; must match",
-                              library->exports.count,
-                              executable_params->pipeline_layout_count);
-    }
-  }
-
   // Check to make sure that the constant table has values for all constants.
   if (library->constants.count != executable_params->constant_count) {
     return iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
@@ -37,6 +24,30 @@ iree_status_t iree_hal_executable_library_verify(
                             "provided %" PRIhsz "; must match",
                             library->constants.count,
                             executable_params->constant_count);
+  }
+
+  // If dispatch attributes are present validate they are in range.
+  if (library->exports.attrs) {
+    for (uint32_t i = 0; i < library->exports.count; ++i) {
+      const iree_hal_executable_dispatch_attrs_v0_t dispatch_attrs =
+          library->exports.attrs[i];
+      if (dispatch_attrs.constant_count >
+          IREE_HAL_EXECUTABLE_MAX_CONSTANT_COUNT) {
+        return iree_make_status(
+            IREE_STATUS_OUT_OF_RANGE,
+            "dispatch requiring %u constants exceeds limit of %d",
+            dispatch_attrs.constant_count,
+            IREE_HAL_EXECUTABLE_MAX_CONSTANT_COUNT);
+      }
+      if (dispatch_attrs.binding_count >
+          IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT) {
+        return iree_make_status(
+            IREE_STATUS_OUT_OF_RANGE,
+            "dispatch requiring %u bindings exceeds limit of %d",
+            dispatch_attrs.binding_count,
+            IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT);
+      }
+    }
   }
 
   return iree_ok_status();

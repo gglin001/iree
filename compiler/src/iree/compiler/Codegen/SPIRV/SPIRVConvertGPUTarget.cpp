@@ -4,11 +4,9 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree/compiler/Codegen/SPIRV/PassDetail.h"
 #include "iree/compiler/Codegen/SPIRV/Passes.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVAttributes.h"
@@ -20,6 +18,9 @@
 #include "mlir/Pass/Pass.h"
 
 namespace mlir::iree_compiler {
+
+#define GEN_PASS_DEF_SPIRVCONVERTGPUTARGETPASS
+#include "iree/compiler/Codegen/SPIRV/Passes.h.inc"
 
 namespace {
 
@@ -96,14 +97,16 @@ ClientAPI deduceClientAPI(StringRef backend) {
       .Default(ClientAPI::Unknown);
 }
 
-Vendor deduceVendor(StringRef arch) {
-  if (arch.starts_with("gfx") || arch.starts_with("rdna"))
+Vendor deduceVendor(IREE::GPU::TargetAttr target) {
+  if (target.isAMD())
     return Vendor::AMD;
-  if (arch.starts_with("valhall"))
+  if (target.isApple())
+    return Vendor::Apple;
+  if (target.isARM())
     return Vendor::ARM;
-  if (arch.starts_with("sm_"))
+  if (target.isNVIDIA())
     return Vendor::NVIDIA;
-  if (arch.starts_with("adreno"))
+  if (target.isQualcomm())
     return Vendor::Qualcomm;
   return Vendor::Unknown;
 }
@@ -181,9 +184,9 @@ void addMatrixFeatures(IREE::GPU::MMAOpsArrayAttr mmaOps,
   }
 }
 
-spirv::ResourceLimitsAttr convertLimits(StringRef arch,
-                                        IREE::GPU::TargetWgpAttr wgp) {
-  MLIRContext *context = wgp.getContext();
+spirv::ResourceLimitsAttr convertLimits(IREE::GPU::TargetAttr target) {
+  MLIRContext *context = target.getContext();
+  IREE::GPU::TargetWgpAttr wgp = target.getWgp();
   Builder b(context);
 
   SmallVector<Attribute, 4> coopMatAttrs;
@@ -196,19 +199,15 @@ spirv::ResourceLimitsAttr convertLimits(StringRef arch,
         spirv::ScopeAttr::get(context, spirv::Scope::Subgroup)));
   }
 
-  ArrayRef<int> subgroupSizes = wgp.getSubgroupSizeChoices().asArrayRef();
-  const int minSubgroupSize = *llvm::min_element(subgroupSizes);
-  const int maxSubgroupSize = *llvm::max_element(subgroupSizes);
-  // This is mostly to match RDNA behavior on Vulkan--RDNA supports either 32 or
-  // 64 as subgroup sizes; the default subgroup size is 64.
-  const int preferredSubgroupSize = maxSubgroupSize;
+  const int preferredSubgroupSize = target.getPreferredSubgroupSize();
 
   return spirv::ResourceLimitsAttr::get(
       context, wgp.getMaxWorkgroupMemoryBytes(),
       wgp.getMaxThreadCountPerWorkgroup(),
       b.getI32ArrayAttr(wgp.getMaxWorkgroupSizes().asArrayRef()),
-      preferredSubgroupSize, minSubgroupSize, maxSubgroupSize,
-      ArrayAttr::get(context, coopMatAttrs), ArrayAttr{});
+      preferredSubgroupSize, target.getMinSubgroupSize(),
+      target.getMaxSubgroupSize(), ArrayAttr::get(context, coopMatAttrs),
+      ArrayAttr{});
 }
 
 //===----------------------------------------------------------------------===//
@@ -246,43 +245,28 @@ convertGPUTarget(IREE::HAL::ExecutableVariantOp variant) {
   auto triple = spirv::VerCapExtAttr::get(
       *version, caps.getArrayRef(), exts.getArrayRef(), variant.getContext());
   return spirv::TargetEnvAttr::get(
-      triple, convertLimits(gpuTarget.getArch(), wgp),
-      deduceClientAPI(target.getBackend()), deduceVendor(gpuTarget.getArch()),
-      spirv::DeviceType::Unknown, spirv::TargetEnvAttr::kUnknownDeviceID);
+      triple, convertLimits(gpuTarget), deduceClientAPI(target.getBackend()),
+      deduceVendor(gpuTarget), spirv::DeviceType::Unknown,
+      spirv::TargetEnvAttr::kUnknownDeviceID);
 }
 
 struct SPIRVConvertGPUTargetPass final
-    : SPIRVConvertGPUTargetBase<SPIRVConvertGPUTargetPass> {
+    : impl::SPIRVConvertGPUTargetPassBase<SPIRVConvertGPUTargetPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<spirv::SPIRVDialect>();
   }
 
   void runOnOperation() override {
-    IREE::HAL::ExecutableVariantOp variant = getOperation();
-    IREE::HAL::ExecutableTargetAttr target = variant.getTarget();
+    mlir::ModuleOp moduleOp = getOperation();
+    auto variant = moduleOp->getParentOfType<IREE::HAL::ExecutableVariantOp>();
 
     FailureOr<spirv::TargetEnvAttr> spirvTarget = convertGPUTarget(variant);
     if (failed(spirvTarget))
       return signalPassFailure();
 
-    Builder b(&getContext());
-    auto attrs = llvm::to_vector(target.getConfiguration().getValue());
-    attrs.emplace_back(b.getStringAttr(spirv::getTargetEnvAttrName()),
-                       *spirvTarget);
-    auto configAttr = b.getDictionaryAttr(attrs);
-
-    auto halTarget = IREE::HAL::ExecutableTargetAttr::get(
-        target.getContext(), target.getBackend(), target.getFormat(),
-        configAttr);
-    variant.setTargetAttr(halTarget);
+    moduleOp->setAttr(spirv::getTargetEnvAttrName(), *spirvTarget);
   }
 };
 
 } // namespace
-
-std::unique_ptr<OperationPass<IREE::HAL::ExecutableVariantOp>>
-createSPIRVConvertGPUTargetPass() {
-  return std::make_unique<SPIRVConvertGPUTargetPass>();
-}
-
 } // namespace mlir::iree_compiler

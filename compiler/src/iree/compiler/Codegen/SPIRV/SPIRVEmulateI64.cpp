@@ -11,9 +11,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "iree/compiler/Codegen/SPIRV/PassDetail.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/SPIRV/Passes.h"
-#include "iree/compiler/Codegen/SPIRV/Utils.h"
+#include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "llvm/ADT/SmallVector.h"
@@ -37,6 +37,9 @@
 
 namespace mlir::iree_compiler {
 
+#define GEN_PASS_DEF_SPIRVEMULATEI64PASS
+#include "iree/compiler/Codegen/SPIRV/Passes.h.inc"
+
 namespace {
 
 //===----------------------------------------------------------------------===//
@@ -58,10 +61,9 @@ struct ConvertHalInterfaceBindingSubspan final
 
     auto newOp =
         rewriter.replaceOpWithNewOp<IREE::HAL::InterfaceBindingSubspanOp>(
-            op, newResultTy, adaptor.getSet(), adaptor.getBinding(),
-            adaptor.getDescriptorType(), adaptor.getByteOffset(),
-            adaptor.getDynamicDims(), adaptor.getAlignmentAttr(),
-            adaptor.getDescriptorFlagsAttr());
+            op, newResultTy, adaptor.getLayout(), adaptor.getBinding(),
+            adaptor.getByteOffset(), adaptor.getDynamicDims(),
+            adaptor.getAlignmentAttr(), adaptor.getDescriptorFlagsAttr());
     LLVM_DEBUG(llvm::dbgs()
                << "WideIntegerEmulation: new op: " << newOp << "\n");
     (void)newOp;
@@ -153,10 +155,10 @@ populateIreeI64EmulationPatterns(arith::WideIntEmulationConverter &converter,
 }
 
 static bool supportsI64(FunctionOpInterface op) {
-  spirv::TargetEnvAttr attr = getSPIRVTargetEnvAttr(op);
-  assert(attr && "Not a valid spirv module");
-  spirv::TargetEnv env(attr);
-  return env.allows(spirv::Capability::Int64);
+  IREE::GPU::TargetAttr attr = getGPUTargetAttr(op);
+  assert(attr && "Missing GPU target");
+  return IREE::GPU::bitEnumContainsAll(attr.getWgp().getCompute().getValue(),
+                                       IREE::GPU::ComputeBitwidths::Int64);
 }
 
 //===----------------------------------------------------------------------===//
@@ -164,7 +166,7 @@ static bool supportsI64(FunctionOpInterface op) {
 //===----------------------------------------------------------------------===//
 
 struct SPIRVEmulateI64Pass final
-    : public SPIRVEmulateI64Base<SPIRVEmulateI64Pass> {
+    : impl::SPIRVEmulateI64PassBase<SPIRVEmulateI64Pass> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<vector::VectorDialect>();
   }
@@ -224,14 +226,4 @@ struct SPIRVEmulateI64Pass final
 };
 
 } // namespace
-
-//===----------------------------------------------------------------------===//
-// Public interface
-//===----------------------------------------------------------------------===//
-
-std::unique_ptr<InterfacePass<FunctionOpInterface>>
-createSPIRVEmulateI64Pass() {
-  return std::make_unique<SPIRVEmulateI64Pass>();
-}
-
 } // namespace mlir::iree_compiler

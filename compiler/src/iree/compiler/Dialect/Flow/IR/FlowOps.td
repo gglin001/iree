@@ -35,6 +35,7 @@ def OpGroupPartitionedRegionOps : OpDocGroup {
 let opDocGroup = OpGroupPartitionedRegionOps in {
 
 def FLOW_DispatchRegionOp : FLOW_PureOp<"dispatch.region", [
+    DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
     Util_ShapeAwareOp,
     AttrSizedOperandSegments]> {
   let summary = [{a group of ops}];
@@ -1498,6 +1499,57 @@ def FLOW_TensorCloneOp : FLOW_PureOp<"tensor.clone", [
   let hasVerifier = 1;
   let hasCanonicalizer = 1;
   let hasFolder = 1;
+}
+
+def FLOW_TensorTransferOp : FLOW_PureOp<"tensor.transfer", [
+  AllTypesMatch<["operand", "result"]>,
+  DeclareOpInterfaceMethods<Util_HoistableOpInterface>,
+  Util_ShapeAwareOp,
+]> {
+  let summary = [{transfers a tensor to a target by copying if needed}];
+  let description = [{
+    Transfers the tensor from whichever context it may be in to the specified
+    target context. If the contexts are compatible and can access each others
+    memory the operation may be elided and otherwise will become one or more
+    copies to transfer the tensor in cases where staging through an intermediate
+    context is required.
+  }];
+
+  let arguments = (ins
+    FLOW_Tensor:$operand,
+    FLOW_ShapeDynamicDims:$argument_dims,
+    AnyAttr:$target
+  );
+  let results = (outs
+    FLOW_Tensor:$result
+  );
+
+  let assemblyFormat = [{
+    $operand `:` type($result) (`{` $argument_dims^ `}`)?
+    `to` $target
+    attr-dict-with-keyword
+  }];
+
+  let builders = [
+    OpBuilder<(ins "Value":$operand, "Attribute":$target),
+    [{
+      build($_builder, $_state,
+          operand.getType(),
+          operand,
+          IREE::Util::buildDynamicDimsForValue($_state.location, operand, $_builder),
+          target);
+    }]>,
+  ];
+
+  let extraClassDeclaration = [{
+    bool isHoistableLeafOp() { return false; }
+
+    ValueRange getOperandDynamicDims(unsigned idx) { return getArgumentDims(); }
+    ValueRange getResultDynamicDims(unsigned idx) { return getArgumentDims(); }
+  }];
+
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
 }
 
 def FLOW_TensorSliceOp : FLOW_PureOp<"tensor.slice", [

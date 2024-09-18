@@ -8,11 +8,11 @@
 
 // A: shape = 32x8, layout = layoutA
 #layout_a = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [32, 2],
-  elements_per_thread     = [1, 4],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [32, 2],
+  element_tile     = [1, 4],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [1, 32]
@@ -20,11 +20,11 @@
 
 // B: shape = 8x32, layout = layoutB
 #layout_b = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [2, 32],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [2, 32],
+  element_tile     = [4, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [32, 1]
@@ -32,28 +32,30 @@
 
 // C: shape = 32x32, layout = layoutC
 #layout_c = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [4, 1],
-  threads_per_outer       = [2, 32],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [4, 1],
+  thread_tile       = [2, 32],
+  element_tile     = [4, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [32, 1]
 >
 
 func.func @contract_to_mfma_32x32x8_mm(%a : vector<32x8xf16>, %b : vector<8x32xf16>, %c : vector<32x32xf32>) -> vector<32x32xf32> {
+  %A = iree_vector_ext.to_layout %a to #layout_a : vector<32x8xf16>
+  %B = iree_vector_ext.to_layout %b to #layout_b : vector<8x32xf16>
+  %C = iree_vector_ext.to_layout %c to #layout_c : vector<32x32xf32>
+
   %output = vector.contract {
     indexing_maps = [#map1, #map2, #map3],
     iterator_types = ["parallel", "parallel", "reduction"],
     kind = #vector.kind<add>,
-    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F16_32x32x8_F32>,
-    "__vector_layout_test_anchor_operand_0" = #layout_a,
-    "__vector_layout_test_anchor_operand_1" = #layout_b,
-    "__vector_layout_test_anchor_operand_2" = #layout_c,
-    "__vector_layout_test_anchor_result_0" = #layout_c
-  } %a, %b, %c : vector<32x8xf16>, vector<8x32xf16> into vector<32x32xf32>
-  return %output : vector<32x32xf32>
+    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F32_32x32x8_F16>
+  } %A, %B, %C : vector<32x8xf16>, vector<8x32xf16> into vector<32x32xf32>
+
+  %O = iree_vector_ext.to_layout %output to #layout_c : vector<32x32xf32>
+  return %O : vector<32x32xf32>
 }
 
 builtin.module attributes { transform.with_named_sequence } {
@@ -93,11 +95,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // A: shape = 16x16, layout = layoutA
 #layout_a = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [16, 4],
-  elements_per_thread     = [1, 4],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [16, 4],
+  element_tile     = [1, 4],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [1, 16]
@@ -105,11 +107,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // B: shape = 16x16, layout = layoutB
 #layout_b = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [4, 16],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [4, 16],
+  element_tile     = [4, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [16, 1]
@@ -118,17 +120,19 @@ builtin.module attributes { transform.with_named_sequence } {
 // C: shape = 16x16, layout = layoutB
 
 func.func @contract_to_mfma_16x16x16_mm(%a : vector<16x16xf16>, %b : vector<16x16xf16>, %c : vector<16x16xf32>) -> vector<16x16xf32> {
+  %A = iree_vector_ext.to_layout %a to #layout_a : vector<16x16xf16>
+  %B = iree_vector_ext.to_layout %b to #layout_b : vector<16x16xf16>
+  %C = iree_vector_ext.to_layout %c to #layout_b : vector<16x16xf32>
+
   %output = vector.contract {
     indexing_maps = [#map1, #map2, #map3],
     iterator_types = ["parallel", "parallel", "reduction"],
     kind = #vector.kind<add>,
-    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F16_16x16x16_F32>,
-    "__vector_layout_test_anchor_operand_0" = #layout_a,
-    "__vector_layout_test_anchor_operand_1" = #layout_b,
-    "__vector_layout_test_anchor_operand_2" = #layout_b,
-    "__vector_layout_test_anchor_result_0" = #layout_b
-  } %a, %b, %c : vector<16x16xf16>, vector<16x16xf16> into vector<16x16xf32>
-  return %output : vector<16x16xf32>
+    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F32_16x16x16_F16>
+  } %A, %B, %C : vector<16x16xf16>, vector<16x16xf16> into vector<16x16xf32>
+
+  %O = iree_vector_ext.to_layout %output to #layout_b : vector<16x16xf32>
+  return %O : vector<16x16xf32>
 }
 
 builtin.module attributes { transform.with_named_sequence } {
@@ -169,11 +173,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // A: shape = 64x8, layout = layoutA
 #layout_a = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [2, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [32, 2],
-  elements_per_thread     = [1, 4],
+  subgroup_tile = [1, 1],
+  batch_tile    = [2, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [32, 2],
+  element_tile     = [1, 4],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [1, 32]
@@ -181,11 +185,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // B: shape = 8x32, layout = layoutB
 #layout_b = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [2, 32],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [2, 32],
+  element_tile     = [4, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [32, 1]
@@ -193,28 +197,30 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // C: shape = 64x32, layout = layoutC
 #layout_c = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [2, 1],
-  outers_per_batch        = [4, 1],
-  threads_per_outer       = [2, 32],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [2, 1],
+  outer_tile        = [4, 1],
+  thread_tile       = [2, 32],
+  element_tile     = [4, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [32, 1]
 >
 
 func.func @contract_to_mfma_32x32x8_mm_mnbatch(%a : vector<64x8xf16>, %b : vector<8x32xf16>, %c : vector<64x32xf32>) -> vector<64x32xf32> {
+  %A = iree_vector_ext.to_layout %a to #layout_a : vector<64x8xf16>
+  %B = iree_vector_ext.to_layout %b to #layout_b : vector<8x32xf16>
+  %C = iree_vector_ext.to_layout %c to #layout_c : vector<64x32xf32>
+
   %output = vector.contract {
     indexing_maps = [#map1, #map2, #map3],
     iterator_types = ["parallel", "parallel", "reduction"],
     kind = #vector.kind<add>,
-    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F16_32x32x8_F32>,
-    "__vector_layout_test_anchor_operand_0" = #layout_a,
-    "__vector_layout_test_anchor_operand_1" = #layout_b,
-    "__vector_layout_test_anchor_operand_2" = #layout_c,
-    "__vector_layout_test_anchor_result_0" = #layout_c
-  } %a, %b, %c : vector<64x8xf16>, vector<8x32xf16> into vector<64x32xf32>
-  return %output : vector<64x32xf32>
+    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F32_32x32x8_F16>
+  } %A, %B, %C : vector<64x8xf16>, vector<8x32xf16> into vector<64x32xf32>
+
+  %O = iree_vector_ext.to_layout %output to #layout_c : vector<64x32xf32>
+  return %O : vector<64x32xf32>
 }
 
 builtin.module attributes { transform.with_named_sequence } {
@@ -256,11 +262,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // A: shape = 32x16, layout = layoutA
 #layout_a = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 2],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [32, 2],
-  elements_per_thread     = [1, 4],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 2],
+  outer_tile        = [1, 1],
+  thread_tile       = [32, 2],
+  element_tile     = [1, 4],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [1, 32]
@@ -268,11 +274,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // B: shape = 16x32, layout = layoutB
 #layout_b = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [2, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [2, 32],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [2, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [2, 32],
+  element_tile     = [4, 1],
 
   subgroup_strides         = [1, 1],
   thread_strides          = [32, 1]
@@ -280,28 +286,30 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // C: shape = 32x32, layout = layoutC
 #layout_c = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [4, 1],
-  threads_per_outer       = [2, 32],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [4, 1],
+  thread_tile       = [2, 32],
+  element_tile     = [4, 1],
 
   subgroup_strides         = [1, 1],
   thread_strides          = [32, 1]
 >
 
 func.func @contract_to_mfma_32x32x8_mm_kbatch(%a : vector<32x16xf16>, %b : vector<16x32xf16>, %c : vector<32x32xf32>) -> vector<32x32xf32> {
+  %A = iree_vector_ext.to_layout %a to #layout_a : vector<32x16xf16>
+  %B = iree_vector_ext.to_layout %b to #layout_b : vector<16x32xf16>
+  %C = iree_vector_ext.to_layout %c to #layout_c : vector<32x32xf32>
+
   %output = vector.contract {
     indexing_maps = [#map1, #map2, #map3],
     iterator_types = ["parallel", "parallel", "reduction"],
     kind = #vector.kind<add>,
-    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F16_32x32x8_F32>,
-    "__vector_layout_test_anchor_operand_0" = #layout_a,
-    "__vector_layout_test_anchor_operand_1" = #layout_b,
-    "__vector_layout_test_anchor_operand_2" = #layout_c,
-    "__vector_layout_test_anchor_result_0" = #layout_c
-  } %a, %b, %c : vector<32x16xf16>, vector<16x32xf16> into vector<32x32xf32>
-  return %output : vector<32x32xf32>
+    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F32_32x32x8_F16>
+  } %A, %B, %C : vector<32x16xf16>, vector<16x32xf16> into vector<32x32xf32>
+
+  %O = iree_vector_ext.to_layout %output to #layout_c : vector<32x32xf32>
+  return %O : vector<32x32xf32>
 }
 
 builtin.module attributes { transform.with_named_sequence } {
@@ -337,11 +345,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // A: shape = 64x8, layout = layoutA
 #layout_a = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [2, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [32, 2],
-  elements_per_thread     = [1, 4],
+  subgroup_tile = [1, 1],
+  batch_tile    = [2, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [32, 2],
+  element_tile     = [1, 4],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [1, 32]
@@ -349,11 +357,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // B: shape = 8x96, layout = layoutB
 #layout_b = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 3],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [2, 32],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 3],
+  outer_tile        = [1, 1],
+  thread_tile       = [2, 32],
+  element_tile     = [4, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [32, 1]
@@ -361,28 +369,30 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // C: shape = 64x96, layout = layoutC
 #layout_c = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [2, 3],
-  outers_per_batch        = [4, 1],
-  threads_per_outer       = [2, 32],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [2, 3],
+  outer_tile        = [4, 1],
+  thread_tile       = [2, 32],
+  element_tile     = [4, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [32, 1]
 >
 
 func.func @contract_to_mfma_32x32x8_mm_mnbatch_order(%a : vector<64x8xf16>, %b : vector<8x96xf16>, %c : vector<64x96xf32>) -> vector<64x96xf32> {
+  %A = iree_vector_ext.to_layout %a to #layout_a : vector<64x8xf16>
+  %B = iree_vector_ext.to_layout %b to #layout_b : vector<8x96xf16>
+  %C = iree_vector_ext.to_layout %c to #layout_c : vector<64x96xf32>
+
   %output = vector.contract {
     indexing_maps = [#map1, #map2, #map3],
     iterator_types = ["parallel", "parallel", "reduction"],
     kind = #vector.kind<add>,
-    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F16_32x32x8_F32>,
-    "__vector_layout_test_anchor_operand_0" = #layout_a,
-    "__vector_layout_test_anchor_operand_1" = #layout_b,
-    "__vector_layout_test_anchor_operand_2" = #layout_c,
-    "__vector_layout_test_anchor_result_0" = #layout_c
-  } %a, %b, %c : vector<64x8xf16>, vector<8x96xf16> into vector<64x96xf32>
-  return %output : vector<64x96xf32>
+    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F32_32x32x8_F16>
+  } %A, %B, %C : vector<64x8xf16>, vector<8x96xf16> into vector<64x96xf32>
+
+  %O = iree_vector_ext.to_layout %output to #layout_c : vector<64x96xf32>
+  return %O : vector<64x96xf32>
 }
 
 builtin.module attributes { transform.with_named_sequence } {
@@ -426,11 +436,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // A: shape = 32x8, layout = layoutA
 #layout_a = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [32, 2],
-  elements_per_thread     = [1, 4],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [32, 2],
+  element_tile     = [1, 4],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [1, 32]
@@ -438,40 +448,42 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // B: shape = 64x8, layout = layoutB
 #layout_b = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [2, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [32, 2],
-  elements_per_thread     = [1, 4],
+  subgroup_tile = [1, 1],
+  batch_tile    = [2, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [32, 2],
+  element_tile     = [1, 4],
 
   subgroup_strides        = [1, 1],
-  thread_strides          = [32, 1]
+  thread_strides          = [1, 32]
 >
 
 // C: shape = 32x64, layout = layoutC
 #layout_c = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 2],
-  outers_per_batch        = [4, 1],
-  threads_per_outer       = [2, 32],
-  elements_per_thread     = [4, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 2],
+  outer_tile        = [4, 1],
+  thread_tile       = [2, 32],
+  element_tile     = [4, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [32, 1]
 >
 
 func.func @contract_to_mfma_32x32x8_mmt(%a : vector<32x8xf16>, %b : vector<64x8xf16>, %c : vector<32x64xf32>) -> vector<32x64xf32> {
+  %A = iree_vector_ext.to_layout %a to #layout_a : vector<32x8xf16>
+  %B = iree_vector_ext.to_layout %b to #layout_b : vector<64x8xf16>
+  %C = iree_vector_ext.to_layout %c to #layout_c : vector<32x64xf32>
+
   %output = vector.contract {
     indexing_maps = [#map1, #map2, #map3],
     iterator_types = ["parallel", "parallel", "reduction"],
     kind = #vector.kind<add>,
-    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F16_32x32x8_F32>,
-    "__vector_layout_test_anchor_operand_0" = #layout_a,
-    "__vector_layout_test_anchor_operand_1" = #layout_b,
-    "__vector_layout_test_anchor_operand_2" = #layout_c,
-    "__vector_layout_test_anchor_result_0" = #layout_c
-  } %a, %b, %c : vector<32x8xf16>, vector<64x8xf16> into vector<32x64xf32>
-  return %output : vector<32x64xf32>
+    iree.amdgpu.mma = #iree_gpu.mma_layout<MFMA_F32_32x32x8_F16>
+  } %A, %B, %C : vector<32x8xf16>, vector<64x8xf16> into vector<32x64xf32>
+
+  %O = iree_vector_ext.to_layout %output to #layout_c : vector<32x64xf32>
+  return %O : vector<32x64xf32>
 }
 
 builtin.module attributes { transform.with_named_sequence } {
@@ -503,11 +515,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // A: shape = 16x16, layout = layoutA
 #layout_a = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [16, 1],
-  elements_per_thread     = [1, 16],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [16, 1],
+  element_tile     = [1, 16],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [1, 16]
@@ -515,11 +527,11 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // B: shape = 16x16, layout = layoutB
 #layout_b = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [1, 1],
-  threads_per_outer       = [1, 16],
-  elements_per_thread     = [16, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [1, 1],
+  thread_tile       = [1, 16],
+  element_tile     = [16, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [16, 1]
@@ -527,28 +539,30 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // C: shape = 16x16, layout = layoutC
 #layout_c = #iree_vector_ext.nested_layout<
-  subgroups_per_workgroup = [1, 1],
-  batches_per_subgroup    = [1, 1],
-  outers_per_batch        = [8, 1],
-  threads_per_outer       = [2, 16],
-  elements_per_thread     = [1, 1],
+  subgroup_tile = [1, 1],
+  batch_tile    = [1, 1],
+  outer_tile        = [8, 1],
+  thread_tile       = [2, 16],
+  element_tile     = [1, 1],
 
   subgroup_strides        = [1, 1],
   thread_strides          = [16, 1]
 >
 
 func.func @contract_to_wmma_16x16x16_mm(%a : vector<16x16xf16>, %b : vector<16x16xf16>, %c : vector<16x16xf32>) -> vector<16x16xf32> {
+  %A = iree_vector_ext.to_layout %a to #layout_a : vector<16x16xf16>
+  %B = iree_vector_ext.to_layout %b to #layout_b : vector<16x16xf16>
+  %C = iree_vector_ext.to_layout %c to #layout_c : vector<16x16xf32>
+
   %output = vector.contract {
     indexing_maps = [#map1, #map2, #map3],
     iterator_types = ["parallel", "parallel", "reduction"],
     kind = #vector.kind<add>,
-    iree.amdgpu.mma = #iree_gpu.mma_layout<WMMA_F16_16x16x16_F32>,
-    "__vector_layout_test_anchor_operand_0" = #layout_a,
-    "__vector_layout_test_anchor_operand_1" = #layout_b,
-    "__vector_layout_test_anchor_operand_2" = #layout_c,
-    "__vector_layout_test_anchor_result_0" = #layout_c
-  } %a, %b, %c : vector<16x16xf16>, vector<16x16xf16> into vector<16x16xf32>
-  return %output : vector<16x16xf32>
+    iree.amdgpu.mma = #iree_gpu.mma_layout<WMMA_F32_16x16x16_F16>
+  } %A, %B, %C : vector<16x16xf16>, vector<16x16xf16> into vector<16x16xf32>
+
+  %O = iree_vector_ext.to_layout %output to #layout_c : vector<16x16xf32>
+  return %O : vector<16x16xf32>
 }
 
 builtin.module attributes { transform.with_named_sequence } {

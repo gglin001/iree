@@ -405,6 +405,7 @@ static iree_status_t iree_io_parameter_op_batch_advance_timeline(
     IREE_RETURN_AND_END_ZONE_IF_ERROR(
         z0, iree_hal_semaphore_create(
                 batch->device, batch->timeline_values[timeline_index],
+                IREE_HAL_SEMAPHORE_FLAG_NONE,
                 &batch->timeline_semaphores[timeline_index]));
     timeline_semaphore = batch->timeline_semaphores[timeline_index];
   }
@@ -508,9 +509,10 @@ static iree_status_t iree_io_parameter_op_batch_enqueue_splat(
   // Parameter ranges cannot overlap so there's no barrier required.
   batch->transfer_bytes_outstanding += length;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
-      z0, iree_hal_command_buffer_fill_buffer(batch->transfer_command_buffer,
-                                              buffer, buffer_offset, length,
-                                              pattern, pattern_length));
+      z0, iree_hal_command_buffer_fill_buffer(
+              batch->transfer_command_buffer,
+              iree_hal_make_buffer_ref(buffer, buffer_offset, length), pattern,
+              pattern_length));
 
   IREE_TRACE_ZONE_END(z0);
   return iree_ok_status();
@@ -589,7 +591,8 @@ static iree_status_t iree_io_parameter_op_batch_flush(
     if (iree_status_is_ok(status)) {
       status = iree_hal_device_queue_execute(
           batch->device, batch->queue_affinity, step.wait_semaphore_list,
-          step.signal_semaphore_list, 1, &batch->transfer_command_buffer);
+          step.signal_semaphore_list, 1, &batch->transfer_command_buffer,
+          /*binding_tables=*/NULL);
     }
     IREE_TRACE_ZONE_END(z_transfer);
   }

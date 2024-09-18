@@ -87,12 +87,12 @@ typedef struct iree_hal_executable_environment_v0_t
 // or some semantic versioning we track in whatever spec we end up having.
 typedef uint32_t iree_hal_executable_library_version_t;
 
-#define IREE_HAL_EXECUTABLE_LIBRARY_VERSION_0_4 0x00000004u
+#define IREE_HAL_EXECUTABLE_LIBRARY_VERSION_0_5 0x00000005u
 
 // The latest version of the library API; can be used to populate the
 // iree_hal_executable_library_header_t::version when building libraries.
 #define IREE_HAL_EXECUTABLE_LIBRARY_VERSION_LATEST \
-  IREE_HAL_EXECUTABLE_LIBRARY_VERSION_0_4
+  IREE_HAL_EXECUTABLE_LIBRARY_VERSION_0_5
 
 // A header present at the top of all versions of the library API used by the
 // runtime to ensure version compatibility.
@@ -279,8 +279,8 @@ typedef struct iree_hal_executable_dispatch_state_v0_t {
   uint32_t workgroup_size_y;
   uint16_t workgroup_size_z;
 
-  // Total number of available 4 byte push constant values in |push_constants|.
-  uint16_t push_constant_count;
+  // Total number of available 4 byte push constant values in |constants|.
+  uint16_t constant_count;
 
   // Total workgroup count for the dispatch. This is sourced from either the
   // original dispatch call (for iree_hal_command_buffer_dispatch) or the
@@ -299,8 +299,8 @@ typedef struct iree_hal_executable_dispatch_state_v0_t {
   // used (known at compile-time).
   uint8_t binding_count;
 
-  // |push_constant_count| values.
-  const uint32_t* push_constants;
+  // |constant_count| values.
+  const uint32_t* constants;
   // Base pointers to each binding buffer.
   void* const* binding_ptrs;
   // The length of each binding in bytes, 1:1 with |binding_ptrs|.
@@ -372,21 +372,31 @@ typedef int (*iree_hal_executable_dispatch_v0_t)(
 
 // Bytes per page of workgroup local memory.
 // This is chosen to match the common page size of devices.
-#define IREE_HAL_WORKGROUP_LOCAL_MEMORY_PAGE_SIZE 4096
+#define IREE_HAL_EXECUTABLE_WORKGROUP_LOCAL_MEMORY_PAGE_SIZE 4096
+
+// Maximum number of constants that can be used by a single dispatch.
+#define IREE_HAL_EXECUTABLE_MAX_CONSTANT_COUNT 64
+// Maximum number of bindings that can be used by a single dispatch.
+#define IREE_HAL_EXECUTABLE_MAX_BINDING_COUNT 64
 
 // Attributes for exported dispatch functions defining how they are to be
 // executed. 0 defaults are well-specified and the entire attributes table may
 // be omitted if no dispatch functions require these fields.
 typedef struct iree_hal_executable_dispatch_attrs_v0_t {
-  // Number of IREE_HAL_WORKGROUP_LOCAL_MEMORY_PAGE_SIZE byte pages (or 0)
-  // indicating how much workgroup local memory is required for the dispatch.
-  // This is the size of the buffer referenced by the `local_memory` argument.
+  // Number of IREE_HAL_EXECUTABLE_WORKGROUP_LOCAL_MEMORY_PAGE_SIZE byte pages
+  // (or 0) indicating how much workgroup local memory is required for the
+  // dispatch. This is the size of the buffer referenced by the `local_memory`
+  // argument.
   uint16_t local_memory_pages;
-  // Must be 0. May be used in the future for flags controlling the dispatch
-  // behavior/synchronization requirements.
-  uint16_t reserved;
+  // Total number of 32-bit constants used by the dispatch.
+  uint8_t constant_count;
+  // Total number of bindings used by the dispatch.
+  uint8_t binding_count;
+  // Unused to pad the structure. Must be 0.
+  uint32_t reserved_0;
+  // Unused. Must be 0.
+  uint64_t reserved_1[8];
 } iree_hal_executable_dispatch_attrs_v0_t;
-static_assert(sizeof(iree_hal_executable_dispatch_attrs_v0_t) == 4, "uint32_t");
 
 // Source location information for a dispatch function indicating what code was
 // used to generate it. This only represents a single source snapshot, of which

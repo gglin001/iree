@@ -8,21 +8,23 @@
 
 #include <cstdint>
 
-#include "iree-dialects/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
 #include "iree/compiler/Codegen/Dialect/GPU/TargetUtils/KnownTargets.h"
+#include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
+#include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/HAL/Target/TargetRegistry.h"
+#include "iree/compiler/Dialect/HAL/Utils/ExecutableDebugInfoUtils.h"
 #include "iree/compiler/Dialect/HAL/Utils/LLVMLinkerUtils.h"
 #include "iree/compiler/PluginAPI/Client.h"
 #include "iree/compiler/Utils/FlatbufferUtils.h"
 #include "iree/compiler/Utils/ModuleUtils.h"
 #include "iree/compiler/Utils/ToolUtils.h"
-#include "iree/schemas/rocm_executable_def_builder.h"
+#include "iree/schemas/hip_executable_def_builder.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
@@ -34,11 +36,14 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "mlir/Dialect/AMDGPU/IR/AMDGPUDialect.h"
+#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/DialectResourceBlobManager.h"
@@ -54,7 +59,7 @@ namespace mlir::iree_compiler::IREE::HAL {
 namespace {
 
 struct ROCmOptions {
-  std::string targetChip = "gfx908";
+  std::string target = "gfx908";
   std::string targetFeatures = "";
   std::string bitcodeDirectory = getDefaultBitcodeDirectory();
   int wavesPerEu = 0;
@@ -63,39 +68,51 @@ struct ROCmOptions {
 
   void bindOptions(OptionsBinder &binder) {
     using namespace llvm;
-    static cl::OptionCategory category("ROCm HAL Target");
-    binder.opt<std::string>("iree-rocm-target-chip", targetChip,
-                            cl::cat(category), cl::desc("ROCm target chip."));
+    static cl::OptionCategory category("HIP HAL Target");
     binder.opt<std::string>(
-        "iree-rocm-target-features", targetFeatures, cl::cat(category),
-        cl::desc("ROCm target features; e.g., '+sramecc,+xnack'."));
-    binder.opt<std::string>("iree-rocm-bc-dir", bitcodeDirectory,
+        "iree-hip-target", target, cl::cat(category),
+        cl::desc(
+            // clang-format off
+            "HIP target as expected by LLVM AMDGPU backend; e.g., "
+            "'gfx90a'/'gfx942' for targeting MI250/MI300 GPUs. "
+            "Additionally this also supports architecture code names like "
+            "'cdna3'/'rdna3' or some product names like 'mi300x'/'rtx7900xtx' "
+            "for a better experience. See "
+            "https://iree.dev/guides/deployment-configurations/gpu-rocm/ "
+            "for more details."
+            // clang-format on
+            ));
+    binder.opt<std::string>(
+        "iree-hip-target-features", targetFeatures, cl::cat(category),
+        cl::desc("HIP target features as expected by LLVM AMDGPU backend; "
+                 "e.g., '+sramecc,+xnack'."));
+    binder.opt<std::string>("iree-hip-bc-dir", bitcodeDirectory,
                             cl::cat(category),
-                            cl::desc("Directory of ROCm Bitcode."));
-    binder.opt<int>("iree-rocm-waves-per-eu", wavesPerEu, cl::cat(category),
+                            cl::desc("Directory of HIP Bitcode."));
+    binder.opt<int>("iree-hip-waves-per-eu", wavesPerEu, cl::cat(category),
                     cl::desc("Optimization hint specifying minimum "
                              "number of waves per execution unit."));
     binder.opt<std::string>(
-        "iree-rocm-enable-ukernels", enableROCMUkernels, cl::cat(category),
-        cl::desc("Enables microkernels in the rocm compiler backend. May be "
+        "iree-hip-enable-ukernels", enableROCMUkernels, cl::cat(category),
+        cl::desc("Enables microkernels in the HIP compiler backend. May be "
                  "`default`, `none`, `all`, or a comma-separated list of "
                  "specific unprefixed microkernels to enable, e.g. `mmt4d`."));
-    binder.opt<bool>("iree-rocm-legacy-sync", legacySync, cl::cat(category),
+    binder.opt<bool>("iree-hip-legacy-sync", legacySync, cl::cat(category),
                      cl::desc("Enables 'legacy-sync' mode, which is required "
                               "for inline execution."));
   }
 
   LogicalResult verify(mlir::Builder &builder) const {
-    if (GPU::normalizeHIPTarget(targetChip).empty()) {
-      return emitError(builder.getUnknownLoc(), "Unknown ROCm target '")
-             << targetChip << "'";
+    if (GPU::normalizeHIPTarget(target).empty()) {
+      return emitError(builder.getUnknownLoc(), "Unknown HIP target '")
+             << target << "'";
     }
     SmallVector<StringRef> features;
     llvm::SplitString(targetFeatures, features, ",");
     for (StringRef f : features) {
       if (!(f.starts_with("+") || f.starts_with("-"))) {
         return emitError(builder.getUnknownLoc(),
-                         "ROCm target feature must be prefixed with '+' or "
+                         "HIP target feature must be prefixed with '+' or "
                          "'-'; but seen '")
                << f << "'";
       }
@@ -104,7 +121,7 @@ struct ROCmOptions {
         // We only support these two features to be set explicitly. Features
         // like wavefrontsize is controlled and tuned by the compiler.
         return emitError(builder.getUnknownLoc(),
-                         "ROCm target feature can only be 'sramecc' or "
+                         "HIP target feature can only be 'sramecc' or "
                          "'xnack'; but seen '")
                << feature << "'";
       }
@@ -117,6 +134,68 @@ private:
     return mlir::iree_compiler::findPlatformLibDirectory("rocm");
   }
 };
+
+// Extracts the amdgpu chipset version from the chip architecture in the
+// executable target attribute.
+static FailureOr<amdgpu::Chipset>
+getChipsetVersion(ExecutableTargetAttr targetAttr) {
+  IREE::GPU::TargetAttr gpuTarget = getGPUTargetAttr(targetAttr);
+  if (!gpuTarget)
+    return failure();
+
+  return amdgpu::Chipset::parse(gpuTarget.getArch());
+}
+
+// Set attributes on `funcOp` in order to use upstream's translation of
+// ROCDL dialect attributes to LLVM. Primarily this is `rocdl.kernel`
+// (sets the calling convention and workgroup size uniformity) but this will
+// also set both forms of workgroup size metadata from `exportOp` (if it is set)
+// and will set the waves_per_eq flag where relevant. Finally, it will mark
+// kernel arguments `inreg` to enable argument preloading on supported
+// architectures.
+static void annotateKernelForTranslation(LLVM::LLVMFuncOp funcOp,
+                                         ExecutableExportOp exportOp,
+                                         ExecutableTargetAttr targetAttr,
+                                         OpBuilder &builder) {
+  auto *rocdlDialect =
+      funcOp.getContext()->getLoadedDialect<ROCDL::ROCDLDialect>();
+  UnitAttr unitAttr = builder.getUnitAttr();
+  rocdlDialect->getKernelAttrHelper().setAttr(funcOp, unitAttr);
+  std::optional<ArrayAttr> workgroupSizeAttr = exportOp.getWorkgroupSize();
+  if (workgroupSizeAttr && workgroupSizeAttr->size() <= 3) {
+    std::array<int32_t, 3> wgSizes;
+    int32_t flatWgSize = 1;
+    for (auto [value, attr] : llvm::zip_equal(
+             wgSizes, workgroupSizeAttr->getAsRange<IntegerAttr>())) {
+      value = attr.getInt();
+      flatWgSize *= value;
+    }
+    rocdlDialect->getReqdWorkGroupSizeAttrHelper().setAttr(
+        funcOp, builder.getDenseI32ArrayAttr(wgSizes));
+    rocdlDialect->getFlatWorkGroupSizeAttrHelper().setAttr(
+        funcOp,
+        builder.getStringAttr(Twine(flatWgSize) + "," + Twine(flatWgSize)));
+  }
+
+  if (std::optional<IntegerAttr> attr =
+          getConfigIntegerAttr(targetAttr, "waves_per_eu")) {
+    rocdlDialect->getWavesPerEuAttrHelper().setAttr(funcOp, *attr);
+  }
+
+  // Kernel argument preloading is only supported on gfx940 and newer targets
+  // from the CDNA family. This is enabled using the `inreg` function argument
+  // attribute.
+  FailureOr<amdgpu::Chipset> chipset = getChipsetVersion(targetAttr);
+  if (failed(chipset))
+    return;
+  if (chipset->majorVersion != 9 || *chipset < amdgpu::Chipset(9, 4, 0))
+    return;
+
+  auto inRegAttrName =
+      builder.getStringAttr(LLVM::LLVMDialect::getInRegAttrName());
+  for (unsigned i = 0, e = funcOp.getNumArguments(); i < e; ++i)
+    funcOp.setArgAttr(i, inRegAttrName, unitAttr);
+}
 
 static void dumpModuleToPath(StringRef path, StringRef baseName,
                              StringRef suffix, StringRef extension,
@@ -155,21 +234,6 @@ static std::string translateModuleToISA(llvm::Module &module,
   }
   return targetISA;
 }
-
-// Modified from lib/Target/AMDGPU/AMDGPUAttributor.cpp.
-// Adds argument hints to preload kernel arguments to SGPRs.
-// TODO: Query max number of user SGPRs from target machine.
-static void addPreloadKernArgHint(llvm::Function *F) {
-  static constexpr size_t maxSGPRs = 16;
-  for (size_t i = 0, e = std::min(F->arg_size(), maxSGPRs); i != e; ++i) {
-    llvm::Argument *Arg = F->getArg(i);
-    // Check for incompatible attributes.
-    if (Arg->hasByRefAttr() || Arg->hasNestAttr())
-      break;
-    Arg->addAttr(llvm::Attribute::InReg);
-  }
-}
-
 } // namespace
 
 class ROCMTargetDevice final : public TargetDevice {
@@ -180,23 +244,28 @@ public:
   getDefaultDeviceTarget(MLIRContext *context,
                          const TargetRegistry &targetRegistry) const override {
     Builder b(context);
-    SmallVector<NamedAttribute> configAttrItems;
+
+    SmallVector<NamedAttribute> deviceConfigAttrs;
     if (options.legacySync) {
       // Indicates that the runtime HAL driver operates only in the legacy
       // synchronous mode.
-      configAttrItems.emplace_back(b.getStringAttr("legacy_sync"),
-                                   b.getUnitAttr());
+      deviceConfigAttrs.emplace_back(b.getStringAttr("legacy_sync"),
+                                     b.getUnitAttr());
     }
-    DictionaryAttr configAttr = b.getDictionaryAttr(configAttrItems);
+    auto deviceConfigAttr = b.getDictionaryAttr(deviceConfigAttrs);
+
+    SmallVector<NamedAttribute> executableConfigAttrs;
+    auto executableConfigAttr = b.getDictionaryAttr(executableConfigAttrs);
 
     // If we had multiple target environments we would generate one target attr
     // per environment, with each setting its own environment attribute.
     SmallVector<IREE::HAL::ExecutableTargetAttr> executableTargetAttrs;
     targetRegistry.getTargetBackend("rocm")->getDefaultExecutableTargets(
-        context, "rocm", configAttr, executableTargetAttrs);
+        context, "rocm", executableConfigAttr, executableTargetAttrs);
 
-    return IREE::HAL::DeviceTargetAttr::get(context, b.getStringAttr("rocm"),
-                                            configAttr, executableTargetAttrs);
+    return IREE::HAL::DeviceTargetAttr::get(context, b.getStringAttr("hip"),
+                                            deviceConfigAttr,
+                                            executableTargetAttrs);
   }
 
 private:
@@ -207,7 +276,7 @@ class ROCMTargetBackend final : public TargetBackend {
 public:
   ROCMTargetBackend(const ROCmOptions &options) : options(options) {}
 
-  std::string getLegacyDefaultDeviceID() const override { return "rocm"; }
+  std::string getLegacyDefaultDeviceID() const override { return "hip"; }
 
   void getDefaultExecutableTargets(
       MLIRContext *context, StringRef deviceID, DictionaryAttr deviceConfigAttr,
@@ -228,7 +297,7 @@ public:
     if (failed(options.verify(b)))
       return nullptr;
 
-    if (auto target = GPU::getHIPTargetDetails(options.targetChip,
+    if (auto target = GPU::getHIPTargetDetails(options.target,
                                                options.targetFeatures, context))
       addConfig("iree.gpu.target", target);
 
@@ -249,6 +318,7 @@ public:
     registry.insert<IREE::VectorExt::IREEVectorExtDialect>();
     registry.insert<IREE::GPU::IREEGPUDialect>();
     registry.insert<amdgpu::AMDGPUDialect>();
+    registry.insert<ROCDL::ROCDLDialect>();
   }
 
   void
@@ -304,7 +374,7 @@ public:
                                     OpBuilder &executableBuilder) override {
     ModuleOp innerModuleOp = variantOp.getInnerModule();
     auto targetAttr = variantOp.getTargetAttr();
-    StringRef targetArch = options.targetChip;
+    StringRef targetArch = options.target;
     StringRef targetFeatures = options.targetFeatures;
     if (auto attr = getGPUTargetAttr(targetAttr)) {
       targetArch = attr.getArch();
@@ -322,35 +392,27 @@ public:
     auto exportOps = llvm::to_vector_of<IREE::HAL::ExecutableExportOp>(
         variantOp.getExportOps());
     llvm::StringMap<IREE::HAL::ExecutableExportOp> exportOpMap;
-    std::vector<std::array<int32_t, 3>> workgroupSizes;
-    SmallVector<uint32_t> workgroupLocalMemories;
-    uint32_t subgroupSize = 64;
+    std::optional<uint32_t> subgroupSize;
     for (IREE::HAL::ExecutableExportOp exportOp : exportOps) {
       exportOpMap[exportOp.getSymName()] = exportOp;
 
-      std::array<int32_t, 3> workgroupSize = {1, 1, 1};
-      if (std::optional<ArrayAttr> workgroupSizeAttr =
-              exportOp.getWorkgroupSize()) {
-        for (auto [value, sizeAttr] :
-             llvm::zip_equal(workgroupSize, *workgroupSizeAttr))
-          value = cast<IntegerAttr>(sizeAttr).getInt();
-      }
-      workgroupSizes.push_back(workgroupSize);
-
+      // TODO: put this either on the variant or propagate as a function
+      // attribute instead - today this *must* be consistent across all exports
+      // and it shouldn't need to be.
       if (auto setSubgroupSize = exportOp.getSubgroupSizeAsUInt()) {
         if (setSubgroupSize.value() != 32 && setSubgroupSize.value() != 64) {
           return variantOp.emitError()
                  << "invalid subgroup size " << setSubgroupSize.value();
         }
+        if (subgroupSize.has_value() &&
+            setSubgroupSize.value() != subgroupSize.value()) {
+          return variantOp.emitError()
+                 << "multiple exports with different subgroup sizes; this is a "
+                    "limitation of the IREE compilation process and should be "
+                    "fixed";
+        }
         subgroupSize = setSubgroupSize.value();
       }
-
-      uint32_t workgroupLocalMemory = 0;
-      if (std::optional<APInt> workgroupLocalMemoryAttr =
-              exportOp.getWorkgroupLocalMemory()) {
-        workgroupLocalMemory = workgroupLocalMemoryAttr->getSExtValue();
-      }
-      workgroupLocalMemories.push_back(workgroupLocalMemory);
     }
 
     std::string targetHSACO;
@@ -380,7 +442,17 @@ public:
       // multi-threading issues.
       llvm::LLVMContext context;
 
-      auto llvmModule =
+      // Set up attributes so upstream's conversions work right.
+      for (auto func : innerModuleOp.getOps<LLVM::LLVMFuncOp>()) {
+        // Un-exported functions are library functions or otherwise
+        // not kernels, so don't need these annotations.
+        if (!exportOpMap.contains(func.getName()))
+          continue;
+        annotateKernelForTranslation(func, exportOpMap[func.getName()],
+                                     targetAttr, executableBuilder);
+      }
+
+      std::unique_ptr<llvm::Module> llvmModule =
           mlir::translateModuleToLLVMIR(innerModuleOp, context, libraryName);
       if (!llvmModule) {
         return variantOp.emitError() << "failed to translate the MLIR LLVM "
@@ -388,35 +460,9 @@ public:
       }
 
       for (auto func : innerModuleOp.getOps<LLVM::LLVMFuncOp>()) {
-        int32_t flatWgSize = 1;
         llvm::Function *llvmFunc = llvmModule->getFunction(func.getName());
         if (llvmFunc->isDeclaration())
           continue;
-        auto exportOp = exportOpMap[func.getName()];
-        if (auto workgroupSizeAttr = exportOp.getWorkgroupSize()) {
-          for (Attribute attr : *workgroupSizeAttr) {
-            flatWgSize *= cast<IntegerAttr>(attr).getInt();
-          }
-        }
-
-        // For GPU kernels,
-        // 1. Insert AMDGPU_KERNEL calling convention.
-        // 2. Insert amdgpu-flat-workgroup-size(1, 256) attribute.
-        // 3. Insert amdgpu-implicitarg-num-bytes=56 (which must be set on
-        // OpenCL and HIP kernels per Clang).
-        llvmFunc->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
-        llvmFunc->addFnAttr(
-            "amdgpu-flat-work-group-size",
-            (llvm::Twine("1, ") + llvm::Twine(flatWgSize)).str());
-        if (targetArch.starts_with("gfx9"))
-          addPreloadKernArgHint(llvmFunc);
-
-        // Set the amdgpu-waves-per-eu flag from config if given.
-        if (std::optional<IntegerAttr> attr =
-                getConfigIntegerAttr(targetAttr, "waves_per_eu")) {
-          llvmFunc->addFnAttr("amdgpu-waves-per-eu",
-                              std::to_string(attr->getValue().getSExtValue()));
-        }
 
         // Override flags as given by target func attrs.
         if (auto funcAttrs =
@@ -451,10 +497,15 @@ public:
         std::string features;
         if (targetArch.starts_with("gfx10") ||
             targetArch.starts_with("gfx11")) {
-          if (subgroupSize == 32)
+          switch (subgroupSize.value_or(64)) {
+          case 32:
             features = "+wavefrontsize32";
-          if (subgroupSize == 64)
+            break;
+          default:
+          case 64:
             features = "+wavefrontsize64";
+            break;
+          }
         }
         if (!targetFeatures.empty()) {
           features += (features.empty() ? "" : ",") + targetFeatures.str();
@@ -501,7 +552,7 @@ public:
         return variantOp.emitError()
                << "cannot find ROCM bitcode files. Check your installation "
                   "consistency and in the worst case, set "
-                  "--iree-rocm-bc-dir= to a path on your system.";
+                  "--iree-hip-bc-dir= to a path on your system.";
       }
       if (failed(linkHIPBitcodeIfNeeded(variantOp.getLoc(), llvmModule.get(),
                                         targetArch, bitcodeDirectory))) {
@@ -556,30 +607,29 @@ public:
     }
 
     iree_compiler::FlatbufferBuilder builder;
-    iree_hal_rocm_ExecutableDef_start_as_root(builder);
+    iree_hal_hip_ExecutableDef_start_as_root(builder);
 
     // Attach embedded source file contents.
-    SmallVector<iree_hal_rocm_SourceFileDef_ref_t> sourceFileRefs;
-    if (auto sourcesAttr = variantOp.getSourcesAttr()) {
-      for (auto sourceAttr : llvm::reverse(sourcesAttr.getValue())) {
-        if (auto resourceAttr = dyn_cast_if_present<DenseResourceElementsAttr>(
-                sourceAttr.getValue())) {
-          auto filenameRef = builder.createString(sourceAttr.getName());
-          auto contentRef = builder.streamUint8Vec([&](llvm::raw_ostream &os) {
-            auto blobData = resourceAttr.getRawHandle().getBlob()->getData();
-            os.write(blobData.data(), blobData.size());
-            return true;
-          });
-          sourceFileRefs.push_back(iree_hal_rocm_SourceFileDef_create(
-              builder, filenameRef, contentRef));
-        }
-      }
-      std::reverse(sourceFileRefs.begin(), sourceFileRefs.end());
-    }
+    auto sourceFilesRef = createSourceFilesVec(
+        serOptions.debugLevel, variantOp.getSourcesAttr(), builder);
 
-    SmallVector<StringRef> entryPointNames;
-    SmallVector<iree_hal_rocm_FileLineLocDef_ref_t> sourceLocationRefs;
-    entryPointNames.resize(exportOps.size());
+    // Only a single module today.
+    SmallVector<iree_hal_hip_ModuleDef_ref_t> moduleRefs;
+    {
+      auto hsacoImageRef = flatbuffers_string_create(
+          builder, targetHSACO.c_str(), targetHSACO.size());
+      moduleRefs.push_back(
+          iree_hal_hip_ModuleDef_create(builder, hsacoImageRef));
+    }
+    auto modulesRef = builder.createOffsetVecDestructive(moduleRefs);
+
+    // Generate optional per-export debug information.
+    // May be empty if no debug information was requested.
+    auto exportDebugInfos =
+        createExportDefs(serOptions.debugLevel, exportOps, builder);
+
+    SmallVector<iree_hal_hip_ExportDef_ref_t> exportRefs;
+    exportRefs.resize(exportOps.size(), 0);
     for (auto exportOp : exportOps) {
       auto ordinalAttr = exportOp.getOrdinalAttr();
       if (!ordinalAttr) {
@@ -587,86 +637,58 @@ public:
                << "could not compile rocm binary: export op is missing ordinal";
       }
       int64_t ordinal = ordinalAttr.getInt();
-      entryPointNames[ordinal] = exportOp.getName();
 
-      // Optional source location information for debugging/profiling.
-      if (serOptions.debugLevel >= 1) {
-        if (auto loc = findFirstFileLoc(exportOp.getLoc())) {
-          // We only ever resize to the maximum -- so all previous data will
-          // be kept as-is.
-          sourceLocationRefs.resize(exportOps.size());
-          auto filenameRef = builder.createString(loc->getFilename());
-          sourceLocationRefs[ordinal] = iree_hal_rocm_FileLineLocDef_create(
-              builder, filenameRef, loc->getLine());
-        }
+      auto kernelNameRef = builder.createString(exportOp.getName());
+
+      iree_hal_hip_BlockDims_t blockDims = {0};
+      if (auto workgroupSizeAttr = exportOp.getWorkgroupSize()) {
+        auto workgroupSize = workgroupSizeAttr->getValue();
+        blockDims.x = cast<IntegerAttr>(workgroupSize[0]).getInt();
+        blockDims.y = cast<IntegerAttr>(workgroupSize[1]).getInt();
+        blockDims.z = cast<IntegerAttr>(workgroupSize[2]).getInt();
       }
-    }
 
-    // Optional compilation stage source files.
-    SmallVector<iree_hal_rocm_StageLocationsDef_ref_t> stageLocationsRefs;
-    if (serOptions.debugLevel >= 3) {
-      for (auto exportOp : exportOps) {
-        SmallVector<iree_hal_rocm_StageLocationDef_ref_t> stageLocationRefs;
-        if (auto locsAttr = exportOp.getSourceLocsAttr()) {
-          for (auto locAttr : locsAttr.getValue()) {
-            if (auto loc =
-                    findFirstFileLoc(cast<LocationAttr>(locAttr.getValue()))) {
-              auto stageNameRef = builder.createString(locAttr.getName());
-              auto filenameRef = builder.createString(loc->getFilename());
-              stageLocationRefs.push_back(iree_hal_rocm_StageLocationDef_create(
-                  builder, stageNameRef,
-                  iree_hal_rocm_FileLineLocDef_create(builder, filenameRef,
-                                                      loc->getLine())));
-            }
-          }
-        }
-        if (!stageLocationRefs.empty()) {
-          // We only ever resize to the maximum -- so all previous data will
-          // be kept as-is.
-          stageLocationsRefs.resize(exportOps.size());
-          int64_t ordinal = exportOp.getOrdinalAttr().getInt();
-          stageLocationsRefs[ordinal] = iree_hal_rocm_StageLocationsDef_create(
-              builder, builder.createOffsetVecDestructive(stageLocationRefs));
-        }
+      uint32_t blockSharedMemorySize = 0;
+      if (std::optional<APInt> workgroupLocalMemoryAttr =
+              exportOp.getWorkgroupLocalMemory()) {
+        blockSharedMemorySize = workgroupLocalMemoryAttr->getSExtValue();
       }
-    }
 
-    auto hsacoRef = flatbuffers_string_create(builder, targetHSACO.c_str(),
-                                              targetHSACO.size());
+      auto layoutAttr = exportOp.getLayoutAttr();
+      uint32_t constantCount = static_cast<uint32_t>(layoutAttr.getConstants());
+      SmallVector<iree_hal_hip_BindingBits_enum_t> bindingFlags;
+      for (auto bindingAttr : layoutAttr.getBindings()) {
+        iree_hal_hip_BindingBits_enum_t flags = 0;
+        if (allEnumBitsSet(bindingAttr.getFlags(),
+                           IREE::HAL::DescriptorFlags::ReadOnly)) {
+          flags |= iree_hal_hip_BindingBits_READ_ONLY;
+        }
+        if (allEnumBitsSet(bindingAttr.getFlags(),
+                           IREE::HAL::DescriptorFlags::Indirect)) {
+          flags |= iree_hal_hip_BindingBits_INDIRECT;
+        }
+        bindingFlags.push_back(flags);
+      }
+      auto bindingFlagsRef = iree_hal_hip_BindingBits_vec_create(
+          builder, bindingFlags.data(), bindingFlags.size());
 
-    auto entryPointsRef = builder.createStringVec(entryPointNames);
-    iree_hal_rocm_BlockSizeDef_vec_start(builder);
-    auto blockSizes = workgroupSizes.begin();
-    for (int i = 0, e = entryPointNames.size(); i < e; ++i) {
-      iree_hal_rocm_BlockSizeDef_vec_push_create(
-          builder, (*blockSizes)[0], (*blockSizes)[1], (*blockSizes)[2]);
-      ++blockSizes;
+      iree_hal_hip_ExportDef_start(builder);
+      iree_hal_hip_ExportDef_module_ordinal_add(builder, 0); // always 0 today
+      iree_hal_hip_ExportDef_kernel_name_add(builder, kernelNameRef);
+      iree_hal_hip_ExportDef_block_dims_add(builder, &blockDims);
+      iree_hal_hip_ExportDef_block_shared_memory_size_add(
+          builder, blockSharedMemorySize);
+      iree_hal_hip_ExportDef_constant_count_add(builder, constantCount);
+      iree_hal_hip_ExportDef_binding_flags_add(builder, bindingFlagsRef);
+      iree_hal_hip_ExportDef_debug_info_add(builder, exportDebugInfos[ordinal]);
+      exportRefs[ordinal] = iree_hal_hip_ExportDef_end(builder);
     }
-    auto workgroupLocalMemoriesRef =
-        builder.createInt32Vec(workgroupLocalMemories);
-    auto blockSizesRef = iree_hal_rocm_BlockSizeDef_vec_end(builder);
-    iree_hal_rocm_ExecutableDef_entry_points_add(builder, entryPointsRef);
-    iree_hal_rocm_ExecutableDef_block_sizes_add(builder, blockSizesRef);
-    iree_hal_rocm_ExecutableDef_shared_memory_sizes_add(
-        builder, workgroupLocalMemoriesRef);
-    iree_hal_rocm_ExecutableDef_hsaco_image_add(builder, hsacoRef);
-    if (!sourceLocationRefs.empty()) {
-      auto sourceLocationsRef =
-          builder.createOffsetVecDestructive(sourceLocationRefs);
-      iree_hal_rocm_ExecutableDef_source_locations_add(builder,
-                                                       sourceLocationsRef);
-    }
-    if (!stageLocationsRefs.empty()) {
-      auto stageLocationsRef =
-          builder.createOffsetVecDestructive(stageLocationsRefs);
-      iree_hal_rocm_ExecutableDef_stage_locations_add(builder,
-                                                      stageLocationsRef);
-    }
-    if (!sourceFileRefs.empty()) {
-      auto sourceFilesRef = builder.createOffsetVecDestructive(sourceFileRefs);
-      iree_hal_rocm_ExecutableDef_source_files_add(builder, sourceFilesRef);
-    }
-    iree_hal_rocm_ExecutableDef_end_as_root(builder);
+    auto exportsRef = builder.createOffsetVecDestructive(exportRefs);
+
+    iree_hal_hip_ExecutableDef_exports_add(builder, exportsRef);
+    iree_hal_hip_ExecutableDef_modules_add(builder, modulesRef);
+    iree_hal_hip_ExecutableDef_source_files_add(builder, sourceFilesRef);
+    iree_hal_hip_ExecutableDef_end_as_root(builder);
 
     // Add the binary data to the target executable.
     executableBuilder.create<iree_compiler::IREE::HAL::ExecutableBinaryOp>(
@@ -686,8 +708,8 @@ struct ROCMSession final
     : PluginSession<ROCMSession, ROCmOptions,
                     PluginActivationPolicy::DefaultActivated> {
   void populateHALTargetDevices(IREE::HAL::TargetDeviceList &targets) {
-    // #hal.device.target<"rocm", ...
-    targets.add("rocm",
+    // #hal.device.target<"hip", ...
+    targets.add("hip",
                 [&]() { return std::make_shared<ROCMTargetDevice>(options); });
   }
   void populateHALTargetBackends(IREE::HAL::TargetBackendList &targets) {

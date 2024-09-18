@@ -4,13 +4,13 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree-dialects/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/Common/PassUtils.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
+#include "iree/compiler/Codegen/Dialect/GPU/TargetUtils/ConfigUtils.h"
+#include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/LLVMGPU/KernelConfig.h"
-#include "iree/compiler/Codegen/LLVMGPU/PassDetail.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
@@ -39,6 +39,9 @@
 
 namespace mlir::iree_compiler {
 
+#define GEN_PASS_DEF_LLVMGPULOWEREXECUTABLETARGETPASS
+#include "iree/compiler/Codegen/LLVMGPU/Passes.h.inc"
+
 namespace {
 /// Lowers an hal.executable.variant operation to scalar/native-vector
 /// code. Invokes different compilation pipeline to
@@ -46,10 +49,13 @@ namespace {
 /// - then convert to NVVM/ROCDL dialect.
 /// This should be merged with the equivalent pass in LinalgToLLVM. Fo
 /// simplicity it is currently a separate pass.
-class LLVMGPULowerExecutableTargetPass
-    : public LLVMGPULowerExecutableTargetBase<
+class LLVMGPULowerExecutableTargetPass final
+    : public impl::LLVMGPULowerExecutableTargetPassBase<
           LLVMGPULowerExecutableTargetPass> {
 public:
+  using impl::LLVMGPULowerExecutableTargetPassBase<
+      LLVMGPULowerExecutableTargetPass>::LLVMGPULowerExecutableTargetPassBase;
+
   void getDependentDialects(DialectRegistry &registry) const override {
     // clang-format off
     registry
@@ -69,56 +75,8 @@ public:
     // clang-format on
   }
 
-  LLVMGPULowerExecutableTargetPass() = default;
-  LLVMGPULowerExecutableTargetPass(
-      const LLVMGPULowerExecutableTargetPass &pass) {}
-
   void runOnOperation() override;
 };
-
-static LLVMGPUPipelineOptions
-getPipelineOptions(FunctionOpInterface funcOp,
-                   IREE::Codegen::TranslationInfoAttr translationInfo) {
-  LLVMGPUPipelineOptions pipelineOptions = {};
-  auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(funcOp);
-
-  LLVM_DEBUG(llvm::dbgs() << "Translation Info: " << translationInfo << "\n");
-  LLVM_DEBUG(llvm::dbgs() << "Target Attr: " << targetAttr << "\n");
-
-  if (DictionaryAttr config = translationInfo.getConfiguration()) {
-    if (config.contains(LLVMGPUAttrNames::kNoReduceSharedMemoryBankConflicts))
-      pipelineOptions.enableReduceSharedMemoryBankConflicts = false;
-    if (config.contains(LLVMGPUAttrNames::kPrefetchSharedMemory))
-      pipelineOptions.prefetchSharedMemory = true;
-    if (config.contains(LLVMGPUAttrNames::kReorderWorkgroups)) {
-      // Get the workgroups reorder config and enable the workgroup reordering.
-      Attribute reorderWorkgroupOption =
-          config.get(LLVMGPUAttrNames::kReorderWorkgroups);
-      if (!isa<StringAttr>(reorderWorkgroupOption))
-        funcOp.emitOpError() << "'" << LLVMGPUAttrNames::kReorderWorkgroups
-                             << "' is expected to be a string attribute";
-      StringRef reorderStr = llvm::cast<StringAttr>(reorderWorkgroupOption);
-      if (reorderStr == "transpose") {
-        pipelineOptions.reorderStrategy = ReorderWorkgroupsStrategy::Transpose;
-      } else if (reorderStr == "swizzle") {
-        pipelineOptions.reorderStrategy = ReorderWorkgroupsStrategy::Swizzle;
-      } else {
-        if (reorderStr != "none")
-          funcOp.emitOpError()
-              << "Unknown " << LLVMGPUAttrNames::kReorderWorkgroups
-              << "value: " << reorderWorkgroupOption;
-        else
-          pipelineOptions.reorderStrategy = ReorderWorkgroupsStrategy::None;
-      }
-    }
-  }
-
-  pipelineOptions.enableUkernels = targetAttr && hasUkernel(targetAttr);
-
-  LLVM_DEBUG(llvm::dbgs() << "LLVMGPU Pipeline Options: " << pipelineOptions
-                          << "\n");
-  return pipelineOptions;
-}
 } // namespace
 
 void LLVMGPULowerExecutableTargetPass::runOnOperation() {
@@ -137,8 +95,8 @@ void LLVMGPULowerExecutableTargetPass::runOnOperation() {
   }
   OpPassManager &pipeline = maybePipeline.value();
 
-  LLVMGPUPipelineOptions pipelineOptions =
-      getPipelineOptions(funcOp, translationInfo);
+  IREE::GPU::GPUPipelineOptions pipelineOptions =
+      IREE::GPU::getPipelineOptions(funcOp, translationInfo);
 
   switch (translationInfo.getDispatchLoweringPassPipeline()) {
   case IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUDefault:
@@ -202,7 +160,7 @@ void LLVMGPULowerExecutableTargetPass::runOnOperation() {
     addGPUPackUnPackPasses(pipeline);
     break;
   case IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUTileAndFuse:
-    addGPUTileAndFusePassPipeline(pipeline);
+    addGPUTileAndFusePassPipeline(pipeline, pipelineOptions);
     break;
   // no pipeline specified, nothing to do.
   case IREE::Codegen::DispatchLoweringPassPipeline::None:
@@ -215,11 +173,6 @@ void LLVMGPULowerExecutableTargetPass::runOnOperation() {
   if (failed(runPipeline(pipeline, funcOp))) {
     return signalPassFailure();
   }
-}
-
-std::unique_ptr<InterfacePass<FunctionOpInterface>>
-createLLVMGPULowerExecutableTargetPass() {
-  return std::make_unique<LLVMGPULowerExecutableTargetPass>();
 }
 
 } // namespace mlir::iree_compiler

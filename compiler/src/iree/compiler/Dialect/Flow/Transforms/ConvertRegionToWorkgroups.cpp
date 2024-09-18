@@ -8,7 +8,6 @@
 
 #include "iree/compiler/Dialect/Flow/IR/FlowDialect.h"
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
-#include "iree/compiler/Dialect/Flow/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -17,9 +16,6 @@
 #include "mlir/Transforms/RegionUtils.h"
 
 namespace mlir::iree_compiler::IREE::Flow {
-
-#define GEN_PASS_DEF_CONVERTREGIONTOWORKGROUPSPASS
-#include "iree/compiler/Dialect/Flow/Transforms/Passes.h.inc"
 
 namespace {
 
@@ -255,27 +251,5 @@ rewriteFlowDispatchRegionToFlowDispatchWorkgroups(
   rewriter.replaceOp(regionOp, workgroupsOp.getResults());
   return workgroupsOp;
 }
-
-namespace {
-struct ConvertRegionToWorkgroupsPass
-    : public IREE::Flow::impl::ConvertRegionToWorkgroupsPassBase<
-          ConvertRegionToWorkgroupsPass> {
-  void runOnOperation() override {
-    SmallVector<IREE::Flow::DispatchRegionOp> ops;
-    getOperation()->walk(
-        [&](IREE::Flow::DispatchRegionOp op) { ops.push_back(op); });
-
-    IRRewriter rewriter(getOperation()->getContext());
-    for (IREE::Flow::DispatchRegionOp regionOp : ops) {
-      if (failed(rewriteFlowDispatchRegionToFlowDispatchWorkgroups(regionOp,
-                                                                   rewriter))) {
-        signalPassFailure();
-        return;
-      }
-    }
-  }
-};
-
-} // namespace
 
 } // namespace mlir::iree_compiler::IREE::Flow

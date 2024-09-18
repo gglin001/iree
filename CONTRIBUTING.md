@@ -11,10 +11,10 @@ To get started with contributing, please take a look at the
     bugs, and other work tracking
 *   [IREE Discord server](https://discord.gg/wEWh6Z9nMU): Daily development
     discussions with the core team and collaborators
-*   [iree-discuss email list](https://groups.google.com/forum/#!forum/iree-discuss):
-    Announcements, general and low-priority discussion
+*   [iree-technical-discussion email list](https://lists.lfaidata.foundation/g/iree-technical-discussion):
+    General and low-priority discussion
 
 ## Community guidelines
 
 This project follows the
-[OpenXLA Code of Conduct](https://github.com/openxla/community/blob/main/CODE-OF-CONDUCT.md).
+[LF Projects code of conduct](https://lfprojects.org/policies/code-of-conduct/).

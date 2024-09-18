@@ -6,7 +6,6 @@
 
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
-#include "iree/compiler/Dialect/LinalgExt/Transforms/PassDetail.h"
 #include "iree/compiler/Dialect/LinalgExt/Transforms/Passes.h"
 #include "iree/compiler/Dialect/LinalgExt/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -16,6 +15,10 @@
 #include "mlir/Pass/Pass.h"
 
 namespace mlir::iree_compiler::IREE::LinalgExt {
+
+#define GEN_PASS_DEF_TILEATTENTIONPASS
+#define GEN_PASS_DEF_CONVERTATTENTIONTOONLINEATTENTIONPASS
+#include "iree/compiler/Dialect/LinalgExt/Transforms/Passes.h.inc"
 
 namespace {
 
@@ -145,7 +148,50 @@ static Value insertOutputSlice(Value src, Value dst,
                                     headDimension, loc, builder);
 }
 
-struct TileAttentionPass : public TileAttentionBase<TileAttentionPass> {
+static SmallVector<AffineMap>
+getTileAttentionIndexingMaps(RewriterBase &rewriter, int64_t tiledInputRank,
+                             bool transposeV) {
+  MLIRContext *ctx = rewriter.getContext();
+  AffineExpr m, k1, k2, n;
+  bindDims(ctx, m, k1, k2, n);
+
+  AffineMap qMap =
+      AffineMap::get(/*dimCount=*/4, /*symbolCount=*/0, {m, k1}, ctx);
+  AffineMap kMap =
+      AffineMap::get(/*dimCount=*/4, /*symbolCount=*/0, {k2, k1}, ctx);
+  AffineMap vMap =
+      AffineMap::get(/*dimCount=*/4, /*symbolCount=*/0, {k2, n}, ctx);
+  AffineMap rMap =
+      AffineMap::get(/*dimCount=*/4, /*symbolCount=*/0, {m, n}, ctx);
+  AffineMap maxMap =
+      AffineMap::get(/*dimCount=*/4, /*symbolCount=*/0, {m}, ctx);
+  AffineMap sumMap =
+      AffineMap::get(/*dimCount=*/4, /*symbolCount=*/0, {m}, ctx);
+
+  if (transposeV) {
+    SmallVector<AffineExpr> vDims(vMap.getResults());
+    std::swap(vDims[0], vDims[1]);
+    vMap = AffineMap::get(vMap.getNumDims(), vMap.getNumSymbols(), vDims, ctx);
+  }
+
+  SmallVector<AffineMap> attentionMaps = {qMap, kMap,   vMap,
+                                          rMap, maxMap, sumMap};
+  // Add batches to standard attention indexing maps.
+  int64_t numBatches = tiledInputRank - 2;
+  for (AffineMap &map : attentionMaps) {
+    map = map.shiftDims(numBatches);
+    for (int batch : llvm::seq<int>(numBatches)) {
+      map = map.insertResult(rewriter.getAffineDimExpr(batch), batch);
+    }
+  }
+
+  return attentionMaps;
+}
+
+struct TileAttentionPass final
+    : impl::TileAttentionPassBase<TileAttentionPass> {
+  using impl::TileAttentionPassBase<TileAttentionPass>::TileAttentionPassBase;
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<
         affine::AffineDialect, IREE::LinalgExt::IREELinalgExtDialect,
@@ -160,7 +206,7 @@ struct TileAttentionPass : public TileAttentionBase<TileAttentionPass> {
 };
 
 struct ConvertAttentionToOnlineAttentionPass final
-    : ConvertAttentionToOnlineAttentionBase<
+    : impl::ConvertAttentionToOnlineAttentionPassBase<
           ConvertAttentionToOnlineAttentionPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
@@ -257,20 +303,22 @@ IREE::LinalgExt::AttentionOp tileAttention(IREE::LinalgExt::AttentionOp attnOp,
                                 headDimension, elementType, loc, rewriter);
   Value valueSlice =
       extractSlice(value, keyShape, ivs, keyValueTileLength, headDimension,
-                   elementType, loc, rewriter, attnOp.getTransposeV());
+                   elementType, loc, rewriter, attnOp.isTransposeV());
   Value querySlice = extractSlice(query, queryShape, {}, sequenceTileLength,
                                   headDimension, elementType, loc, rewriter);
 
   Value scale = attnOp.getScale();
 
+  int64_t tiledInputRank = cast<ShapedType>(querySlice.getType()).getRank();
+  SmallVector<AffineMap> tiledIndexingMaps = getTileAttentionIndexingMaps(
+      rewriter, tiledInputRank, attnOp.isTransposeV());
+
   auto tiledAttentionOp = rewriter.create<IREE::LinalgExt::AttentionOp>(
       attnOp.getLoc(),
       SmallVector<Type>{accumulatorF32.getType(), sum.getType(), max.getType()},
-      SmallVector<Value>{querySlice, keySlice, valueSlice, scale},
-      SmallVector<Value>{iterArgResult, iterArgMax, iterArgSum});
-
-  if (attnOp.getTransposeV())
-    tiledAttentionOp.setTransposeVAttr(attnOp.getTransposeVAttr());
+      querySlice, keySlice, valueSlice, scale,
+      SmallVector<Value>{iterArgResult, iterArgMax, iterArgSum},
+      rewriter.getAffineMapArrayAttr(tiledIndexingMaps));
 
   Value tiledResult = tiledAttentionOp.getResult(0);
   Value newMax = tiledAttentionOp.getResult(1);
@@ -421,14 +469,6 @@ void ConvertAttentionToOnlineAttentionPass::runOnOperation() {
     SmallVector<Operation *> ops;
     convertToOnlineAttention(attnOp, ops, rewriter);
   });
-}
-
-std::unique_ptr<Pass> createTileAttentionPass() {
-  return std::make_unique<TileAttentionPass>();
-}
-
-std::unique_ptr<Pass> createConvertAttentionToOnlineAttentionPass() {
-  return std::make_unique<ConvertAttentionToOnlineAttentionPass>();
 }
 
 } // namespace mlir::iree_compiler::IREE::LinalgExt

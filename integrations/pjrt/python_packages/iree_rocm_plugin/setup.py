@@ -52,7 +52,7 @@ setup(
     name=f"iree-pjrt-plugin-rocm{iree_pjrt_setup.PACKAGE_SUFFIX}",
     version=f"{iree_pjrt_setup.PACKAGE_VERSION}",
     author="The IREE Team",
-    author_email="iree-discuss@googlegroups.com",
+    author_email="iree-technical-discussion@lists.lfaidata.foundation",
     license="Apache-2.0",
     description="IREE PJRT Plugin for ROCM (generic)",
     long_description=README,
@@ -86,7 +86,7 @@ setup(
         # plugins. This augments the path based scanning that Jax does, which
         # is not always robust to all packaging circumstances.
         "jax_plugins": [
-            "iree-rocm = jax_plugins.iree_rocm",
+            "iree-hip = jax_plugins.iree_rocm",
         ],
     },
     install_requires=iree_pjrt_setup.install_requires,

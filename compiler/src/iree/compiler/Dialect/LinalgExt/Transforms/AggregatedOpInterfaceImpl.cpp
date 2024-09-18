@@ -8,6 +8,7 @@
 #include "iree/compiler/Dialect/LinalgExt/Utils/IndexingUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/CommandLine.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
@@ -20,9 +21,17 @@
 
 namespace mlir::iree_compiler::IREE::LinalgExt {
 
-static Value scaleValueInPlace(OpBuilder &builder, Location loc,
-                               AffineMap inputMap, AffineMap scaleMap,
-                               Value value, Value scale) {
+/// Command line options used purely for development purposes. Not to be relied
+/// on in any way.
+static llvm::cl::opt<float> clAttentionSoftmaxMax(
+    "iree-linalgext-attention-softmax-max",
+    llvm::cl::desc("maximum expected value from attention softmax"),
+    llvm::cl::init(1.0));
+
+template <typename T>
+static Value elementwiseValueInPlace(OpBuilder &builder, Location loc,
+                                     AffineMap inputMap, AffineMap scaleMap,
+                                     Value value, Value scale) {
   SmallVector<AffineMap> compressedMaps =
       compressUnusedDims(SmallVector<AffineMap>{inputMap, scaleMap});
   inputMap = compressedMaps[0];
@@ -38,8 +47,65 @@ static Value scaleValueInPlace(OpBuilder &builder, Location loc,
         // Convert scale to the same datatype as input.
         Value scale = convertScalarToDtype(b, loc, args[0], args[1].getType(),
                                            /*isUnsignedCast=*/false);
-        Value result = b.create<arith::MulFOp>(loc, scale, args[1]);
+        Value result = b.create<T>(loc, scale, args[1]);
         b.create<linalg::YieldOp>(loc, result);
+      });
+  return genericOp.getResult(0);
+}
+
+static Value reciprocalValue(OpBuilder &b, Location loc, Value input,
+                             Value output) {
+  int64_t rank = cast<ShapedType>(input.getType()).getRank();
+  SmallVector<AffineMap> maps = {b.getMultiDimIdentityMap(rank),
+                                 b.getMultiDimIdentityMap(rank)};
+
+  SmallVector<utils::IteratorType> iteratorTypes(rank,
+                                                 utils::IteratorType::parallel);
+  auto genericOp = b.create<linalg::GenericOp>(
+      loc, output.getType(), ValueRange{input}, output, maps, iteratorTypes,
+      [&](OpBuilder &b, Location loc, ValueRange args) {
+        Value in = convertScalarToDtype(b, loc, args[0], args[1].getType(),
+                                        /*isUnsignedCast=*/false);
+        // Convert scale to the same datatype as input.
+        Value one =
+            b.create<arith::ConstantOp>(loc, b.getFloatAttr(in.getType(), 1.0));
+        Value result = b.create<arith::DivFOp>(loc, one, in);
+        b.create<linalg::YieldOp>(loc, result);
+      });
+  return genericOp.getResult(0);
+}
+
+static Value truncateFloat(OpBuilder &builder, Location loc, AffineMap inputMap,
+                           AffineMap outputMap, Value value, Value output) {
+  SmallVector<AffineMap> compressedMaps =
+      compressUnusedDims(SmallVector<AffineMap>{inputMap, outputMap});
+  inputMap = compressedMaps[0];
+  outputMap = compressedMaps[1];
+
+  SmallVector<utils::IteratorType> iteratorTypes(inputMap.getNumDims(),
+                                                 utils::IteratorType::parallel);
+  auto genericOp = builder.create<linalg::GenericOp>(
+      loc, output.getType(), value, output,
+      SmallVector<AffineMap>{inputMap, outputMap}, iteratorTypes,
+      [&](OpBuilder &b, Location loc, ValueRange args) {
+        auto srcTy = cast<FloatType>(args[0].getType());
+        auto dstTy = cast<FloatType>(args[1].getType());
+
+        double mxDbl =
+            APFloat::getLargest(dstTy.getFloatSemantics(), /*Negative=*/false)
+                .convertToDouble();
+
+        // Clamp input to dstTy(usually `fp8`) MAX value to prevent NaNs.
+        // We do not clamp for `-MAX` because this function meant to only be
+        // used by attention's exp2 who's value is always > 0.
+        Value mx = builder.create<arith::ConstantOp>(
+            loc, builder.getFloatAttr(srcTy, mxDbl));
+        Value clamped = b.create<arith::MinimumFOp>(loc, mx, args[0]);
+
+        // Convert scale to the same datatype as input.
+        Value trunc = convertScalarToDtype(b, loc, clamped, dstTy,
+                                           /*isUnsignedCast=*/false);
+        b.create<linalg::YieldOp>(loc, trunc);
       });
   return genericOp.getResult(0);
 }
@@ -177,7 +243,7 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   Value oldAcc = getOutput();
   Value oldMax = getMax();
   Value oldSum = getSum();
-  Type elementType = getQuery().getType().getElementType();
+  Type elementType = getElementTypeOrSelf(getOutput().getType());
 
   FailureOr<AttentionOpDetail> maybeOpInfo =
       AttentionOpDetail::get(getIndexingMapsArray());
@@ -192,20 +258,28 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   // have better support for exp2 (we verified that we gain some speedup on
   // some GPUs).
   Value scale = getScale();
-  Value log2e =
-      b.create<arith::ConstantOp>(loc, b.getFloatAttr(elementType, M_LOG2E));
+  Value log2e = b.create<arith::ConstantOp>(
+      loc, b.getFloatAttr(scale.getType(), M_LOG2E));
   scale = b.create<arith::MulFOp>(loc, scale, log2e);
+
+  auto qETy = getElementTypeOrSelf(query.getType());
+  auto vETy = getElementTypeOrSelf(value.getType());
 
   // In the original algorithm, the scaling is done after the softmax:
   //        softmax(Q @ K.T * scale) @ V
   //
   // But, it is mathematically equivalent to do it on Q first and then multiply
   // it by K.T. This just allows us to do the scaling once, instead of each
-  // iteration of the loop.
-  AffineMap qMap = getQueryMap();
-  AffineMap scaleMap = AffineMap::get(/*dimCount=*/qMap.getNumInputs(),
-                                      /*symbolCount=*/0, getContext());
-  query = scaleValueInPlace(b, loc, qMap, scaleMap, query, scale);
+  // iteration of the loop. This is only valid for f16 or f32 types as f8
+  // is extremely limited on its dynamic range therefore this would
+  // significantly affect numerics.
+  if (qETy.getIntOrFloatBitWidth() > 8) {
+    AffineMap qMap = getQueryMap();
+    AffineMap scaleMap = AffineMap::get(/*dimCount=*/qMap.getNumInputs(),
+                                        /*symbolCount=*/0, getContext());
+    query = elementwiseValueInPlace<arith::MulFOp>(b, loc, qMap, scaleMap,
+                                                   query, scale);
+  }
 
   // ---- Matmul 1 ----
 
@@ -223,6 +297,33 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   Value sZero = b.create<arith::ConstantOp>(loc, b.getZeroAttr(elementType));
   Value s = b.create<linalg::FillOp>(loc, sZero, emptyS).getResult(0);
   s = computeMatmul(b, loc, getQueryMap(), getKeyMap(), sMap, query, key, s);
+  // TODO: We shouldn't be relying on such attributes. We need a better
+  // mechanism to identify attention matmuls.
+  s.getDefiningOp()->setAttr("attention_qk_matmul", b.getUnitAttr());
+
+  if (qETy.getIntOrFloatBitWidth() <= 8) {
+    // For low bit-depth types we perform post Q @ K scaling. This is to avoid
+    // losing numerical precision due to the low dynamic range of fp8 types when
+    // pre applying the sclaing.
+    AffineMap sMap = b.getMultiDimIdentityMap(sSizes.size());
+    AffineMap scaleMap = AffineMap::get(/*dimCount=*/sMap.getNumInputs(),
+                                        /*symbolCount=*/0, getContext());
+    s = elementwiseValueInPlace<arith::MulFOp>(b, loc, sMap, scaleMap, s,
+                                               scale);
+
+    // If we need to truncate to fp8 post softmax we apply a scaling to use the
+    // full fp8 range. We can do this with a offset as post `exp2` this equates
+    // to multiplying by a static value. We are able to do this as `max` and
+    // `sum` are scaled by the same value so the end result is the same.
+    auto fpTy = cast<FloatType>(qETy);
+    double mx =
+        APFloat::getLargest(fpTy.getFloatSemantics(), /*Negative=*/false)
+            .convertToDouble();
+    Value offset = b.create<arith::ConstantOp>(
+        loc, b.getFloatAttr(elementType, clAttentionSoftmaxMax / mx));
+    s = elementwiseValueInPlace<arith::AddFOp>(b, loc, sMap, scaleMap, s,
+                                               offset);
+  }
 
   // TODO: This decomposition should be in a seperate op called
   // "online softmax".
@@ -232,11 +333,6 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
   AffineMap maxMap = getMaxMap();
   Value newMax = reduce<arith::MaximumFOp>(b, loc, sMap, maxMap, s, oldMax);
 
-  // P = exp2(S - newMax)
-  // PMap = SMap
-  AffineMap pMap = sMap;
-  Value p = computeSubAndExp2(b, loc, maxMap, sMap, newMax, s);
-
   // norm = exp2(oldMax - newMax)
   // normMap = maxMap
   AffineMap normMap = getMaxMap();
@@ -244,19 +340,37 @@ OnlineAttentionOp::decomposeOperation(OpBuilder &b) {
 
   // normSum = norm * oldSum
   AffineMap sumMap = getSumMap();
-  Value normSum = scaleValueInPlace(b, loc, sumMap, normMap, oldSum, norm);
+  Value normSum = elementwiseValueInPlace<arith::MulFOp>(b, loc, sumMap,
+                                                         normMap, oldSum, norm);
 
-  // newSum = normSum + rowMax(P)
+  // P = exp2(S - newMax)
+  // PMap = SMap
+  AffineMap pMap = sMap;
+  Value p = computeSubAndExp2(b, loc, maxMap, sMap, newMax, s);
+
+  // newSum = normSum + rowSum(P)
   Value newSum = reduce<arith::AddFOp>(b, loc, pMap, sumMap, p, normSum);
 
   // newAcc = norm * oldAcc
   AffineMap accMap = getOutputMap();
-  Value newAcc = scaleValueInPlace(b, loc, accMap, normMap, oldAcc, norm);
+
+  // ---- Scale and truncate LHS to match RHS ----
+  auto pETy = getElementTypeOrSelf(p.getType());
+  if (pETy != vETy && isa<FloatType>(vETy)) {
+    Value convertP = b.create<tensor::EmptyOp>(loc, sSizes, vETy);
+    p = truncateFloat(b, loc, pMap, pMap, p, convertP);
+  }
+
+  Value newAcc = elementwiseValueInPlace<arith::MulFOp>(b, loc, accMap, normMap,
+                                                        oldAcc, norm);
 
   // ---- Matmul 2 ----
 
   // newAcc = P @ V + newAcc
   newAcc = computeMatmul(b, loc, pMap, getValueMap(), accMap, p, value, newAcc);
+  // TODO: We shouldn't be relying on such attributes. We need a better
+  // mechanism to identify attention matmuls.
+  newAcc.getDefiningOp()->setAttr("attention_pv_matmul", b.getUnitAttr());
 
   return SmallVector<Value>{newAcc, newMax, newSum};
 }

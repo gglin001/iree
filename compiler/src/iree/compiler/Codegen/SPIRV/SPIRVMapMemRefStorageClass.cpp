@@ -4,15 +4,16 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree/compiler/Codegen/SPIRV/PassDetail.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/SPIRV/Passes.h"
 #include "iree/compiler/Codegen/SPIRV/Utils.h"
+#include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
+#include "llvm/ADT/StringExtras.h"
 #include "mlir/Conversion/MemRefToSPIRV/MemRefToSPIRV.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVEnums.h"
-#include "mlir/Dialect/SPIRV/IR/SPIRVTypes.h"
 #include "mlir/Dialect/SPIRV/IR/TargetAndABI.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -20,6 +21,9 @@
 #define DEBUG_TYPE "iree-spirv-map-memref-storage-class"
 
 namespace mlir::iree_compiler {
+
+#define GEN_PASS_DEF_SPIRVMAPMEMREFSTORAGECLASSPASS
+#include "iree/compiler/Codegen/SPIRV/Passes.h.inc"
 
 namespace {
 
@@ -71,8 +75,24 @@ mapHALDescriptorTypeForOpenCL(Attribute attr) {
   return spirv::mapMemorySpaceToOpenCLStorageClass(attr);
 }
 
+bool allowsShaderCapability(ArrayRef<StringRef> features) {
+  for (StringRef feature : features) {
+    if (feature.consume_front("cap:") && feature == "Shader")
+      return true;
+  }
+  return false;
+}
+
+bool allowsKernelCapability(ArrayRef<StringRef> features) {
+  for (StringRef feature : features) {
+    if (feature.consume_front("cap:") && feature == "Kernel")
+      return true;
+  }
+  return false;
+}
+
 struct SPIRVMapMemRefStorageClassPass final
-    : public SPIRVMapMemRefStorageClassBase<SPIRVMapMemRefStorageClassPass> {
+    : impl::SPIRVMapMemRefStorageClassPassBase<SPIRVMapMemRefStorageClassPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<spirv::SPIRVDialect>();
   }
@@ -81,20 +101,18 @@ struct SPIRVMapMemRefStorageClassPass final
     MLIRContext *context = &getContext();
     Operation *op = getOperation();
 
-    bool useIndirectBindings = false;
-    if (UnitAttr indirectBindingsAttr = getIndirectBindingsAttr(op)) {
-      useIndirectBindings = true;
-    };
+    bool useIndirectBindings = usesIndirectBindingsAttr(op);
 
     spirv::MemorySpaceToStorageClassMap memorySpaceMap;
 
-    if (spirv::TargetEnvAttr attr = getSPIRVTargetEnvAttr(op)) {
-      spirv::TargetEnv targetEnv(attr);
-      if (targetEnv.allows(spirv::Capability::Shader)) {
+    if (IREE::GPU::TargetAttr target = getGPUTargetAttr(op)) {
+      SmallVector<StringRef> features;
+      llvm::SplitString(target.getFeatures(), features, ",");
+      if (allowsShaderCapability(features)) {
         memorySpaceMap = useIndirectBindings
                              ? &mapHALDescriptorTypeForVulkan<true>
                              : &mapHALDescriptorTypeForVulkan<false>;
-      } else if (targetEnv.allows(spirv::Capability::Kernel)) {
+      } else if (allowsKernelCapability(features)) {
         memorySpaceMap = mapHALDescriptorTypeForOpenCL;
       }
     }
@@ -122,10 +140,4 @@ struct SPIRVMapMemRefStorageClassPass final
 };
 
 } // namespace
-
-std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createSPIRVMapMemRefStorageClassPass() {
-  return std::make_unique<SPIRVMapMemRefStorageClassPass>();
-}
-
 } // namespace mlir::iree_compiler

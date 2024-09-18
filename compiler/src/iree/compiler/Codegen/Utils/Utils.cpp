@@ -152,10 +152,12 @@ getDefaultEnabledUkernels(IREE::HAL::ExecutableTargetAttr targetAttr) {
 bool hasUkernel(IREE::HAL::ExecutableTargetAttr targetAttr,
                 StringRef ukernelName) {
   auto enabledUkernels = getConfigStringAttr(targetAttr, "ukernels");
-  if (!enabledUkernels) {
-    return false;
+  StringRef enabledUkernelsStr;
+  if (enabledUkernels) {
+    enabledUkernelsStr = enabledUkernels->getValue();
+  } else {
+    enabledUkernelsStr = "default";
   }
-  StringRef enabledUkernelsStr = enabledUkernels->getValue();
   // Resolve `default`.
   if (enabledUkernelsStr == "default") {
     enabledUkernelsStr = getDefaultEnabledUkernels(targetAttr);
@@ -797,6 +799,39 @@ FailureOr<int64_t> getSoftwarePipelineStoreStage(DictionaryAttr config) {
   return llvm::cast<IntegerAttr>(stage).getInt();
 }
 
+/// Returns a small tiling factor for the given reduction `dimSize`.
+/// Returns 0 to avoid tiling.
+int getReductionTilingFactor(int64_t dimSize) {
+  if (dimSize % 4 == 0)
+    return 4;
+
+  // Try to find the smallest prime factor as the tiling factor. As a trade off
+  // between generated code size and compilation time, only look at prime
+  // numbers less than 50 right now.
+  static constexpr std::array<int, 15> primeNumbers = {
+      2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47};
+  for (int n : primeNumbers) {
+    if (dimSize % n == 0)
+      return n;
+  }
+
+  return 1; // Otherwise just tile with size 1.
+}
+
+int64_t getMinElementBitwidth(linalg::LinalgOp linalgOp) {
+  unsigned bitwidth = std::numeric_limits<unsigned>::max();
+  for (OpOperand *operand : linalgOp.getDpsInputOperands()) {
+    unsigned b =
+        IREE::Util::getTypeBitWidth(getElementTypeOrSelf(operand->get()));
+    bitwidth = std::min(bitwidth, b);
+  }
+  for (Value result : linalgOp.getDpsInits()) {
+    unsigned b = IREE::Util::getTypeBitWidth(getElementTypeOrSelf(result));
+    bitwidth = std::min(bitwidth, b);
+  }
+  return bitwidth;
+};
+
 //===---------------------------------------------------------------------===//
 // Misc. utility functions
 //===---------------------------------------------------------------------===//
@@ -986,8 +1021,30 @@ replaceNonTrivialUse(RewriterBase &rewriter, Location loc, OpOperand &use,
       newSubviewOp->print(llvm::dbgs(), OpPrintingFlags().assumeVerified());
       llvm::dbgs() << "\n";
     });
-    return SmallVector<Value>(newSubviewOp->result_begin(),
-                              newSubviewOp->result_end());
+    return llvm::to_vector_of<Value>(newSubviewOp->getResults());
+  }
+  if (auto expandOp = dyn_cast<memref::ExpandShapeOp>(user)) {
+    auto currResultType =
+        llvm::cast<MemRefType>(expandOp.getResult().getType());
+    auto newSourceType = llvm::cast<MemRefType>(replacement.getType());
+
+    FailureOr<MemRefType> newResultType =
+        memref::ExpandShapeOp::computeExpandedType(
+            newSourceType, currResultType.getShape(),
+            expandOp.getReassociationIndices());
+    if (failed(newResultType)) {
+      return std::nullopt;
+    }
+
+    auto newExpandOp = rewriter.create<memref::ExpandShapeOp>(
+        loc, *newResultType, replacement, expandOp.getReassociation(),
+        expandOp.getOutputShape(), expandOp.getStaticOutputShape());
+    LLVM_DEBUG({
+      llvm::dbgs() << "\t\tNew user : ";
+      newExpandOp->print(llvm::dbgs(), OpPrintingFlags().assumeVerified());
+      llvm::dbgs() << "\n";
+    });
+    return llvm::to_vector_of<Value>(newExpandOp->getResults());
   }
   return std::nullopt;
 }
@@ -1143,16 +1200,56 @@ bool hasFusedLeadingOp(linalg::LinalgOp rootOp) {
   return llvm::any_of(backwardSlice, llvm::IsaPred<linalg::LinalgOp>);
 }
 
-std::optional<VscaleRange>
+std::optional<vector::VscaleRange>
 getDefaultVscaleRange(IREE::HAL::ExecutableTargetAttr targetAttr) {
   if (isAArch64(targetAttr)) {
     // On AArch64 the scalable vector length will always be between 128-bit and
     // 2048-bit. This works out as a vscale range of 1 to 16. See:
     // https://developer.arm.com/Architectures/Scalable%20Vector%20Extensions
-    return VscaleRange{1, 16};
+    return vector::VscaleRange{1, 16};
   }
   // TODO: Implement for other architectures.
   return std::nullopt;
+}
+
+FailureOr<DimBoundSize>
+computeDimUpperBound(Value shapedValue, unsigned dimNum,
+                     std::optional<vector::VscaleRange> vscaleRange,
+                     RoundUpVscaleMultiple roundUp) {
+  if (!vscaleRange.has_value()) {
+    FailureOr<int64_t> maybeDimBoundSize =
+        ValueBoundsConstraintSet::computeConstantBound(
+            presburger::BoundType::UB, {shapedValue, dimNum},
+            /*stopCondition=*/nullptr, /*closedUB=*/true);
+    if (succeeded(maybeDimBoundSize))
+      return DimBoundSize{/*baseSize=*/*maybeDimBoundSize,
+                          /*scalable=*/false};
+    return failure();
+  }
+  FailureOr<DimBound> maybeDimBound =
+      vector::ScalableValueBoundsConstraintSet::computeScalableBound(
+          shapedValue, dimNum,
+          /*vscaleMin=*/vscaleRange->vscaleMin,
+          /*vscaleMax=*/vscaleRange->vscaleMax, presburger::BoundType::UB);
+  if (failed(maybeDimBound))
+    return failure();
+  auto boundSize = maybeDimBound->getSize();
+  if (succeeded(boundSize))
+    return boundSize;
+  if (roundUp == RoundUpVscaleMultiple::No)
+    return failure();
+  // If the upper bound map is of the form `add(subExpr, cst)` (cst <= 0),
+  // round it up to `subExpr` (and try matching the bound again).
+  auto binOp = dyn_cast<AffineBinaryOpExpr>(maybeDimBound->map.getResult(0));
+  if (!binOp || binOp.getKind() != AffineExprKind::Add)
+    return failure();
+  auto cst = dyn_cast<AffineConstantExpr>(binOp.getRHS());
+  if (!cst || cst.getValue() > 0)
+    return failure();
+  DimBound roundedDimBound{AffineMap::get(maybeDimBound->map.getNumDims(),
+                                          maybeDimBound->map.getNumSymbols(),
+                                          binOp.getLHS())};
+  return roundedDimBound.getSize();
 }
 
 } // namespace mlir::iree_compiler

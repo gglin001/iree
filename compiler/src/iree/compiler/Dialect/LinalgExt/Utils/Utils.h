@@ -7,6 +7,7 @@
 #ifndef IREE_COMPILER_DIALECT_LINALGEXT_UTILS_UTILS_H_
 #define IREE_COMPILER_DIALECT_LINALGEXT_UTILS_UTILS_H_
 
+#include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
@@ -30,10 +31,12 @@ SmallVector<OpFoldResult> getDims(OpBuilder &builder, Location loc, Value v);
 
 /// Returns a `memref.subview` or a `tensor.extract_slice` based on the type of
 /// `src`.
-Value getSlice(OpBuilder &b, Location loc, Value src, ArrayRef<Range> slice);
-Value getSlice(OpBuilder &b, Location loc, Value src,
-               ArrayRef<OpFoldResult> offsets, ArrayRef<OpFoldResult> sizes,
-               ArrayRef<OpFoldResult> strides);
+Operation *getSlice(OpBuilder &b, Location loc, Value src,
+                    ArrayRef<Range> slice);
+Operation *getSlice(OpBuilder &b, Location loc, Value src,
+                    ArrayRef<OpFoldResult> offsets,
+                    ArrayRef<OpFoldResult> sizes,
+                    ArrayRef<OpFoldResult> strides);
 
 /// Returns a `memref.cast` or `tensor.cast` based on the type of `src`.
 Value castValue(OpBuilder &builder, Location loc, Value src, ShapedType type);
@@ -110,6 +113,41 @@ static void permute(SmallVectorImpl<T> &vector) {
     break;
   }
 }
+
+/// Returns true if the operation increases bitwidths of tensors.
+/// This function checks that the genericOp:
+/// 1. Has only one output.
+/// 2. Has all parallel loops.
+/// 3. Compared to the element type of the input with highest rank,
+///    the output element type has a higher bitwidth.
+bool isBitExtendOp(Operation *op);
+
+/// Returns true if the operation decreases bitwidths of tensors.
+/// This function checks that the genericOp:
+/// 1. Has only one output.
+/// 2. Has all parallel loops.
+/// 3. Compared to the element type of the input with highest rank,
+///    the output element type has a lower bitwidth.
+bool isBitTruncateOp(Operation *op);
+
+/// Returns true if the operation is a BroadcastOp or a GenericOp performing
+/// a broadcast.
+/// This function checks that the genericOp:
+///     1. Has a single input and output.
+///     2. Has all parallel loops.
+///     3. Has an identity output map.
+///     4. Has a projected permutation input map.
+///     5. The input map has fewer results than the output map.
+///     6. Has a body with only a linalg.yield op.
+bool isBroadcastingOp(linalg::LinalgOp op);
+
+/// Returns true if the operation is a `linalg.generic` that is similar in
+/// effect to a gather.
+/// This function checks that the genericOp:
+///     1. Has a single input and output.
+///     2. Has all parallel loops.
+///     2. `linalg.yield` consumes the result of a `tensor.extract_slice`
+bool isGatherlikeOp(Operation *op);
 
 } // namespace mlir::iree_compiler::IREE::LinalgExt
 #endif // IREE_COMPILER_DIALECT_LINALGEXT_UTILS_UTILS_H_

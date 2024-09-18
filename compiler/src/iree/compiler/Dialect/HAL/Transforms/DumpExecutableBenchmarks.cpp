@@ -7,12 +7,13 @@
 #include <memory>
 #include <utility>
 
+#include "iree/compiler/Dialect/HAL/Analysis/DeviceAnalysis.h"
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/HAL/Transforms/Passes.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilDialect.h"
-#include "iree/compiler/Utils/IndexSet.h"
+#include "iree/compiler/Utils/IntegerSet.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/ToolOutputFile.h"
@@ -40,7 +41,6 @@ static const int64_t kBufferAlignment = 256;
 using Vec3 = std::tuple<unsigned, unsigned, unsigned>;
 
 struct Binding {
-  unsigned set = 0;
   unsigned binding = 0;
   int64_t size = 0;
 };
@@ -74,7 +74,14 @@ static DispatchParamsMap gatherDispatchParams(mlir::ModuleOp moduleOp,
 
   for (auto funcOp : moduleOp.getOps<mlir::FunctionOpInterface>()) {
     funcOp.walk([&](IREE::Stream::CmdDispatchOp dispatchOp) {
-      auto affinityAttr = IREE::Stream::AffinityAttr::lookup(dispatchOp);
+      auto affinityAttr = dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(
+          IREE::Stream::AffinityAttr::lookup(dispatchOp));
+      if (!affinityAttr) {
+        LLVM_DEBUG(
+            llvm::dbgs()
+            << "skipping dispatch because it has no affinity specified\n");
+        return;
+      }
 
       auto workloadValues = dispatchOp.getWorkload();
       SmallVector<unsigned> workload;
@@ -84,7 +91,7 @@ static DispatchParamsMap gatherDispatchParams(mlir::ModuleOp moduleOp,
         if (!matchPattern(workloadValue, m_ConstantInt(&workloadConstValue))) {
           LLVM_DEBUG({
             auto firstEntryPoint = *dispatchOp.getEntryPointRefs().begin();
-            llvm::dbgs() << "Skipping dispatch of entry point `"
+            llvm::dbgs() << "skipping dispatch of entry point `"
                          << firstEntryPoint << "` (non-constant workload)\n";
           });
           return;
@@ -111,26 +118,18 @@ static DispatchParamsMap gatherDispatchParams(mlir::ModuleOp moduleOp,
 
       // Work around needing a mutable key for the set; C++ was a mistake.
       dispatchOp.forEachEntryPointAttr([&](SymbolRefAttr entryPointAttr) {
-        auto exportOp =
-            symbolTable.lookupNearestSymbolFrom<IREE::HAL::ExecutableExportOp>(
-                dispatchOp, entryPointAttr);
-        auto bindingAttrs = IREE::HAL::getInterfaceBindingAttrs(
-            exportOp, dispatchOp.getResources().size());
-
         SmallVector<Binding> bindings;
-        for (auto [bindingAttr, resourceLength] :
-             llvm::zip_equal(bindingAttrs, dispatchOp.getResourceLengths())) {
+        for (auto [i, resourceLength] :
+             llvm::enumerate(dispatchOp.getResourceLengths())) {
           APInt resourceLengthInt;
           if (!matchPattern(resourceLength,
                             m_ConstantInt(&resourceLengthInt))) {
-            LLVM_DEBUG(llvm::dbgs() << "Skipping dispatch of entry point `"
+            LLVM_DEBUG(llvm::dbgs() << "skipping dispatch of entry point `"
                                     << entryPointAttr
                                     << "` (non-constant resource length)\n";);
             return;
           }
-          bindings.push_back({(unsigned)bindingAttr.getSet(),
-                              (unsigned)bindingAttr.getBinding(),
-                              resourceLengthInt.getSExtValue()});
+          bindings.push_back({(unsigned)i, resourceLengthInt.getSExtValue()});
         }
 
         auto &dispatchParamsSet = map[entryPointAttr];
@@ -157,12 +156,30 @@ static DispatchParamsMap gatherDispatchParams(mlir::ModuleOp moduleOp,
   return map;
 }
 
+static std::pair<Value, Value>
+getDeviceAndQueueAffinity(Location loc, IREE::Stream::AffinityAttr affinityAttr,
+                          OpBuilder &builder) {
+  if (auto deviceAffinityAttr =
+          dyn_cast_if_present<IREE::HAL::DeviceAffinityAttr>(affinityAttr)) {
+    auto resolveOp = builder.create<IREE::HAL::DeviceResolveOp>(
+        loc,
+        TypeRange{
+            builder.getType<IREE::HAL::DeviceType>(),
+            builder.getI64Type(),
+        },
+        deviceAffinityAttr);
+    return std::make_pair(resolveOp.getResult(0), resolveOp.getResult(1));
+  }
+  auto device = IREE::HAL::DeviceType::resolveAny(loc, builder);
+  auto queueAffinity = builder.create<arith::ConstantIntOp>(loc, -1, 64);
+  return std::make_pair(device, queueAffinity);
+}
+
 // Appends a global hal.buffer initialized to the size required for all
 // of the bindings in |dispatchParams| (plus alignment).
-static IREE::Util::GlobalOp
-appendGlobalBuffer(Location loc, StringRef baseName,
-                   const DispatchParams &dispatchParams,
-                   OpBuilder &moduleBuilder) {
+static IREE::Util::GlobalOp appendGlobalBuffer(
+    Location loc, StringRef baseName, const DispatchParams &dispatchParams,
+    IREE::Stream::AffinityAttr affinityAttr, OpBuilder &moduleBuilder) {
   // Create a global to hold the HAL buffer.
   auto globalOp = moduleBuilder.create<IREE::Util::GlobalOp>(
       loc, (baseName + "_buffer").str(),
@@ -183,12 +200,12 @@ appendGlobalBuffer(Location loc, StringRef baseName,
   auto initBuilder = OpBuilder::atBlockBegin(initOp.addEntryBlock());
   IndexSet indexSet(loc, initBuilder);
 
-  // TODO(multi-device): support multiple devices in benchmark generation.
-  Value device = IREE::HAL::DeviceType::resolveAny(loc, initBuilder);
+  // Resolve allocator for the benchmark device.
+  auto [device, queueAffinity] =
+      getDeviceAndQueueAffinity(loc, affinityAttr, initBuilder);
   auto allocator =
       initBuilder.create<IREE::HAL::DeviceAllocatorOp>(loc, device).getResult();
 
-  auto queueAffinity = initBuilder.create<arith::ConstantIntOp>(loc, -1, 64);
   auto memoryTypes = IREE::HAL::MemoryTypeBitfield::DeviceLocal;
   auto bufferUsage = IREE::HAL::BufferUsageBitfield::Transfer |
                      IREE::HAL::BufferUsageBitfield::DispatchStorage;
@@ -226,8 +243,8 @@ static void appendDispatchBenchmark(IREE::Stream::AffinityAttr affinityAttr,
   }
 
   // Add a global variable holding an initialized buffer for the dispatch IO.
-  auto bufferGlobalOp =
-      appendGlobalBuffer(loc, baseName, dispatchParams, moduleBuilder);
+  auto bufferGlobalOp = appendGlobalBuffer(loc, baseName, dispatchParams,
+                                           affinityAttr, moduleBuilder);
 
   // Create an exported benchmark function that runs the dispatches.
   auto funcType =
@@ -253,9 +270,9 @@ static void appendDispatchBenchmark(IREE::Stream::AffinityAttr affinityAttr,
   auto batchSizeArg = funcBuilder.create<arith::IndexCastOp>(
       loc, funcBuilder.getIndexType(), entryBlock->getArgument(0));
 
-  // TODO(multi-device): support multiple devices in benchmark generation.
-  // For now we should just use the affinityAttr to resolve the device.
-  Value device = IREE::HAL::DeviceType::resolveAny(loc, funcBuilder);
+  // Resolve device for this particular benchmark.
+  auto [device, queueAffinity] =
+      getDeviceAndQueueAffinity(loc, affinityAttr, funcBuilder);
 
   // Create and begin command buffer.
   // TODO(benvanik): reuse the command buffer (initialize once and store).
@@ -267,50 +284,28 @@ static void appendDispatchBenchmark(IREE::Stream::AffinityAttr affinityAttr,
           .create<IREE::HAL::CommandBufferCreateOp>(
               loc, funcBuilder.getType<IREE::HAL::CommandBufferType>(), device,
               commandBufferModes, IREE::HAL::CommandCategoryBitfield::Dispatch,
+              queueAffinity,
               /*binding_capacity=*/Value{})
           .getResult();
 
-  // Get the layout required to set up the dispatches.
+  // Constant values.
   auto layoutAttr = exportOp.getLayoutAttr();
-  auto pipelineLayout =
-      funcBuilder
-          .create<IREE::HAL::PipelineLayoutLookupOp>(
-              loc, IREE::HAL::PipelineLayoutType::get(loc.getContext()), device,
-              layoutAttr)
-          .getResult();
-
-  // Push constant values.
-  if (int64_t pushConstantCount = layoutAttr.getPushConstants()) {
-    int pushConstantBase = 0; // always 0 today
-    SmallVector<Value> pushConstants;
-    pushConstants.reserve(pushConstantCount);
+  SmallVector<Value> constantValues;
+  if (int64_t pushConstantCount = layoutAttr.getConstants()) {
+    constantValues.reserve(pushConstantCount);
     for (int64_t i = 0; i < pushConstantCount; ++i) {
-      pushConstants.push_back(funcBuilder.create<arith::ConstantOp>(
+      constantValues.push_back(funcBuilder.create<arith::ConstantOp>(
           loc, dispatchParams.uniformOperands[i]));
     }
-    funcBuilder.create<IREE::HAL::CommandBufferPushConstantsOp>(
-        loc, commandBuffer, pipelineLayout,
-        funcBuilder.getIndexAttr(pushConstantBase), pushConstants);
   }
 
-  // Push descriptor sets.
+  // Binding values.
   Value buffer =
       bufferGlobalOp.createLoadOp(loc, funcBuilder).getLoadedGlobalValue();
-  int64_t currentSet = -1;
-  SmallVector<IREE::HAL::DescriptorSetBindingValue> bindingValues;
-  auto flushSet = [&]() {
-    funcBuilder.create<IREE::HAL::CommandBufferPushDescriptorSetOp>(
-        loc, commandBuffer, pipelineLayout, currentSet, bindingValues);
-    bindingValues.clear();
-  };
+  SmallVector<BindingValue> bindingValues;
   int64_t bufferOffset = 0;
   for (auto binding : dispatchParams.bindings) {
-    if (currentSet != -1 && currentSet != binding.set)
-      flushSet();
-    currentSet = binding.set;
-    IREE::HAL::DescriptorSetBindingValue bindingValue;
-    bindingValue.ordinal =
-        funcBuilder.create<arith::ConstantIndexOp>(loc, binding.binding);
+    BindingValue bindingValue;
     bindingValue.buffer = buffer;
     bindingValue.byteOffset = indexSet.get(bufferOffset);
     bindingValue.byteLength = indexSet.get(binding.size);
@@ -318,8 +313,6 @@ static void appendDispatchBenchmark(IREE::Stream::AffinityAttr affinityAttr,
     bufferOffset =
         IREE::Util::align(bufferOffset + binding.size, kBufferAlignment);
   }
-  if (currentSet != -1)
-    flushSet();
 
   // @executable::@variant::@export
   auto exportRefAttr =
@@ -353,8 +346,8 @@ static void appendDispatchBenchmark(IREE::Stream::AffinityAttr affinityAttr,
         // Dispatch.
         forBuilder.create<IREE::HAL::CommandBufferDispatchOp>(
             loc, commandBuffer, executable, ordinal,
-            workgroupCountOp.getWorkgroupX(), workgroupCountOp.getWorkgroupY(),
-            workgroupCountOp.getWorkgroupZ());
+            workgroupCountOp.getResults(), constantValues, bindingValues,
+            IREE::HAL::DispatchFlags::None);
 
         // Barrier following the dispatch to block the next dispatch.
         auto sourceStage = IREE::HAL::ExecutionStageBitfield::CommandRetire |
@@ -379,7 +372,6 @@ static void appendDispatchBenchmark(IREE::Stream::AffinityAttr affinityAttr,
       IREE::HAL::FenceFlagBitfield::None);
 
   // Queue execution.
-  auto queueAffinity = funcBuilder.create<arith::ConstantIntOp>(loc, -1, 64);
   funcBuilder.create<IREE::HAL::DeviceQueueExecuteOp>(
       loc, device, queueAffinity, waitFence, signalFence,
       ValueRange{commandBuffer});
@@ -399,19 +391,22 @@ static void appendDispatchBenchmark(IREE::Stream::AffinityAttr affinityAttr,
 static mlir::OwningOpRef<mlir::ModuleOp>
 buildBenchmarkModule(IREE::HAL::ExecutableOp sourceExecutableOp,
                      IREE::HAL::ExecutableVariantOp sourceVariantOp,
-                     const DispatchParamsMap &dispatchParamsMap) {
+                     const DispatchParamsMap &dispatchParamsMap,
+                     DeviceAnalysis &deviceAnalysis) {
   // Empty module with default name.
   // We could use the original module name here to make tracking nicer.
   mlir::OwningOpRef<mlir::ModuleOp> moduleOp =
       mlir::ModuleOp::create(sourceExecutableOp.getLoc());
   auto moduleBuilder = OpBuilder::atBlockBegin(moduleOp->getBody());
 
-  // Copy over the device targets from the original module.
-  // TODO(benvanik): filter this by the target of the variant.
-  moduleOp->getOperation()->setAttr(
-      "hal.device.targets",
-      sourceExecutableOp->getParentOfType<mlir::ModuleOp>()->getAttr(
-          "hal.device.targets"));
+  // Copy over the devices from the original module. Note that not all of the
+  // devices may be used and we should prune them, but even better than that
+  // would be to generate one module per device dispatches are made on such
+  // that users can isolate to individual devices. For now we just deal with
+  // it.
+  for (auto globalOp : deviceAnalysis.getDeviceGlobals()) {
+    moduleBuilder.clone(*globalOp.getOperation());
+  }
 
   // Clone the executable variant into the new module.
   auto executableOp = moduleBuilder.create<IREE::HAL::ExecutableOp>(
@@ -486,6 +481,21 @@ struct DumpExecutableBenchmarksPass
     auto moduleName = moduleOp.getName().value_or("module");
     SymbolTable symbolTable(moduleOp);
 
+    DeviceAnalysis deviceAnalysis(moduleOp);
+    if (failed(deviceAnalysis.run()))
+      return signalPassFailure();
+    if (deviceAnalysis.getDeviceGlobals().empty()) {
+      mlir::emitRemark(moduleOp.getLoc())
+          << "Executable benchmarks were requested but no devices were "
+             "declared in the module.\n";
+      return;
+    } else if (deviceAnalysis.getDeviceGlobals().size() != 1) {
+      mlir::emitWarning(moduleOp.getLoc())
+          << "Executable benchmarks were requested but there are multiple "
+             "devices in the module and the pass does not support that yet.\n";
+      return;
+    }
+
     // Analyze the module to find dispatch parameters.
     // This is a full walk of all stream.cmd.dispatch ops and will handle
     // filtering out dispatches that have dynamic parameters we don't
@@ -508,8 +518,8 @@ struct DumpExecutableBenchmarksPass
     for (auto executableOp : moduleOp.getOps<IREE::HAL::ExecutableOp>()) {
       for (auto variantOp :
            executableOp.getOps<IREE::HAL::ExecutableVariantOp>()) {
-        auto benchmarkModuleOp =
-            buildBenchmarkModule(executableOp, variantOp, dispatchParamsMap);
+        auto benchmarkModuleOp = buildBenchmarkModule(
+            executableOp, variantOp, dispatchParamsMap, deviceAnalysis);
         if (!benchmarkModuleOp)
           continue;
         auto fileName = (moduleName + "_" + executableOp.getName() + "_" +

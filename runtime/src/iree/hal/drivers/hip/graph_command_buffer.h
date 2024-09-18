@@ -21,16 +21,17 @@ extern "C" {
 // changes and may have outstanding issues.
 
 typedef struct iree_arena_block_pool_t iree_arena_block_pool_t;
-typedef struct iree_hal_hip_tracing_context_t iree_hal_hip_tracing_context_t;
+typedef struct iree_hal_stream_tracing_context_t
+    iree_hal_stream_tracing_context_t;
 
 // Creates a command buffer that records into a HIP graph.
 //
 // NOTE: the |block_pool| must remain live for the lifetime of the command
 // buffers that use it.
 iree_status_t iree_hal_hip_graph_command_buffer_create(
-    iree_hal_device_t* device,
+    iree_hal_allocator_t* device_allocator,
     const iree_hal_hip_dynamic_symbols_t* hip_symbols,
-    iree_hal_hip_tracing_context_t* tracing_context, hipCtx_t context,
+    iree_hal_stream_tracing_context_t* tracing_context, hipCtx_t context,
     iree_hal_command_buffer_mode_t mode,
     iree_hal_command_category_t command_categories,
     iree_hal_queue_affinity_t queue_affinity, iree_host_size_t binding_capacity,
@@ -43,6 +44,11 @@ bool iree_hal_hip_graph_command_buffer_isa(
 
 // Returns the native HIP graph associated to the command buffer.
 hipGraphExec_t iree_hal_hip_graph_command_buffer_handle(
+    iree_hal_command_buffer_t* command_buffer);
+
+// This is to be called after the given |command_buffer| has been submitted
+// in order to notify the tracing system that there are events to collect.
+void iree_hal_hip_graph_tracing_notify_submitted_commands(
     iree_hal_command_buffer_t* command_buffer);
 
 #ifdef __cplusplus

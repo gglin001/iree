@@ -15,24 +15,19 @@ on:
 jobs:
   linux_x86_64_release_packages:
     name: Linux Release (x86_64)
-    runs-on:
-      - self-hosted # must come first
-      - runner-group=${{ github.event_name == 'pull_request' && 'presubmit' || 'postsubmit' }}
-      - environment=prod
-      - cpu
-      - os-family=Linux
+    runs-on: azure-linux-scale
     strategy:
       fail-fast: false
     env:
       CACHE_DIR: ${{ github.workspace }}/.iree-container-cache
-      MANYLINUX_DOCKER_IMAGE: ghcr.io/nod-ai/manylinux_x86_64:main
+      MANYLINUX_DOCKER_IMAGE: ghcr.io/iree-org/manylinux_x86_64@sha256:facedb71df670016e74e646d71e869e6fff70d4cdbaa6634d4d0a10d6e174399
       PACKAGE_SUFFIX: ""
     steps:
       - name: Prefetch Docker
         run: |
           docker pull "$MANYLINUX_DOCKER_IMAGE" &
       - name: Checking out repository
-        uses: actions/checkout@v4.1.7
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
           submodules: true
       - name: Write version info
@@ -71,7 +66,7 @@ jobs:
           # permissions. Take them back.
           sudo chown -R "$(whoami)" "${cache_dir}"
       - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v4.3.3
+        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
         with:
           name: linux_x86_64_release_packages
           path: |
@@ -90,14 +85,14 @@ jobs:
 #     fail-fast: false
 #   env:
 #     CACHE_DIR: ${{ github.workspace }}/.iree-container-cache
-#     MANYLINUX_DOCKER_IMAGE: ghcr.io/nod-ai/manylinux_x86_64:main
+#     MANYLINUX_DOCKER_IMAGE: ghcr.io/iree-org/manylinux_x86_64@sha256:facedb71df670016e74e646d71e869e6fff70d4cdbaa6634d4d0a10d6e174399
 #     PACKAGE_SUFFIX: "-asserts"
 #   steps:
 #     - name: Prefetch Docker
 #       run: |
 #         docker pull "$MANYLINUX_DOCKER_IMAGE" &
 #     - name: "Checking out repository"
-#       uses: actions/checkout@v4.1.7
+#       uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 #       with:
 #         submodules: true
 #     - name: Write version info
@@ -136,7 +131,7 @@ jobs:
 #         # permissions. Take them back.
 #         sudo chown -R "$(whoami)" "${cache_dir}"
 #     - name: Upload wheel artifacts
-#       uses: actions/upload-artifact@v4.3.3
+#       uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
 #       with:
 #         name: linux_x86_64_release_asserts_packages
 #         path: |

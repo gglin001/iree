@@ -6,7 +6,6 @@
 
 #include "iree/compiler/Codegen/LLVMGPU/ConvertToLLVM.h"
 
-#include "iree/compiler/Codegen/LLVMGPU/PassDetail.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
@@ -24,6 +23,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir::iree_compiler {
+
+#define GEN_PASS_DEF_TESTLLVMGPUSCALARIZEMATHOPPASS
+#include "iree/compiler/Codegen/LLVMGPU/Passes.h.inc"
 
 void ConvertToDynamicSharedMemory(ModuleOp moduleOp) {
   SymbolTableCollection symbolTableCollection;
@@ -183,8 +185,9 @@ struct ConvertSharedMemAllocOp : public OpRewritePattern<memref::AllocOp> {
 
 /// Pass to test in dialect transformation used to legalize the IR before
 /// convertToNVVM/ConvertToROCDL.
-class TestLLVMGPULegalizeOpPass
-    : public TestLLVMGPUScalarizeMathOpBase<TestLLVMGPULegalizeOpPass> {
+class TestLLVMGPULegalizeOpPass final
+    : public impl::TestLLVMGPUScalarizeMathOpPassBase<
+          TestLLVMGPULegalizeOpPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<vector::VectorDialect>();
   }
@@ -199,8 +202,6 @@ class TestLLVMGPULegalizeOpPass
   }
 };
 
-using SetBinding = std::pair<APInt, APInt>;
-
 /// Convention with the HAL side to pass kernel arguments.
 /// The bindings are ordered based on binding set and binding index then
 /// compressed and mapped to dense set of arguments.
@@ -208,21 +209,16 @@ using SetBinding = std::pair<APInt, APInt>;
 /// InterfaceBindingOp and kernel argument index.
 /// For instance if the kernel has (set, bindings) A(0, 1), B(1, 5), C(0, 6) it
 /// will return the mapping [A, 0], [C, 1], [B, 2]
-static llvm::SmallDenseMap<SetBinding, size_t>
+static llvm::SmallDenseMap<APInt, size_t>
 getKernelArgMapping(Operation *funcOp) {
-  llvm::SetVector<SetBinding> usedBindingSet;
+  llvm::SetVector<APInt> usedBindingSet;
   funcOp->walk([&](IREE::HAL::InterfaceBindingSubspanOp subspanOp) {
-    usedBindingSet.insert(
-        SetBinding(subspanOp.getSet(), subspanOp.getBinding()));
+    usedBindingSet.insert(subspanOp.getBinding());
   });
   auto sparseBindings = usedBindingSet.takeVector();
   std::sort(sparseBindings.begin(), sparseBindings.end(),
-            [](SetBinding lhs, SetBinding rhs) {
-              if (lhs.first == rhs.first)
-                return lhs.second.ult(rhs.second);
-              return lhs.first.ult(rhs.first);
-            });
-  llvm::SmallDenseMap<SetBinding, size_t> mapBindingArgIndex;
+            [](APInt lhs, APInt rhs) { return lhs.ult(rhs); });
+  llvm::SmallDenseMap<APInt, size_t> mapBindingArgIndex;
   for (auto [index, binding] : llvm::enumerate(sparseBindings)) {
     mapBindingArgIndex[binding] = index;
   }
@@ -260,15 +256,14 @@ public:
       } else {
         llvmType = LLVM::LLVMPointerType::get(rewriter.getContext());
       }
-      llvmInputTypes[argMapping[SetBinding(subspanOp.getSet(),
-                                           subspanOp.getBinding())]] = llvmType;
+      llvmInputTypes[argMapping[subspanOp.getBinding()]] = llvmType;
     });
     // As a convention with HAL, push constants are appended as kernel arguments
     // after all the binding inputs.
     uint64_t numConstants = 0;
     funcOp.walk([&](IREE::HAL::InterfaceConstantLoadOp constantOp) {
       numConstants =
-          std::max(constantOp.getIndex().getZExtValue() + 1, numConstants);
+          std::max(constantOp.getOrdinal().getZExtValue() + 1, numConstants);
     });
     llvmInputTypes.resize(argMapping.size() + numConstants,
                           rewriter.getI32Type());
@@ -350,8 +345,8 @@ public:
         operands, op->getAttrDictionary());
     MemRefType memrefType =
         llvm::dyn_cast<MemRefType>(subspanOp.getResult().getType());
-    mlir::BlockArgument llvmBufferArg = llvmFuncOp.getArgument(
-        argMapping[SetBinding(subspanOp.getSet(), subspanOp.getBinding())]);
+    mlir::BlockArgument llvmBufferArg =
+        llvmFuncOp.getArgument(argMapping[subspanOp.getBinding()]);
     // As a convention with HAL all the kernel argument pointers are 16Bytes
     // aligned.
     llvmFuncOp.setArgAttr(llvmBufferArg.getArgNumber(),
@@ -474,7 +469,7 @@ public:
     auto argMapping = getKernelArgMapping(llvmFuncOp);
     auto ireeConstantOp = cast<IREE::HAL::InterfaceConstantLoadOp>(op);
     mlir::BlockArgument llvmBufferArg = llvmFuncOp.getArgument(
-        argMapping.size() + ireeConstantOp.getIndex().getZExtValue());
+        argMapping.size() + ireeConstantOp.getOrdinal().getZExtValue());
     assert(llvmBufferArg.getType().isInteger(32));
     Type dstType = getTypeConverter()->convertType(ireeConstantOp.getType());
     // llvm.zext requires that the result type has a larger bitwidth.
@@ -533,15 +528,13 @@ void populateConvertSharedMemoryAllocOps(RewritePatternSet &patterns) {
 }
 
 void populateLowerHALInterfaceOp(RewritePatternSet &patterns) {
-  patterns.insert<HALInterfaceWorkgroupOpsConverter<
-                      IREE::HAL::InterfaceWorkgroupIDOp, gpu::BlockIdOp>,
-                  HALInterfaceWorkgroupOpsConverter<
-                      IREE::HAL::InterfaceWorkgroupCountOp, gpu::GridDimOp>>(
+  patterns.add<HALInterfaceWorkgroupOpsConverter<
+                   IREE::HAL::InterfaceWorkgroupIDOp, gpu::BlockIdOp>,
+               HALInterfaceWorkgroupOpsConverter<
+                   IREE::HAL::InterfaceWorkgroupSizeOp, gpu::BlockDimOp>,
+               HALInterfaceWorkgroupOpsConverter<
+                   IREE::HAL::InterfaceWorkgroupCountOp, gpu::GridDimOp>>(
       patterns.getContext());
-}
-
-std::unique_ptr<OperationPass<ModuleOp>> createTestLLVMGPULegalizePass() {
-  return std::make_unique<TestLLVMGPULegalizeOpPass>();
 }
 
 static IntegerAttr wrapNumericMemorySpace(MLIRContext *ctx, unsigned space) {

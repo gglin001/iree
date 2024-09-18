@@ -7,8 +7,6 @@
 #include "iree/compiler/Codegen/Common/PassUtils.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
-#include "iree/compiler/Codegen/LLVMGPU/ROCDLPassDetail.h"
-#include "iree/compiler/Codegen/LLVMGPU/ROCDLPasses.h"
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
@@ -24,13 +22,17 @@
 
 namespace mlir::iree_compiler {
 
+#define GEN_PASS_DEF_ROCDLLOWEREXECUTABLETARGETPASS
+#include "iree/compiler/Codegen/LLVMGPU/ROCDLPasses.h.inc"
+
 namespace {
 using CodeGenPipeline = IREE::Codegen::DispatchLoweringPassPipeline;
 
 /// Lowers an IREE hal.executable.variant operation using a suitable pass
 /// pipeline.
-class ROCDLLowerExecutableTargetPass
-    : public ROCDLLowerExecutableTargetBase<ROCDLLowerExecutableTargetPass> {
+class ROCDLLowerExecutableTargetPass final
+    : public impl::ROCDLLowerExecutableTargetPassBase<
+          ROCDLLowerExecutableTargetPass> {
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
@@ -49,6 +51,9 @@ public:
       return;
     }
 
+    IREE::GPU::GPUPipelineOptions pipelineOptions =
+        IREE::GPU::getPipelineOptions(funcOp, translationInfo);
+
     std::optional<OpPassManager> maybePipeline =
         getFunctionOpInterfacePassManager(funcOp);
     if (!maybePipeline) {
@@ -66,7 +71,7 @@ public:
       addGPUWarpReductionPassPipeline(pipeline);
       break;
     case CodeGenPipeline::LLVMGPUTileAndFuse:
-      addGPUTileAndFusePassPipeline(pipeline);
+      addGPUTileAndFusePassPipeline(pipeline, pipelineOptions);
       break;
     // If no pipeline specified, then nothing to do.
     case IREE::Codegen::DispatchLoweringPassPipeline::None:
@@ -82,10 +87,4 @@ public:
   }
 };
 } // namespace
-
-std::unique_ptr<InterfacePass<FunctionOpInterface>>
-createROCDLLowerExecutableTargetPass() {
-  return std::make_unique<ROCDLLowerExecutableTargetPass>();
-}
-
 } // namespace mlir::iree_compiler

@@ -24,13 +24,13 @@
 #include "iree/hal/drivers/vulkan/handle_util.h"
 #include "iree/hal/drivers/vulkan/native_allocator.h"
 #include "iree/hal/drivers/vulkan/native_event.h"
-#include "iree/hal/drivers/vulkan/native_pipeline_layout.h"
 #include "iree/hal/drivers/vulkan/native_semaphore.h"
 #include "iree/hal/drivers/vulkan/nop_executable_cache.h"
 #include "iree/hal/drivers/vulkan/status_util.h"
 #include "iree/hal/drivers/vulkan/tracing.h"
 #include "iree/hal/drivers/vulkan/util/arena.h"
 #include "iree/hal/drivers/vulkan/util/ref_ptr.h"
+#include "iree/hal/utils/deferred_command_buffer.h"
 #include "iree/hal/utils/file_transfer.h"
 #include "iree/hal/utils/memory_file.h"
 
@@ -850,10 +850,10 @@ static iree_status_t iree_hal_vulkan_device_query_extensibility_set(
   return iree_ok_status();
 }
 
-static iree_status_t iree_hal_vulkan_get_device_properties(
+static iree_status_t iree_hal_vulkan_query_device_properties(
     DynamicSymbols* instance_syms, VkPhysicalDevice physical_device,
-    iree_hal_vulkan_device_properties_t* device_properties) {
-  memset(device_properties, 0, sizeof(*device_properties));
+    iree_hal_vulkan_device_properties_t* out_properties) {
+  memset(out_properties, 0, sizeof(*out_properties));
 
   VkPhysicalDeviceFeatures2 physical_device_features;
   memset(&physical_device_features, 0, sizeof(physical_device_features));
@@ -940,40 +940,40 @@ static iree_status_t iree_hal_vulkan_get_device_properties(
                                                 &physical_device_properties);
 
   if (shader_float16_int8_features.shaderFloat16) {
-    device_properties->compute_float |= 0x1u;
+    out_properties->compute_float |= 0x1u;
   }
   if (physical_device_features.features.shaderFloat64) {
-    device_properties->compute_float |= 0x2u;
+    out_properties->compute_float |= 0x2u;
   }
   if (shader_float16_int8_features.shaderInt8) {
-    device_properties->compute_int |= 0x1u;
+    out_properties->compute_int |= 0x1u;
   }
   if (physical_device_features.features.shaderInt16) {
-    device_properties->compute_int |= 0x2u;
+    out_properties->compute_int |= 0x2u;
   }
   if (physical_device_features.features.shaderInt64) {
-    device_properties->compute_int |= 0x4u;
+    out_properties->compute_int |= 0x4u;
   }
   if (supported_8bit_storage_features.storageBuffer8BitAccess &&
       supported_8bit_storage_features.uniformAndStorageBuffer8BitAccess) {
-    device_properties->storage |= 0x1u;
+    out_properties->storage |= 0x1u;
   }
   if (supported_16bit_storage_features.storageBuffer16BitAccess &&
       supported_16bit_storage_features.uniformAndStorageBuffer16BitAccess) {
-    device_properties->storage |= 0x2u;
+    out_properties->storage |= 0x2u;
   }
 
   if (iree_all_bits_set(subgroup_properties.supportedOperations,
                         VK_SUBGROUP_FEATURE_SHUFFLE_BIT)) {
-    device_properties->subgroup |= 0x1u;
+    out_properties->subgroup |= 0x1u;
   }
   if (iree_all_bits_set(subgroup_properties.supportedOperations,
                         VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)) {
-    device_properties->subgroup |= 0x2u;
+    out_properties->subgroup |= 0x2u;
   }
 
   if (dot_product_features.shaderIntegerDotProduct) {
-    device_properties->dot_product |= 0x1u;
+    out_properties->dot_product |= 0x1u;
   }
 
   if (coop_matrix_features.cooperativeMatrix &&
@@ -998,7 +998,7 @@ static iree_status_t iree_hal_vulkan_get_device_properties(
           p->BType == VK_COMPONENT_TYPE_FLOAT16_KHR) {
         if (p->CType == VK_COMPONENT_TYPE_FLOAT16_KHR) {
           if (p->MSize == 16 && p->NSize == 16 && p->KSize == 16) {
-            device_properties->cooperative_matrix |= 0x1u;
+            out_properties->cooperative_matrix |= 0x1u;
           }
         }
       }
@@ -1006,8 +1006,17 @@ static iree_status_t iree_hal_vulkan_get_device_properties(
   }
 
   if (address_features.bufferDeviceAddress) {
-    device_properties->address |= 0x1u;
+    out_properties->address |= 0x1u;
   }
+
+  out_properties->limits.max_push_constants_size =
+      physical_device_properties.properties.limits.maxPushConstantsSize;
+  out_properties->limits.max_per_stage_descriptor_uniform_buffers =
+      physical_device_properties.properties.limits
+          .maxPerStageDescriptorUniformBuffers;
+  out_properties->limits.max_per_stage_descriptor_storage_buffers =
+      physical_device_properties.properties.limits
+          .maxPerStageDescriptorStorageBuffers;
 
   return iree_ok_status();
 }
@@ -1276,7 +1285,7 @@ iree_status_t iree_hal_vulkan_device_create(
   }
 
   iree_hal_vulkan_device_properties_t device_properties;
-  IREE_RETURN_IF_ERROR(iree_hal_vulkan_get_device_properties(
+  IREE_RETURN_IF_ERROR(iree_hal_vulkan_query_device_properties(
       instance_syms, physical_device, &device_properties));
 
   auto logical_device = new VkDeviceHandle(
@@ -1349,9 +1358,9 @@ IREE_API_EXPORT iree_status_t iree_hal_vulkan_wrap_device(
   iree_hal_vulkan_device_extensions_t enabled_device_extensions =
       iree_hal_vulkan_infer_enabled_device_extensions(device_syms.get());
 
-  // We can still retrieve the correct device properties though.
+  // We can retrieve the device properties and limits from the wrapped handle.
   iree_hal_vulkan_device_properties_t device_properties;
-  IREE_RETURN_IF_ERROR(iree_hal_vulkan_get_device_properties(
+  IREE_RETURN_IF_ERROR(iree_hal_vulkan_query_device_properties(
       device_syms.get(), physical_device, &device_properties));
 
   iree_hal_vulkan_features_t enabled_features = 0;
@@ -1525,6 +1534,16 @@ static iree_status_t iree_hal_vulkan_device_create_command_buffer(
     iree_hal_command_buffer_t** out_command_buffer) {
   iree_hal_vulkan_device_t* device = iree_hal_vulkan_device_cast(base_device);
 
+  // TODO(indirect-cmd): until implemented through the whole stack we use a
+  // deferred command buffer and then translate that to a concrete Vulkan
+  // command buffer when submitted with bindings.
+  if (binding_capacity > 0) {
+    return iree_hal_deferred_command_buffer_create(
+        iree_hal_device_allocator(base_device), mode, command_categories,
+        binding_capacity, &device->block_pool,
+        iree_hal_device_host_allocator(base_device), out_command_buffer);
+  }
+
   // TODO(scotttodd): revisit queue selection logic and remove this
   //   * the unaligned buffer fill polyfill and tracing timestamp queries may
   //     both insert dispatches into command buffers that at compile time are
@@ -1554,28 +1573,18 @@ static iree_status_t iree_hal_vulkan_device_create_command_buffer(
       device, command_categories, queue_affinity);
 
   return iree_hal_vulkan_direct_command_buffer_allocate(
-      base_device, device->logical_device, command_pool, mode,
-      command_categories, queue_affinity, binding_capacity,
+      iree_hal_device_allocator(base_device), device->logical_device,
+      command_pool, mode, command_categories, queue_affinity, binding_capacity,
       queue->tracing_context(), device->descriptor_pool_cache,
       device->builtin_executables, &device->block_pool, out_command_buffer);
 }
 
-static iree_status_t iree_hal_vulkan_device_create_descriptor_set_layout(
-    iree_hal_device_t* base_device,
-    iree_hal_descriptor_set_layout_flags_t flags,
-    iree_host_size_t binding_count,
-    const iree_hal_descriptor_set_layout_binding_t* bindings,
-    iree_hal_descriptor_set_layout_t** out_descriptor_set_layout) {
-  iree_hal_vulkan_device_t* device = iree_hal_vulkan_device_cast(base_device);
-  return iree_hal_vulkan_native_descriptor_set_layout_create(
-      device->logical_device, flags, binding_count, bindings,
-      out_descriptor_set_layout);
-}
-
 static iree_status_t iree_hal_vulkan_device_create_event(
-    iree_hal_device_t* base_device, iree_hal_event_t** out_event) {
+    iree_hal_device_t* base_device, iree_hal_queue_affinity_t queue_affinity,
+    iree_hal_event_flags_t flags, iree_hal_event_t** out_event) {
   iree_hal_vulkan_device_t* device = iree_hal_vulkan_device_cast(base_device);
-  return iree_hal_vulkan_native_event_create(device->logical_device, out_event);
+  return iree_hal_vulkan_native_event_create(device->logical_device,
+                                             queue_affinity, flags, out_event);
 }
 
 static iree_status_t iree_hal_vulkan_device_create_executable_cache(
@@ -1601,20 +1610,9 @@ static iree_status_t iree_hal_vulkan_device_import_file(
       iree_hal_device_host_allocator(base_device), out_file);
 }
 
-static iree_status_t iree_hal_vulkan_device_create_pipeline_layout(
-    iree_hal_device_t* base_device, iree_host_size_t push_constants,
-    iree_host_size_t set_layout_count,
-    iree_hal_descriptor_set_layout_t* const* set_layouts,
-    iree_hal_pipeline_layout_t** out_pipeline_layout) {
-  iree_hal_vulkan_device_t* device = iree_hal_vulkan_device_cast(base_device);
-  return iree_hal_vulkan_native_pipeline_layout_create(
-      device->logical_device, push_constants, set_layout_count, set_layouts,
-      out_pipeline_layout);
-}
-
 static iree_status_t iree_hal_vulkan_device_create_semaphore(
     iree_hal_device_t* base_device, uint64_t initial_value,
-    iree_hal_semaphore_t** out_semaphore) {
+    iree_hal_semaphore_flags_t flags, iree_hal_semaphore_t** out_semaphore) {
   iree_hal_vulkan_device_t* device = iree_hal_vulkan_device_cast(base_device);
   return iree_hal_vulkan_native_semaphore_create(device->logical_device,
                                                  initial_value, out_semaphore);
@@ -1709,21 +1707,81 @@ static iree_status_t iree_hal_vulkan_device_queue_execute(
     const iree_hal_semaphore_list_t wait_semaphore_list,
     const iree_hal_semaphore_list_t signal_semaphore_list,
     iree_host_size_t command_buffer_count,
-    iree_hal_command_buffer_t* const* command_buffers) {
+    iree_hal_command_buffer_t* const* command_buffers,
+    iree_hal_buffer_binding_table_t const* binding_tables) {
   iree_hal_vulkan_device_t* device = iree_hal_vulkan_device_cast(base_device);
+
   // NOTE: today we are not discriminating queues based on command type.
   CommandQueue* queue = iree_hal_vulkan_device_select_queue(
       device, IREE_HAL_COMMAND_CATEGORY_DISPATCH, queue_affinity);
-  iree_hal_submission_batch_t batch = {
-      /*.wait_semaphores=*/wait_semaphore_list,
-      /*.command_buffer_count=*/command_buffer_count,
-      /*.command_buffers=*/command_buffers,
-      /*.signal_semaphores=*/signal_semaphore_list,
-  };
-  IREE_RETURN_IF_ERROR(queue->Submit(1, &batch));
+
+  // TODO(indirect-cmd): today we are using deferred command buffers to emulate
+  // indirect command buffers - this requires that we materialize real command
+  // buffers on demand here. When we natively support them we'll still need to
+  // process the binding table prior to submission but that can be done in a
+  // much more lightweight way depending on our concurrency needs.
+  if (IREE_UNLIKELY(command_buffer_count > 32)) {
+    // Guard the stack allocation, yuck.
+    return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                            "currently limited to a reasonable number of "
+                            "command buffers per submission");
+  }
+  iree_hal_command_buffer_t** translated_command_buffers =
+      (iree_hal_command_buffer_t**)iree_alloca(
+          sizeof(iree_hal_command_buffer_t*) * command_buffer_count);
+  iree_status_t status = iree_ok_status();
+  for (iree_host_size_t i = 0; i < command_buffer_count; ++i) {
+    iree_hal_command_buffer_t* command_buffer = command_buffers[i];
+    if (iree_hal_deferred_command_buffer_isa(command_buffers[i])) {
+      iree_hal_command_buffer_t* translated_command_buffer = NULL;
+      iree_hal_buffer_binding_table_t binding_table =
+          binding_tables ? binding_tables[i]
+                         : iree_hal_buffer_binding_table_empty();
+      status = iree_hal_vulkan_device_create_command_buffer(
+          base_device,
+          iree_hal_command_buffer_mode(command_buffer) |
+              IREE_HAL_COMMAND_BUFFER_MODE_ONE_SHOT |
+              // NOTE: we need to validate if a binding table is provided as the
+              // bindings were not known when it was originally recorded.
+              (iree_hal_buffer_binding_table_is_empty(binding_table)
+                   ? IREE_HAL_COMMAND_BUFFER_MODE_UNVALIDATED
+                   : 0),
+          iree_hal_command_buffer_allowed_categories(command_buffer),
+          queue_affinity, /*binding_capacity=*/0, &translated_command_buffer);
+      if (iree_status_is_ok(status)) {
+        status = iree_hal_deferred_command_buffer_apply(
+            command_buffer, translated_command_buffer, binding_table);
+      }
+      translated_command_buffers[i] = translated_command_buffer;
+    } else {
+      translated_command_buffers[i] = command_buffer;
+      iree_hal_command_buffer_retain(command_buffer);
+    }
+  }
+
+  if (iree_status_is_ok(status)) {
+    iree_hal_vulkan_submission_batch_t batch = {
+        /*.wait_semaphores=*/wait_semaphore_list,
+        /*.command_buffer_count=*/command_buffer_count,
+        /*.command_buffers=*/translated_command_buffers,
+        /*.signal_semaphores=*/signal_semaphore_list,
+    };
+    status = queue->Submit(1, &batch);
+  }
+
   // HACK: we don't track async resource lifetimes so we have to block.
-  return iree_hal_semaphore_list_wait(signal_semaphore_list,
-                                      iree_infinite_timeout());
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_semaphore_list_wait(signal_semaphore_list,
+                                          iree_infinite_timeout());
+  }
+
+  // TODO(indirect-cmd): when async these need to be retained until the
+  // submission completes.
+  for (iree_host_size_t i = 0; i < command_buffer_count; ++i) {
+    iree_hal_command_buffer_release(translated_command_buffers[i]);
+  }
+
+  return status;
 }
 
 static iree_status_t iree_hal_vulkan_device_queue_flush(
@@ -1840,14 +1898,10 @@ const iree_hal_device_vtable_t iree_hal_vulkan_device_vtable = {
     /*.query_i64=*/iree_hal_vulkan_device_query_i64,
     /*.create_channel=*/iree_hal_vulkan_device_create_channel,
     /*.create_command_buffer=*/iree_hal_vulkan_device_create_command_buffer,
-    /*.create_descriptor_set_layout=*/
-    iree_hal_vulkan_device_create_descriptor_set_layout,
     /*.create_event=*/iree_hal_vulkan_device_create_event,
     /*.create_executable_cache=*/
     iree_hal_vulkan_device_create_executable_cache,
     /*.import_file=*/iree_hal_vulkan_device_import_file,
-    /*.create_pipeline_layout=*/
-    iree_hal_vulkan_device_create_pipeline_layout,
     /*.create_semaphore=*/iree_hal_vulkan_device_create_semaphore,
     /*.query_semaphore_compatibility=*/
     iree_hal_vulkan_device_query_semaphore_compatibility,

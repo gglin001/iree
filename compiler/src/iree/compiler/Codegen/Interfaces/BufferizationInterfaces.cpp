@@ -102,8 +102,10 @@ findOrCreateSubspanBuffer(RewriterBase &rewriter,
     layoutAttr = StridedLayoutAttr::get(rewriter.getContext(),
                                         elementOffsetInt.value(), strides);
   }
-  auto memRefType = getMemrefTypeForTensor(shapedType, layoutAttr,
-                                           subspanOp.getDescriptorTypeAttr());
+  auto memRefType =
+      getMemrefTypeForTensor(shapedType, layoutAttr,
+                             rewriter.getAttr<IREE::HAL::DescriptorTypeAttr>(
+                                 subspanOp.getDescriptorType()));
 
   // Look for an existing op.
   Block *block = subspanOp->getBlock();
@@ -119,8 +121,7 @@ findOrCreateSubspanBuffer(RewriterBase &rewriter,
     if (!bufferMemrefType)
       continue;
 
-    if (bufferSubspanOp.getSet() != subspanOp.getSet() ||
-        bufferSubspanOp.getBinding() != subspanOp.getBinding() ||
+    if (bufferSubspanOp.getBinding() != subspanOp.getBinding() ||
         bufferSubspanOp.getDescriptorType() != subspanOp.getDescriptorType() ||
         bufferSubspanOp.getByteOffset() != subspanOp.getByteOffset() ||
         !llvm::equal(bufferSubspanOp.getDynamicDims(),
@@ -136,10 +137,10 @@ findOrCreateSubspanBuffer(RewriterBase &rewriter,
   rewriter.setInsertionPoint(subspanOp);
   // Just change the result type of the InterfaceBindingSubspanOp.
   Value buffer = rewriter.create<IREE::HAL::InterfaceBindingSubspanOp>(
-      subspanOp->getLoc(), memRefType, subspanOp.getSet(),
-      subspanOp.getBinding(), subspanOp.getDescriptorType(),
-      subspanOp.getByteOffset(), subspanOp.getDynamicDims(),
-      subspanOp.getAlignmentAttr(), subspanOp.getDescriptorFlagsAttr());
+      subspanOp->getLoc(), memRefType, subspanOp.getLayout(),
+      subspanOp.getBinding(), subspanOp.getByteOffset(),
+      subspanOp.getDynamicDims(), subspanOp.getAlignmentAttr(),
+      subspanOp.getDescriptorFlagsAttr());
   rewriter.create<memref::AssumeAlignmentOp>(
       subspanOp->getLoc(), buffer, subspanOp.calculateAlignment().value());
   return buffer;
@@ -350,9 +351,9 @@ struct LinalgExtOpInterface
 
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
-    // TODO: Revisit this for Scatter/ReverseOp. We can then get rid of
+    // TODO: Revisit this for ScatterOp. We can then get rid of
     //       `bufferizesToMemoryRead` completely.
-    return !isa<IREE::LinalgExt::ScatterOp, IREE::LinalgExt::ReverseOp>(op);
+    return !isa<IREE::LinalgExt::ScatterOp>(op);
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -630,8 +631,6 @@ void registerBufferizationInterfaces(DialectRegistry &registry) {
         LinalgExtOpInterface<IREE::LinalgExt::PackOp>>(*ctx);
     IREE::LinalgExt::UnPackOp::attachInterface<
         LinalgExtOpInterface<IREE::LinalgExt::UnPackOp>>(*ctx);
-    IREE::LinalgExt::ReverseOp::attachInterface<
-        LinalgExtOpInterface<IREE::LinalgExt::ReverseOp>>(*ctx);
     IREE::LinalgExt::ScanOp::attachInterface<
         LinalgExtOpInterface<IREE::LinalgExt::ScanOp>>(*ctx);
     IREE::LinalgExt::ScatterOp::attachInterface<

@@ -17,6 +17,7 @@ include "mlir/IR/BuiltinAttributeInterfaces.td"
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/CallInterfaces.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 
@@ -98,11 +99,6 @@ let opDocGroup = OpGroupPseudoOps in {
 
 def HAL_TensorImportOp : HAL_PureOp<"tensor.import", [
   AttrSizedOperandSegments,
-  DeclareOpInterfaceMethods<Util_TiedOpInterface, [
-    "getTiedResult",
-    "getTiedResultOperandIndex",
-    "getTiedResultOperandIndices",
-  ]>,
   Util_ShapeAwareOp,
 ]> {
   let summary = [{imports a tensor from a HAL buffer view}];
@@ -125,13 +121,15 @@ def HAL_TensorImportOp : HAL_PureOp<"tensor.import", [
     TypeAttr:$target_encoding,
     HAL_ShapeDynamicDims:$target_dims,
     Optional<HAL_Fence>:$wait_fence,
-    OptionalAttr<StrAttr>:$name
+    OptionalAttr<StrAttr>:$name,
+    OptionalAttr<AnyAttr>:$affinity
   );
   let results = (outs
     AnyTensor:$target
   );
 
   let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
     (`wait` `(` $wait_fence^ `)` `=` `` `>`)?
     $source
     ($name^)?
@@ -145,14 +143,16 @@ def HAL_TensorImportOp : HAL_PureOp<"tensor.import", [
       "Type":$resultType,
       "Value":$source,
       "TypeAttr":$targetEncoding,
-      "StringAttr":$name
+      "StringAttr":$name,
+      "Attribute":$affinity
     )>,
     OpBuilder<(ins
       "Type":$resultType,
       "Value":$source,
       "TypeAttr":$targetEncoding,
       "Value":$waitFence,
-      "StringAttr":$name
+      "StringAttr":$name,
+      "Attribute":$affinity
     )>,
   ];
 
@@ -167,11 +167,6 @@ def HAL_TensorImportOp : HAL_PureOp<"tensor.import", [
 }
 
 def HAL_TensorExportOp : HAL_PureOp<"tensor.export", [
-  DeclareOpInterfaceMethods<Util_TiedOpInterface, [
-    "getTiedResult",
-    "getTiedResultOperandIndex",
-    "getTiedResultOperandIndices",
-  ]>,
   Util_ShapeAwareOp,
 ]> {
   let summary = [{exports a tensor to a HAL buffer view}];
@@ -190,13 +185,15 @@ def HAL_TensorExportOp : HAL_PureOp<"tensor.export", [
     AnyTensor:$source,
     TypeAttr:$source_encoding,
     HAL_ShapeDynamicDims:$source_dims,
-    OptionalAttr<StrAttr>:$name
+    OptionalAttr<StrAttr>:$name,
+    OptionalAttr<AnyAttr>:$affinity
   );
   let results = (outs
     AnyTypeOf<[HAL_Buffer, HAL_BufferView]>:$target
   );
 
   let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
     $source
     ($name^)?
     `:`
@@ -211,7 +208,8 @@ def HAL_TensorExportOp : HAL_PureOp<"tensor.export", [
       "Type":$resultType,
       "Value":$source,
       "TypeAttr":$sourceEncoding,
-      "StringAttr":$name
+      "StringAttr":$name,
+      "Attribute":$affinity
     )>,
   ];
 
@@ -273,13 +271,15 @@ def HAL_TensorAliasOp : HAL_PureOp<"tensor.alias", [
     AnyTensor:$source,
     HAL_ShapeDynamicDims:$source_dims,
     AnyTypeOf<[HAL_Buffer, HAL_BufferView]>:$storage,
-    Optional<HAL_Fence>:$wait_fence
+    Optional<HAL_Fence>:$wait_fence,
+    OptionalAttr<AnyAttr>:$affinity
   );
   let results = (outs
     AnyTensor:$result
   );
 
   let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
     (`wait` `(` $wait_fence^ `)` `=` `` `>`)?
     $source `:` type($source) (`{` $source_dims^ `}`)?
     `to`
@@ -429,7 +429,6 @@ def HAL_DispatchExternOp : HAL_PureOp<"dispatch.extern", [
     OptionalAttr<HAL_WorkgroupSizeAttr>:$workgroup_size,
     OptionalAttr<HAL_SubgroupSizeAttr>:$subgroup_size,
     OptionalAttr<IndexAttr>:$workgroup_local_memory,
-    OptionalAttr<HAL_InterfaceBindingArrayAttr>:$bindings,
     OptionalAttr<Util_TiedOpStorageAttr>:$tied_operands
   );
   let results = (outs
@@ -451,7 +450,6 @@ def HAL_DispatchExternOp : HAL_PureOp<"dispatch.extern", [
                                $tied_operands)
     `count` `` custom<WorkgroupCountRegion>($workgroup_count)
     `layout` `(` $layout `)`
-    (`bindings` `(` $bindings^ `)`)?
     `objects` `(` `{` custom<TargetConditionObjects>($targets,
                                                      $target_ordinals,
                                                      $target_objects,
@@ -495,6 +493,57 @@ def HAL_DispatchExternOp : HAL_PureOp<"dispatch.extern", [
   }];
 
   let hasVerifier = 1;
+}
+
+def HAL_DeviceMemoizeOp : HAL_Op<"device.memoize", [
+  RecursiveMemoryEffects,
+  DeclareOpInterfaceMethods<RegionBranchOpInterface>,
+  SingleBlockImplicitTerminator<"IREE::HAL::ReturnOp">,
+]> {
+  let summary = [{memoizes resources for a particular device and queue affinity}];
+  let description = [{
+    Executes the nested region once per device and affinity mask and memoizes
+    the results such that future references return the previously memoized
+    values. The initial execution may happen on demand or be hoisted to module
+    initialization time.
+
+    Any uses of the device or affinity specified within the nested region will
+    be substituted with the appropriate device and affinity during memoization.
+    All other implicitly captured values must be either constant or global
+    values available at the time the memoization occurs.
+
+    It is valid for the nested region contents to be inlined in place and never
+    memoized. This can be useful when diagnosing memoization issues and can be
+    forced with the `--iree-hal-memoization=false` flag.
+  }];
+
+  let arguments = (ins
+    HAL_Device:$device,
+    HAL_DeviceQueueAffinity:$queue_affinity
+  );
+  let results = (outs
+    Variadic<AnyType>:$results
+  );
+
+  let regions = (region AnyRegion:$body);
+
+  let assemblyFormat = [{
+    `<` $device `:` type($device) `>`
+    `affinity` `(` $queue_affinity `)`
+    `->` type($results)
+    attr-dict-with-keyword
+    $body
+  }];
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins
+      "TypeRange":$resultTypes,
+      "Value":$device,
+      "Value":$queueAffinity,
+      CArg<"ArrayRef<NamedAttribute>", "{}">:$attributes
+    )>,
+  ];
 }
 
 } // OpGroupPseudoOps
@@ -596,7 +645,7 @@ def OpGroupBufferOps : OpDocGroup {
 
 let opDocGroup = OpGroupBufferOps in {
 
-def HAL_BufferAssertOp : HAL_Op<"buffer.assert", []> {
+def HAL_BufferAssertOp : HAL_Op<"buffer.assert"> {
   let summary = [{buffer compatibility assertion}];
   let description = [{
     Asserts that the buffer is compatible with the given allocator and usage.
@@ -1163,6 +1212,7 @@ def HAL_CommandBufferCreateOp : HAL_Op<"command_buffer.create", [
     HAL_Device:$device,
     HAL_CommandBufferModeBitfieldAttr:$modes,
     HAL_CommandCategoryBitfieldAttr:$command_categories,
+    HAL_DeviceQueueAffinity:$queue_affinity,
     Optional<Index>:$binding_capacity
   );
   let results = (outs
@@ -1173,6 +1223,7 @@ def HAL_CommandBufferCreateOp : HAL_Op<"command_buffer.create", [
     `device` `(` $device `:` type($device) `)`
     `mode` `(` $modes `)`
     `categories` `(` $command_categories `)`
+    `affinity` `(` $queue_affinity `)`
     (`bindings` `(` $binding_capacity^ `)`)?
     `:` type($result)
     attr-dict-with-keyword
@@ -1289,7 +1340,7 @@ def HAL_CommandBufferFillBufferOp : HAL_Op<"command_buffer.fill_buffer"> {
 
   let arguments = (ins
     HAL_CommandBuffer:$command_buffer,
-    HAL_BufferType:$target_buffer,
+    AnyTypeOf<[Index, HAL_BufferType]>:$target_buffer,
     HAL_DeviceSize:$target_offset,
     HAL_DeviceSize:$length,
     HAL_FillPatternType:$pattern
@@ -1306,7 +1357,49 @@ def HAL_CommandBufferFillBufferOp : HAL_Op<"command_buffer.fill_buffer"> {
   let hasCanonicalizer = 1;
 }
 
-// TODO(benvanik): update buffer op.
+def HAL_CommandBufferUpdateBufferOp : HAL_Op<"command_buffer.update_buffer", [
+  // TODO(benvanik): figure out the right way to model host effects - this is
+  // a host read but a device write; if we make it just MemRead then it gets
+  // DCEd because it has no result. For now we report both to keep analysis
+  // appeased even if incorrect.
+  MemoryEffects<[MemRead, MemWrite]>,
+  Util_SizeAwareOp,
+  DeclareOpInterfaceMethods<Util_SubrangeOperandOpInterface>,
+]> {
+  let summary = [{command buffer buffer update recording operation}];
+  let description = [{
+    Copies a range of a host buffer into a device buffer. The host buffer
+    contents will be captured at the time of the call and embedded in the
+    command buffer.
+  }];
+
+  let arguments = (ins
+    HAL_CommandBuffer:$command_buffer,
+    Util_BufferType:$source_buffer,
+    Util_Size:$source_size,
+    Util_Size:$source_offset,
+    AnyTypeOf<[Index, HAL_BufferType]>:$target_buffer,
+    HAL_DeviceSize:$target_offset,
+    HAL_DeviceSize:$length
+  );
+
+  let assemblyFormat = [{
+    `<` $command_buffer `:` type($command_buffer) `>`
+    `source` `(` $source_buffer `:` type($source_buffer) `{` $source_size `}` `)`
+    `` `[` $source_offset `]`
+    `target` `(` $target_buffer `:` type($target_buffer) `)`
+    `` `[` $target_offset `]`
+    `length` `(` $length `)`
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    Value getOperandSize(unsigned idx) { return idx == 1 ? getSourceSize() : Value{}; }
+    Value getResultSize(unsigned idx) { return {}; }
+  }];
+
+  let hasCanonicalizer = 1;
+}
 
 def HAL_CommandBufferCopyBufferOp : HAL_Op<"command_buffer.copy_buffer"> {
   let summary = [{command buffer buffer copy recording operation}];
@@ -1316,9 +1409,9 @@ def HAL_CommandBufferCopyBufferOp : HAL_Op<"command_buffer.copy_buffer"> {
 
   let arguments = (ins
     HAL_CommandBuffer:$command_buffer,
-    HAL_BufferType:$source_buffer,
+    AnyTypeOf<[Index, HAL_BufferType]>:$source_buffer,
     HAL_DeviceSize:$source_offset,
-    HAL_BufferType:$target_buffer,
+    AnyTypeOf<[Index, HAL_BufferType]>:$target_buffer,
     HAL_DeviceSize:$target_offset,
     HAL_DeviceSize:$length
   );
@@ -1352,10 +1445,10 @@ def HAL_CommandBufferCollectiveOp : HAL_Op<"command_buffer.collective", [
     Optional<I32>:$param,
     // TODO(benvanik): change this to take descriptor set + binding instead.
     // This would let us use indirect bindings.
-    Optional<HAL_BufferType>:$send_buffer,
+    Optional<AnyTypeOf<[Index, HAL_BufferType]>>:$send_buffer,
     Optional<HAL_DeviceSize>:$send_offset,
     Optional<HAL_DeviceSize>:$send_length,
-    Optional<HAL_BufferType>:$recv_buffer,
+    Optional<AnyTypeOf<[Index, HAL_BufferType]>>:$recv_buffer,
     Optional<HAL_DeviceSize>:$recv_offset,
     Optional<HAL_DeviceSize>:$recv_length
   );
@@ -1374,82 +1467,20 @@ def HAL_CommandBufferCollectiveOp : HAL_Op<"command_buffer.collective", [
   }];
 }
 
-def HAL_CommandBufferPushConstantsOp : HAL_Op<"command_buffer.push_constants"> {
-  let summary = [{command buffer push constants operation}];
-  let description = [{
-    Pushes an inline set of constants that can be accessed by subsequent
-    dispatches using a compatible pipeline layout.
-
-    Push constants are always 4-byte values and treated as opaque, meaning that
-    they may be bit-casted floats, bit-packed booleans, etc.
-  }];
-
-  let arguments = (ins
-    HAL_CommandBuffer:$command_buffer,
-    HAL_PipelineLayout:$pipeline_layout,
-    IndexAttr:$offset,
-    Variadic<I32>:$values
-  );
-
-  let assemblyFormat = [{
-    `<` $command_buffer `:` type($command_buffer) `>`
-    `layout` `(` $pipeline_layout `:` type($pipeline_layout) `)`
-    `offset` `(` $offset `)`
-    `values` `(` `[` $values `]` `)`
-    `:` type($values)
-    attr-dict-with-keyword
-  }];
-}
-
-def HAL_CommandBufferPushDescriptorSetOp : HAL_Op<"command_buffer.push_descriptor_set", [
-  SameVariadicOperandSize,
+def HAL_CommandBufferDispatchOp : HAL_Op<"command_buffer.dispatch", [
+  AttrSizedOperandSegments,
 ]> {
-  let summary = [{command buffer descriptor set push binding operation}];
-  let description = [{
-    Pushes an inline-defined descriptor set to the command buffer.
-    The provided buffers may either be HAL buffers or indirect references into
-    the command buffer binding table.
-  }];
-
-  let arguments = (ins
-    HAL_CommandBuffer:$command_buffer,
-    HAL_PipelineLayout:$pipeline_layout,
-    Index:$set,
-    Variadic<Index>:$binding_ordinals,
-    Variadic<AnyTypeOf<[Index, HAL_BufferType]>>:$binding_buffers,
-    Variadic<HAL_DeviceSize>:$binding_offsets,
-    Variadic<HAL_DeviceSize>:$binding_lengths
-  );
-
-  let assemblyFormat = [{
-    `<` $command_buffer `:` type($command_buffer) `>`
-    `layout` `(` $pipeline_layout `:` type($pipeline_layout) `)`
-    `` `[` $set `]`
-    `bindings` `(` `[`
-    custom<DescriptorSetBindings>($binding_ordinals,
-                                  $binding_buffers,
-                                  type($binding_buffers),
-                                  $binding_offsets,
-                                  $binding_lengths)
-    `]` `)`
-    attr-dict-with-keyword
-  }];
-
-  let skipDefaultBuilders = 1;
-  let builders = [
-    OpBuilder<(ins "Value":$commandBuffer, "Value":$pipelineLayout,
-      "int64_t":$set, "ArrayRef<DescriptorSetBindingValue>":$bindings)>,
-    OpBuilder<(ins "Value":$commandBuffer, "Value":$pipelineLayout,
-      "Value":$set, "ArrayRef<DescriptorSetBindingValue>":$bindings)>,
-  ];
-
-  let hasCanonicalizer = 1;
-}
-
-def HAL_CommandBufferDispatchOp : HAL_Op<"command_buffer.dispatch"> {
   let summary = [{command buffer dispatch recording operation}];
   let description = [{
     Dispatches an execution request.
+    The request may execute overlapped with any other transfer operation or
+    dispatch made within the same barrier-defined sequence.
+
+    The provided constant data and binding list will be recorded into the
+    command buffer and need not remain live beyond the call. Push constants are
+    always 4-byte values and treated as opaque, meaning that they may be
+    bit-casted floats, bit-packed booleans, etc. The provided buffers may either
+    be HAL buffers or indirect references into the command buffer binding table.
   }];
 
   let arguments = (ins
@@ -1458,7 +1489,12 @@ def HAL_CommandBufferDispatchOp : HAL_Op<"command_buffer.dispatch"> {
     HAL_Ordinal:$entry_point,
     HAL_Dim:$workgroup_x,
     HAL_Dim:$workgroup_y,
-    HAL_Dim:$workgroup_z
+    HAL_Dim:$workgroup_z,
+    Variadic<I32>:$constants,
+    Variadic<AnyTypeOf<[Index, HAL_BufferType]>>:$binding_buffers,
+    Variadic<HAL_DeviceSize>:$binding_offsets,
+    Variadic<HAL_DeviceSize>:$binding_lengths,
+    HAL_DispatchFlagsAttr:$flags
   );
 
   let assemblyFormat = [{
@@ -1470,23 +1506,65 @@ def HAL_CommandBufferDispatchOp : HAL_Op<"command_buffer.dispatch"> {
         $workgroup_y `,`
         $workgroup_z
     `]` `)`
+    (`constants` `(` `[` $constants^ `]` `)`)?
+    `bindings` `(` `[`
+    custom<Bindings>($binding_buffers,
+                     type($binding_buffers),
+                     $binding_offsets,
+                     $binding_lengths)
+    `]` `)`
+    `flags` `(` $flags `)`
     attr-dict-with-keyword
   }];
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins
+      "Value":$commandBuffer,
+      "Value":$executable,
+      "Value":$entryPoint,
+      "ValueRange":$workgroups,
+      "ValueRange":$constants,
+      "ArrayRef<BindingValue>":$bindings,
+      "IREE::HAL::DispatchFlags":$flags
+    )>,
+  ];
+
+  let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 }
 
-def HAL_CommandBufferDispatchIndirectOp : HAL_Op<"command_buffer.dispatch.indirect"> {
+def HAL_CommandBufferDispatchIndirectOp : HAL_Op<"command_buffer.dispatch.indirect", [
+  AttrSizedOperandSegments,
+]> {
   let summary = [{command buffer indirect dispatch recording operation}];
   let description = [{
-    Dispatches an execution request with the dispatch parameters loaded from the
-    given buffer.
+    Dispatches an execution request with a deferred workgroup count.
+    This is the same as iree_hal_command_buffer_dispatch but the workgroup count
+    is read from the given |workgroups_ref| buffer at the specified offset as
+    3 uint32_t XYZ values immediately before performing the dispatch. This
+    allows prior dispatches within the command sequence to populate the
+    workgroup count or the workgroup count to change across submissions of the
+    same reusable command buffer.
+
+    The provided constant data and binding list will be recorded into the
+    command buffer and need not remain live beyond the call. Push constants are
+    always 4-byte values and treated as opaque, meaning that they may be
+    bit-casted floats, bit-packed booleans, etc. The provided buffers may either
+    be HAL buffers or indirect references into the command buffer binding table.
   }];
 
   let arguments = (ins
     HAL_CommandBuffer:$command_buffer,
     HAL_Executable:$executable,
     HAL_Ordinal:$entry_point,
-    HAL_BufferType:$workgroups_buffer,
-    HAL_DeviceSize:$workgroups_offset
+    AnyTypeOf<[Index, HAL_BufferType]>:$workgroups_buffer,
+    HAL_DeviceSize:$workgroups_offset,
+    Variadic<I32>:$constants,
+    Variadic<AnyTypeOf<[Index, HAL_BufferType]>>:$binding_buffers,
+    Variadic<HAL_DeviceSize>:$binding_offsets,
+    Variadic<HAL_DeviceSize>:$binding_lengths,
+    HAL_DispatchFlagsAttr:$flags
   );
 
   let assemblyFormat = [{
@@ -1495,55 +1573,36 @@ def HAL_CommandBufferDispatchIndirectOp : HAL_Op<"command_buffer.dispatch.indire
     `` `[` $entry_point `]`
     `workgroups` `(` $workgroups_buffer `:` type($workgroups_buffer) `)`
     `` `[` $workgroups_offset `]`
+    (`constants` `(` `[` $constants^ `]` `)`)?
+    `bindings` `(` `[`
+    custom<Bindings>($binding_buffers,
+                     type($binding_buffers),
+                     $binding_offsets,
+                     $binding_lengths)
+    `]` `)`
+    `flags` `(` $flags `)`
     attr-dict-with-keyword
   }];
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins
+      "Value":$commandBuffer,
+      "Value":$executable,
+      "Value":$entryPoint,
+      "Value":$workgroupsBuffer,
+      "Value":$workgroupsOffset,
+      "ValueRange":$constants,
+      "ArrayRef<BindingValue>":$bindings,
+      "IREE::HAL::DispatchFlags":$flags
+    )>,
+  ];
+
+  let hasCanonicalizer = 1;
+  let hasVerifier = 1;
 }
 
 } // OpGroupCommandBufferOps
-
-//===----------------------------------------------------------------------===//
-// !hal.descriptor_set_layout / iree_hal_descriptor_set_layout_t
-//===----------------------------------------------------------------------===//
-
-def OpGroupDescriptorSetLayoutOps : OpDocGroup {
-  let summary = "Descriptor set layout ops";
-  let description = [{
-    Ops for `!hal.descriptor_set_layout` / `iree_hal_descriptor_set_layout_t`.
-  }];
-}
-
-let opDocGroup = OpGroupDescriptorSetLayoutOps in {
-
-def HAL_DescriptorSetLayoutCreateOp : HAL_PureOp<"descriptor_set_layout.create", [
-  DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
-]> {
-  let summary = [{creates a descriptor set layout}];
-  let description = [{
-    Creates a descriptor set layout that defines the bindings used within a set.
-    The same descriptor set layout may be shared with many different executable
-    layouts and by doing so some runtime binding overhead when switching between
-    executables that use the same set layouts can be reduced.
-  }];
-
-  let arguments = (ins
-    HAL_Device:$device,
-    HAL_DescriptorSetLayoutFlagsAttr:$flags,
-    HAL_DescriptorSetLayoutBindingArrayAttr:$bindings
-  );
-  let results = (outs
-    HAL_DescriptorSetLayout:$result
-  );
-
-  let assemblyFormat = [{
-    `device` `(` $device `:` type($device) `)`
-    `flags` `(` $flags `)`
-    `bindings` `(` $bindings `)`
-    `:` type($result)
-    attr-dict-with-keyword
-  }];
-}
-
-} // OpGroupDescriptorSetLayoutOps
 
 //===----------------------------------------------------------------------===//
 // !hal.device / iree_hal_device_t
@@ -1555,6 +1614,41 @@ def OpGroupDeviceOps : OpDocGroup {
 }
 
 let opDocGroup = OpGroupDeviceOps in {
+
+def HAL_DeviceResolveOp : HAL_PureOp<"device.resolve", [
+  DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+]> {
+  let summary = [{resolves device handles based on affinity}];
+  let description = [{
+    Examples:
+    ```
+    // Returns a HAL device.
+    = hal.device.resolve on(#something) : !hal.device
+    // Returns a HAL device, allocator, and (optional) queue affinity.
+    = hal.device.resolve on(#something) : !hal.device, !hal.allocator, i64
+    // Returns a HAL allocator and (optional) queue affinity.
+    = hal.device.resolve on(#something) : !hal.allocator, i64
+    // Returns "any" device. Should only be used as a fallback.
+    = hal.device.resolve : !hal.device
+    ```
+  }];
+
+  let arguments = (ins
+    OptionalAttr<HAL_DeviceAffinityAttr>:$affinity
+  );
+  let results = (outs
+    Variadic<AnyTypeOf<[
+      HAL_Device,
+      HAL_Allocator,
+      I64,
+    ]>>:$results
+  );
+
+  let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
+    attr-dict `:` type($results)
+  }];
+}
 
 def HAL_DeviceAllocatorOp : HAL_PureOp<"device.allocator", [
   DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
@@ -1878,6 +1972,58 @@ def HAL_DeviceQueueExecuteOp : HAL_Op<"device.queue.execute"> {
   }];
 
   let hasCanonicalizer = 1;
+  let hasVerifier = 1;
+}
+
+def HAL_DeviceQueueExecuteIndirectOp : HAL_Op<"device.queue.execute.indirect", [
+  SameVariadicOperandSize,
+]> {
+  let summary = [{enqueues command buffer execution}];
+  let description = [{
+    Executes a command buffer on a device queue with the given binding table.
+    No commands will execute until the wait fence has been reached and the
+    signal fence will be signaled when all commands have completed.
+  }];
+
+  let arguments = (ins
+    HAL_Device:$device,
+    HAL_DeviceQueueAffinity:$queue_affinity,
+    HAL_Fence:$wait_fence,
+    HAL_Fence:$signal_fence,
+    HAL_CommandBuffer:$command_buffer,
+    Variadic<HAL_BufferType>:$binding_buffers,
+    Variadic<HAL_DeviceSize>:$binding_offsets,
+    Variadic<HAL_DeviceSize>:$binding_lengths
+  );
+  let results = (outs);
+
+  let assemblyFormat = [{
+    `<` $device `:` type($device) `>`
+    `affinity` `(` $queue_affinity `)`
+    `wait` `(` $wait_fence `)`
+    `signal` `(` $signal_fence `)`
+    `commands` `(` $command_buffer `)`
+    `bindings` `(` `[`
+    custom<BindingTable>($binding_buffers,
+                         type($binding_buffers),
+                         $binding_offsets,
+                         $binding_lengths)
+    `]` `)`
+    attr-dict-with-keyword
+  }];
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins
+      "Value":$device,
+      "Value":$queueAffinity,
+      "Value":$waitFence,
+      "Value":$signalFence,
+      "Value":$commandBuffer,
+      "ArrayRef<IREE::HAL::BindingValue>":$bindings
+    )>,
+  ];
+
   let hasVerifier = 1;
 }
 
@@ -2479,7 +2625,6 @@ def HAL_ExecutableBinaryOp : HAL_Op<"executable.binary", [
 
 def HAL_ExecutableCreateOp : HAL_PureOp<"executable.create", [
   DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
-  AttrSizedOperandSegments,
 ]> {
   let summary = [{creates an executable}];
   let description = [{
@@ -2499,7 +2644,6 @@ def HAL_ExecutableCreateOp : HAL_PureOp<"executable.create", [
   let arguments = (ins
     HAL_Device:$device,
     SymbolRefAttr:$executable_target,
-    Variadic<HAL_PipelineLayout>:$layouts,
     Variadic<I32>:$constants
   );
   let results = (outs
@@ -2509,7 +2653,6 @@ def HAL_ExecutableCreateOp : HAL_PureOp<"executable.create", [
   let assemblyFormat = [{
     `device` `(` $device `:` type($device) `)`
     `target` `(` $executable_target `)`
-    `layouts` `(` `[` $layouts `]` `)`
     (`constants` `(` `[` $constants^ `]` `)`)?
     `:` type($result)
     attr-dict-with-keyword
@@ -2605,7 +2748,7 @@ def OpGroupInstrumentOps : OpDocGroup {
 
 let opDocGroup = OpGroupInstrumentOps in {
 
-def HAL_InstrumentWorkgroupOp : HAL_Op<"instrument.workgroup", []> {
+def HAL_InstrumentWorkgroupOp : HAL_Op<"instrument.workgroup"> {
   let summary = [{emits a dispatch workgroup instrumentation event}];
   let description = [{
     Emits an `iree_instrument_dispatch_workgroup_t` event into the
@@ -2639,7 +2782,7 @@ def HAL_InstrumentWorkgroupOp : HAL_Op<"instrument.workgroup", []> {
   }];
 }
 
-def HAL_InstrumentPrintOp : HAL_Op<"instrument.print", []> {
+def HAL_InstrumentPrintOp : HAL_Op<"instrument.print"> {
   let summary = [{emits a human-readable printf-style string event}];
   let description = [{
     Formats a string using a limited subset of printf format specifiers and the
@@ -2664,8 +2807,8 @@ def HAL_InstrumentPrintOp : HAL_Op<"instrument.print", []> {
 }
 
 def HAL_InstrumentValueOp : HAL_Op<"instrument.value", [
-    AllTypesMatch<["operand", "result"]>,
-  ]> {
+  AllTypesMatch<["operand", "result"]>,
+]> {
   let summary = [{emits a scalar value instrumentation event}];
   let description = [{
     Emits a workgroup-specific typed value with the given workgroup-relative
@@ -2692,8 +2835,8 @@ def HAL_InstrumentValueOp : HAL_Op<"instrument.value", [
 }
 
 def HAL_InstrumentMemoryLoadOp : HAL_PureOp<"instrument.memory.load", [
-    AllTypesMatch<["loadValue", "result"]>,
-  ]> {
+  AllTypesMatch<["loadValue", "result"]>,
+]> {
   let summary = [{emits a memory load instrumentation event}];
   let description = [{
     Emits a workgroup-specific memory load event indicating that a number of
@@ -2719,8 +2862,8 @@ def HAL_InstrumentMemoryLoadOp : HAL_PureOp<"instrument.memory.load", [
 }
 
 def HAL_InstrumentMemoryStoreOp : HAL_PureOp<"instrument.memory.store", [
-    AllTypesMatch<["storeValue", "result"]>,
-  ]> {
+  AllTypesMatch<["storeValue", "result"]>,
+]> {
   let summary = [{emits a memory store instrumentation event}];
   let description = [{
     Emits a workgroup-specific memory store event indicating that a number of
@@ -2759,8 +2902,8 @@ def OpGroupInterfaceOps : OpDocGroup {
 let opDocGroup = OpGroupInterfaceOps in {
 
 def HAL_InterfaceWorkgroupIDOp : HAL_PureOp<"interface.workgroup.id", [
-    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
-  ]> {
+  DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+]> {
   let summary = [{returns the index of the current workgroup in the grid}];
   let description = [{
     The global workgroup ID of the current tile in the range of
@@ -2792,8 +2935,8 @@ def HAL_InterfaceWorkgroupIDOp : HAL_PureOp<"interface.workgroup.id", [
 }
 
 def HAL_InterfaceWorkgroupCountOp : HAL_PureOp<"interface.workgroup.count", [
-    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
-  ]> {
+  DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+]> {
   let summary = [{returns the total workgroup count of the grid}];
   let description = [{
     The total number of workgroups along each dimension in the dispatch grid.
@@ -2826,8 +2969,8 @@ def HAL_InterfaceWorkgroupCountOp : HAL_PureOp<"interface.workgroup.count", [
 }
 
 def HAL_InterfaceWorkgroupSizeOp : HAL_PureOp<"interface.workgroup.size", [
-    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
-  ]> {
+  DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+]> {
   let summary = [{returns the size of each workgroup in invocations}];
   let description = [{
     The number of local invocations within the current workgroup along each
@@ -2879,7 +3022,8 @@ def HAL_InterfaceConstantLoadOp : HAL_PureOp<"interface.constant.load"> {
   }];
 
   let arguments = (ins
-    HAL_HostSizeAttr:$index,
+    HAL_PipelineLayoutAttr:$layout,
+    HAL_HostSizeAttr:$ordinal,
     OptionalAttr<IndexAttr>:$alignment,
     OptionalAttr<ArrayAttr>:$values
   );
@@ -2888,17 +3032,20 @@ def HAL_InterfaceConstantLoadOp : HAL_PureOp<"interface.constant.load"> {
   );
 
   let assemblyFormat = [{
-    `` `[` $index `]`
+    `layout` `(` $layout `)`
+    `ordinal` `(` $ordinal `)`
     (`alignment` `(` $alignment^ `)`)?
     (`values` `(` $values^ `)`)?
     attr-dict `:` type($result)
   }];
+
+  let hasVerifier = 1;
 }
 
 def HAL_InterfaceBindingSubspanOp : HAL_PureOp<"interface.binding.subspan", [
-    AttrSizedOperandSegments,
-    Util_ShapeAwareOp,
-  ]> {
+  AttrSizedOperandSegments,
+  Util_ShapeAwareOp,
+]> {
   let summary = [{returns an alias to a subspan of interface binding data}];
   let description = [{
     Returns a subspan of an interface binding storage buffer in a generic type.
@@ -2911,9 +3058,8 @@ def HAL_InterfaceBindingSubspanOp : HAL_PureOp<"interface.binding.subspan", [
   }];
 
   let arguments = (ins
-    IndexAttr:$set,
+    HAL_PipelineLayoutAttr:$layout,
     IndexAttr:$binding,
-    HAL_DescriptorTypeAttr:$descriptor_type,
     Optional<HAL_DeviceSize>:$byte_offset,
     HAL_ShapeDynamicDims:$dynamic_dims,
     OptionalAttr<IndexAttr>:$alignment,
@@ -2924,9 +3070,8 @@ def HAL_InterfaceBindingSubspanOp : HAL_PureOp<"interface.binding.subspan", [
   );
 
   let assemblyFormat = [{
-    `set` `(` $set `)`
+    `layout` `(` $layout `)`
     `binding` `(` $binding `)`
-    `type` `(` custom<DescriptorType>($descriptor_type) `)`
     (`alignment` `(` $alignment^ `)`)?
     (`offset` `(` $byte_offset^ `)`)?
     (`flags` `(` $descriptor_flags^ `)`)?
@@ -2936,9 +3081,8 @@ def HAL_InterfaceBindingSubspanOp : HAL_PureOp<"interface.binding.subspan", [
   let builders = [
     OpBuilder<(ins
       "Type":$resultType,
-      "APInt":$set,
+      "IREE::HAL::PipelineLayoutAttr":$layout,
       "APInt":$binding,
-      "IREE::HAL::DescriptorType":$descriptor_type,
       "Value":$byte_offset,
       "ValueRange":$dynamic_dims,
       "IntegerAttr":$alignment,
@@ -2952,6 +3096,12 @@ def HAL_InterfaceBindingSubspanOp : HAL_PureOp<"interface.binding.subspan", [
     ValueRange getOperandDynamicDims(unsigned idx) { return ValueRange{}; }
     ValueRange getResultDynamicDims(unsigned idx) { return getDynamicDims(); }
 
+    // Returns the descriptor set binding metadata for the given set/binding.
+    IREE::HAL::PipelineBindingAttr getPipelineBindingAttr();
+
+    // Returns the type of the descriptor this binding references.
+    IREE::HAL::DescriptorType getDescriptorType();
+
     // Returns the alignment of the base buffer pointer (before offset).
     llvm::MaybeAlign getBaseAlignment();
 
@@ -2964,79 +3114,6 @@ def HAL_InterfaceBindingSubspanOp : HAL_PureOp<"interface.binding.subspan", [
 }
 
 } // OpGroupInterfaceOps
-
-//===----------------------------------------------------------------------===//
-// !hal.pipeline_layout / iree_hal_pipeline_layout_t
-//===----------------------------------------------------------------------===//
-
-def OpGroupPipelineLayoutOps : OpDocGroup {
-  let summary = "Pipeline layout ops";
-  let description = [{
-    Ops for `!hal.pipeline_layout` / `iree_hal_pipeline_layout_t`.
-  }];
-}
-
-let opDocGroup = OpGroupPipelineLayoutOps in {
-
-def HAL_PipelineLayoutCreateOp : HAL_PureOp<"pipeline_layout.create", [
-    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
-  ]> {
-  let summary = [{creates an pipeline layout}];
-  let description = [{
-    Creates an pipeline layout from the given descriptor sets and push
-    constant required size. Pipeline layouts can be shared across any
-    executable that uses the same layout and push constant information. Sharing
-    the layout between executables will reduce runtime binding overhead and it
-    is often worth the cost to allow a small number of unused bindings in one
-    executable such that it can share layouts with others that will be scheduled
-    adjacent to it.
-  }];
-
-  let arguments = (ins
-    HAL_Device:$device,
-    IndexAttr:$push_constants,
-    Variadic<HAL_DescriptorSetLayout>:$set_layouts
-  );
-  let results = (outs
-    HAL_PipelineLayout:$result
-  );
-
-  // TODO(benvanik): include descriptor set layout types.
-  let assemblyFormat = [{
-    `device` `(` $device `:` type($device) `)`
-    `push_constants` `(` $push_constants `)`
-    `layouts` `(` `[` $set_layouts `]` `)`
-    `:` type($result)
-    attr-dict-with-keyword
-  }];
-}
-
-def HAL_PipelineLayoutLookupOp : HAL_PureOp<"pipeline_layout.lookup", [
-  DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
-]> {
-  let summary = [{pipeline layout cache lookup pseudo-op}];
-  let description = [{
-    Used during conversion to provide a placeholder for a globally cached and
-    possibly lazy-initialized pipeline layout.
-  }];
-
-  let arguments = (ins
-    HAL_Device:$device,
-    HAL_PipelineLayoutAttr:$layout
-  );
-  let results = (outs
-    HAL_PipelineLayout:$result
-  );
-
-  let assemblyFormat = [{
-    `device` `(` $device `:` type($device) `)`
-    `layout` `(` $layout `)`
-    `:` type($result)
-    attr-dict-with-keyword
-  }];
-}
-
-} // OpGroupPipelineLayoutOps
 
 //===----------------------------------------------------------------------===//
 // !hal.fence / iree_hal_fence_t

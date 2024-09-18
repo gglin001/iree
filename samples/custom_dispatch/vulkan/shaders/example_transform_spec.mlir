@@ -12,7 +12,8 @@
       compute = fp32|int32, storage = b32, subgroup = shuffle|arithmetic,
       dot = none, mma = [], subgroup_size_choices = [64, 64],
       max_workgroup_sizes = [128, 128, 64], max_thread_count_per_workgroup = 128,
-      max_workgroup_memory_bytes = 16384>
+      max_workgroup_memory_bytes = 16384,
+      max_workgroup_counts = [65535, 65535, 65535]>
   >
 }>
 
@@ -35,15 +36,13 @@ module attributes {transform.with_named_sequence} {
         %c1_0 = arith.constant 1 : index
         hal.return %c1_0, %c1_0, %c1_0 : index, index, index
       }
-      layout(#hal.pipeline.layout<push_constants = 1, sets = [
-        <0, bindings = [
-            <0, storage_buffer, ReadOnly>,
-            <1, storage_buffer>
-        ]>
+      layout(#hal.pipeline.layout<constants = 1, bindings = [
+        #hal.pipeline.binding<storage_buffer, ReadOnly>,
+        #hal.pipeline.binding<storage_buffer>
       ]>)
       bindings([
-        #hal.interface.binding<0, 0>,
-        #hal.interface.binding<0, 1>
+        #hal.interface.binding<0>,
+        #hal.interface.binding<1>
       ])
       objects({
         #spirv_target ordinal(0) = [

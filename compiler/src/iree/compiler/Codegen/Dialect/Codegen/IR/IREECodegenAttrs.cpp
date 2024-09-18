@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/DialectImplementation.h"
+#include "mlir/IR/StorageUniquerSupport.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.cpp.inc"
@@ -361,6 +362,98 @@ CompilationInfoAttr::verify(function_ref<InFlightDiagnostic()> emitError,
     return emitError() << "invalid translation info: " << translationInfo;
   }
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// iree_codegen.workgroup_mapping
+//===----------------------------------------------------------------------===//
+
+WorkgroupMappingAttr WorkgroupMappingAttr::get(MLIRContext *context,
+                                               WorkgroupId id) {
+  return WorkgroupMappingAttr::get(context, id, /*delinearizedDim=*/0);
+}
+
+LogicalResult
+WorkgroupMappingAttr::verify(function_ref<InFlightDiagnostic()> emitError,
+                             WorkgroupId id, int64_t delinearizedDim) {
+  if (delinearizedDim > 0 && id != WorkgroupId::IdZ) {
+    return emitError() << "illegal to use `delinearizationDim` for "
+                       << stringifyWorkgroupId(id);
+  }
+  return success();
+}
+
+WorkgroupMappingAttr
+WorkgroupMappingAttr::getAttributeFromMappingId(MLIRContext *context,
+                                                int64_t mappingId) {
+  int64_t linearizedDim = std::max<int64_t>(mappingId - 2, 0);
+  WorkgroupId id =
+      symbolizeWorkgroupId(std::min<uint64_t>(mappingId, 2)).value();
+  return WorkgroupMappingAttr::get(context, id, linearizedDim);
+}
+
+bool WorkgroupMappingAttr::operator<(const WorkgroupMappingAttr &rhs) const {
+  return getMappingId() < rhs.getMappingId();
+}
+
+LogicalResult WorkgroupMappingAttr::verifyAttrList(MLIRContext *context,
+                                                   Location loc,
+                                                   ArrayRef<Attribute> attrs) {
+  if (attrs.empty()) {
+    return success();
+  }
+  SmallVector<IREE::Codegen::WorkgroupMappingAttr> mappingAttrs;
+  llvm::SmallDenseSet<IREE::Codegen::WorkgroupMappingAttr, 4> attrSet;
+  auto emitError = mlir::detail::getDefaultDiagnosticEmitFn(loc);
+  for (auto attr : attrs) {
+    auto typedAttr =
+        ::mlir::dyn_cast_or_null<IREE::Codegen::WorkgroupMappingAttr>(attr);
+    if (!attr) {
+      return emitError() << "expected all the mapping attribute to be of "
+                            "`WorkgroupMappingAttr` type";
+    }
+    if (attrSet.contains(typedAttr)) {
+      return emitError() << "illegal to repeat mapping specification";
+    }
+    attrSet.insert(typedAttr);
+    mappingAttrs.push_back(typedAttr);
+  }
+
+  llvm::sort(mappingAttrs);
+
+  // First element has to be `workgroup_mapping<x>`.
+  if (mappingAttrs.front().getId() != IREE::Codegen::WorkgroupId::IdX) {
+    return emitError() << "missing `workgroup_mapping<x>`";
+  }
+  if (mappingAttrs.size() == 1) {
+    return success();
+  }
+
+  if (mappingAttrs[1].getId() != IREE::Codegen::WorkgroupId::IdY) {
+    return emitError() << "missing `workgroup_mapping<y>`";
+  }
+  if (mappingAttrs.size() == 2) {
+    return success();
+  }
+
+  auto mappingAttrsRef = ArrayRef<IREE::Codegen::WorkgroupMappingAttr>(
+      mappingAttrs.begin(), mappingAttrs.end());
+  for (auto [index, attr] : llvm::enumerate(mappingAttrsRef.drop_front(2))) {
+    if (attr.getDelinearizedDim() != index) {
+      return emitError() << "missing `workgroup_mapping<z:" << index;
+    }
+  }
+  return success();
+}
+
+int64_t WorkgroupMappingAttr::getMappingId() const {
+  return llvm::to_underlying(getId()) + getDelinearizedDim();
+}
+
+bool WorkgroupMappingAttr::isLinearMapping() const { return false; }
+
+int64_t WorkgroupMappingAttr::getRelativeIndex() const {
+  return getMappingId();
 }
 
 //===----------------------------------------------------------------------===//

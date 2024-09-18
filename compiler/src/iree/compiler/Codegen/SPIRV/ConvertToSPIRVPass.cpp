@@ -17,16 +17,11 @@
 #include <cstdint>
 #include <tuple>
 
-#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
-#include "iree/compiler/Codegen/SPIRV/PassDetail.h"
 #include "iree/compiler/Codegen/SPIRV/Passes.h"
 #include "iree/compiler/Codegen/SPIRV/Utils.h"
-#include "iree/compiler/Codegen/Utils/MarkerUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
-#include "iree/compiler/Dialect/Util/IR/UtilOps.h"
-#include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -41,15 +36,11 @@
 #include "mlir/Conversion/TensorToSPIRV/TensorToSPIRV.h"
 #include "mlir/Conversion/VectorToSPIRV/VectorToSPIRV.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
-#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
-#include "mlir/Dialect/SPIRV/IR/SPIRVEnums.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVOps.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVTypes.h"
 #include "mlir/Dialect/SPIRV/Transforms/SPIRVConversion.h"
@@ -71,6 +62,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir::iree_compiler {
+
+#define GEN_PASS_DEF_CONVERTTOSPIRVPASS
+#include "iree/compiler/Codegen/SPIRV/Passes.h.inc"
 
 namespace {
 
@@ -123,7 +117,7 @@ createResourceVariable(Location loc, const SubspanResourceInfo &resource,
 /// Returns the (set, binding) pair for the given interface op.
 static std::pair<uint32_t, uint32_t>
 getInterfaceSetAndBinding(IREE::HAL::InterfaceBindingSubspanOp op) {
-  return {op.getSet().getSExtValue(), op.getBinding().getSExtValue()};
+  return {0, op.getBinding().getSExtValue()};
 }
 
 /// Scans all hal.interface.binding.subspan ops in `module`, creates their
@@ -295,8 +289,8 @@ struct HALInterfaceLoadConstantConverter final
     assert(exportOps.size() == 1);
     auto layoutAttr = exportOps.front().getLayout();
 
-    uint64_t elementCount = layoutAttr.getPushConstants();
-    unsigned index = loadOp.getIndex().getZExtValue();
+    uint64_t elementCount = layoutAttr.getConstants();
+    unsigned index = loadOp.getOrdinal().getZExtValue();
 
     // The following function generates SPIR-V ops with i32 types. So it does
     // type "conversion" (index -> i32) implicitly. This is expected to be
@@ -310,10 +304,10 @@ struct HALInterfaceLoadConstantConverter final
   }
 };
 
-/// A pattern to convert hal.interface.workgroup.id/count into corresponding
-/// SPIR-V Builtin ops.
+/// A pattern to convert hal.interface.workgroup.id/count/size into
+/// corresponding SPIR-V Builtin ops.
 template <typename InterfaceOpTy, spirv::BuiltIn builtin>
-struct HALInterfaceWorkgroupIdAndCountConverter final
+struct HALInterfaceWorkgroupOpsConverter final
     : OpConversionPattern<InterfaceOpTy> {
   using OpConversionPattern<InterfaceOpTy>::OpConversionPattern;
 
@@ -478,13 +472,16 @@ struct RemoveIdentityConversionCast final
 /// Converts remaining interface ops into SPIR-V global variables, GPU processor
 /// ID ops into SPIR-V global variables, loop/standard ops into corresponding
 /// SPIR-V ops.
-class ConvertToSPIRVPass final : public ConvertToSPIRVBase<ConvertToSPIRVPass> {
+class ConvertToSPIRVPass final
+    : public impl::ConvertToSPIRVPassBase<ConvertToSPIRVPass> {
 public:
+  using impl::ConvertToSPIRVPassBase<
+      ConvertToSPIRVPass>::ConvertToSPIRVPassBase;
+  explicit ConvertToSPIRVPass(unsigned indexBits) : indexBits(indexBits) {}
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<spirv::SPIRVDialect>();
   }
-
-  explicit ConvertToSPIRVPass(unsigned indexBits) : indexBits(indexBits) {}
 
   LogicalResult initializeOptions(
       StringRef options,
@@ -510,10 +507,7 @@ void ConvertToSPIRVPass::runOnOperation() {
   if (moduleOp.getBody()->empty())
     return;
 
-  bool useIndirectBindings = false;
-  if (UnitAttr indirectBindingsAttr = getIndirectBindingsAttr(moduleOp)) {
-    useIndirectBindings = true;
-  };
+  bool useIndirectBindings = usesIndirectBindingsAttr(moduleOp);
 
   for (auto funcOp : moduleOp.getOps<mlir::FunctionOpInterface>()) {
     auto exportOp = getEntryPoint(funcOp);
@@ -537,16 +531,6 @@ void ConvertToSPIRVPass::runOnOperation() {
     std::optional<int> subgroupSize32;
     if (subgroupSize && subgroupSize->isNonNegative()) {
       subgroupSize32 = subgroupSize->getZExtValue();
-    }
-
-    for (IREE::HAL::DescriptorSetLayoutAttr setLayout :
-         exportOp->getLayout().getSetLayouts()) {
-      bool isIndirect =
-          setLayout.getFlags() == IREE::HAL::DescriptorSetLayoutFlags::Indirect;
-      if (isIndirect != useIndirectBindings) {
-        exportOp->emitOpError("is incompatible with the target configuration");
-        return signalPassFailure();
-      }
     }
 
     funcOp->setAttr(
@@ -596,17 +580,21 @@ void ConvertToSPIRVPass::runOnOperation() {
     }
   }
 
-  spirv::TargetEnvAttr targetAttr = getSPIRVTargetEnvAttr(moduleOp);
-  moduleOp->setAttr(spirv::getTargetEnvAttrName(), targetAttr);
-
   if (indexBits != 32 && indexBits != 64) {
     moduleOp.emitOpError(
-        "Only 32-bit or 64-bit indices are supported for SPIR-V");
+        "only 32-bit or 64-bit indices are supported for SPIR-V");
     return signalPassFailure();
   }
-
   bool use64bitIndex = indexBits == 64;
+
+  auto targetAttr = moduleOp->getAttrOfType<spirv::TargetEnvAttr>(
+      spirv::getTargetEnvAttrName());
+  if (!targetAttr) {
+    moduleOp.emitOpError("should contain a spirv.target_env attribute");
+    return signalPassFailure();
+  }
   spirv::TargetEnv targetEnv(targetAttr);
+
   if (use64bitIndex && !targetEnv.allows(spirv::Capability::Int64)) {
     moduleOp.emitOpError(
         "64-bit indices are not supported for the specified target "
@@ -673,10 +661,12 @@ void ConvertToSPIRVPass::runOnOperation() {
   // Add IREE HAL interface op conversions.
   patterns.add<
       HALInterfaceLoadConstantConverter,
-      HALInterfaceWorkgroupIdAndCountConverter<
-          IREE::HAL::InterfaceWorkgroupIDOp, spirv::BuiltIn::WorkgroupId>,
-      HALInterfaceWorkgroupIdAndCountConverter<
-          IREE::HAL::InterfaceWorkgroupCountOp, spirv::BuiltIn::NumWorkgroups>>(
+      HALInterfaceWorkgroupOpsConverter<IREE::HAL::InterfaceWorkgroupIDOp,
+                                        spirv::BuiltIn::WorkgroupId>,
+      HALInterfaceWorkgroupOpsConverter<IREE::HAL::InterfaceWorkgroupSizeOp,
+                                        spirv::BuiltIn::WorkgroupSize>,
+      HALInterfaceWorkgroupOpsConverter<IREE::HAL::InterfaceWorkgroupCountOp,
+                                        spirv::BuiltIn::NumWorkgroups>>(
       typeConverter, context);
 
   // Performs a prelimiary step to analyze all hal.interface.binding.subspan ops

@@ -45,6 +45,7 @@ struct WgpDetails {
   std::array<int32_t, 3> maxWorkgroupSizes;
   uint32_t maxThreadSize;
   uint32_t maxWorkgroupMemoryBytes;
+  std::array<int32_t, 3> maxWorkgroupCounts;
 };
 
 // Chip level feature/limit details
@@ -106,7 +107,9 @@ TargetAttr createTargetAttr(const TargetDetails &details, StringRef arch,
       MMAOpsArrayAttr::get(context, mmaAttrs),
       DenseI32ArrayAttr::get(context, subgroupSizes),
       DenseI32ArrayAttr::get(context, wgp->maxWorkgroupSizes),
-      wgp->maxThreadSize, wgp->maxWorkgroupMemoryBytes, DictionaryAttr{});
+      wgp->maxThreadSize, wgp->maxWorkgroupMemoryBytes,
+      DenseI32ArrayAttr::get(context, wgp->maxWorkgroupCounts),
+      DictionaryAttr{});
 
   TargetChipAttr targetChip;
   if (details.chip)
@@ -118,75 +121,114 @@ TargetAttr createTargetAttr(const TargetDetails &details, StringRef arch,
 
 //===----------------------------------------------------------------------===//
 // Known AMD target details
+//
+// Note: the max workgroup size is given as signed int32 max because MLIR's
+// `index` is signed and the workgroup ID is sign-extended, not zero-extended,
+// to 64-bits.
 //===----------------------------------------------------------------------===//
 
 const WgpDetails *getCDNA3WgpDetails() {
   static const MMAIntrinsic cdna3MMAOps[] = {
-      MMAIntrinsic::MFMA_F16_16x16x16_F32,
-      MMAIntrinsic::MFMA_F16_32x32x8_F32,
-      MMAIntrinsic::MFMA_I8_16x16x32_I32,
-      MMAIntrinsic::MFMA_I8_32x32x16_I32,
+      MMAIntrinsic::MFMA_F32_16x16x4_F32,
+      MMAIntrinsic::MFMA_F32_16x16x16_F16,
+      MMAIntrinsic::MFMA_F32_32x32x8_F16,
+      MMAIntrinsic::MFMA_F32_16x16x32_F8E4M3FNUZ,
+      MMAIntrinsic::MFMA_I32_16x16x32_I8,
+      MMAIntrinsic::MFMA_I32_32x32x16_I8,
   };
-  static const WgpDetails cdna3Wgp = {
-      allComputeBits,   allStorageBits,          allSubgroupOps,
-      allDotProductOps, ARRAY_SIZE(cdna3MMAOps), cdna3MMAOps,
-      {64, 64},         {1024, 1024, 1024},      1024,
-      64 * 1024};
+  static const WgpDetails cdna3Wgp = {allComputeBits,
+                                      allStorageBits,
+                                      allSubgroupOps,
+                                      allDotProductOps,
+                                      ARRAY_SIZE(cdna3MMAOps),
+                                      cdna3MMAOps,
+                                      {64, 64},
+                                      {1024, 1024, 1024},
+                                      1024,
+                                      64 * 1024,
+                                      {0x7fffffff, 0x7fffffff, 0x7fffffff}};
   return &cdna3Wgp;
 }
 
 const WgpDetails *getCDNA2WgpDetails() {
   static const MMAIntrinsic cdna2MMAOps[] = {
-      MMAIntrinsic::MFMA_F16_16x16x16_F32,
-      MMAIntrinsic::MFMA_F16_32x32x8_F32,
+      MMAIntrinsic::MFMA_F32_16x16x16_F16,
+      MMAIntrinsic::MFMA_F32_32x32x8_F16,
+      MMAIntrinsic::MFMA_I32_16x16x16_I8,
+      MMAIntrinsic::MFMA_I32_32x32x8_I8,
   };
-  static const WgpDetails cdna2Wgp = {
-      allComputeBits,   allStorageBits,          allSubgroupOps,
-      allDotProductOps, ARRAY_SIZE(cdna2MMAOps), cdna2MMAOps,
-      {64, 64},         {1024, 1024, 1024},      1024,
-      64 * 1024};
+  static const WgpDetails cdna2Wgp = {allComputeBits,
+                                      allStorageBits,
+                                      allSubgroupOps,
+                                      allDotProductOps,
+                                      ARRAY_SIZE(cdna2MMAOps),
+                                      cdna2MMAOps,
+                                      {64, 64},
+                                      {1024, 1024, 1024},
+                                      1024,
+                                      64 * 1024,
+                                      {0x7fffffff, 0x7fffffff, 0x7fffffff}};
   return &cdna2Wgp;
 }
 
 const WgpDetails *getCDNA1WgpDetails() {
   static const MMAIntrinsic cdna1MMAOps[] = {
-      MMAIntrinsic::MFMA_F16_16x16x16_F32,
-      MMAIntrinsic::MFMA_F16_32x32x8_F32,
+      MMAIntrinsic::MFMA_F32_16x16x16_F16,
+      MMAIntrinsic::MFMA_F32_32x32x8_F16,
   };
-  static const WgpDetails cdna1Wgp = {
-      allComputeBits,   allStorageBits,          allSubgroupOps,
-      allDotProductOps, ARRAY_SIZE(cdna1MMAOps), cdna1MMAOps,
-      {64, 64},         {1024, 1024, 1024},      1024,
-      64 * 1024};
+  static const WgpDetails cdna1Wgp = {allComputeBits,
+                                      allStorageBits,
+                                      allSubgroupOps,
+                                      allDotProductOps,
+                                      ARRAY_SIZE(cdna1MMAOps),
+                                      cdna1MMAOps,
+                                      {64, 64},
+                                      {1024, 1024, 1024},
+                                      1024,
+                                      64 * 1024,
+                                      {0x7fffffff, 0x7fffffff, 0x7fffffff}};
   return &cdna1Wgp;
 }
 
 const WgpDetails *getRDNA3WgpDetails() {
   static const MMAIntrinsic rdna3MMAOps[] = {
-      MMAIntrinsic::WMMA_F16_16x16x16_F32,
+      MMAIntrinsic::WMMA_F32_16x16x16_F16,
       MMAIntrinsic::WMMA_F16_16x16x16_F16,
+      MMAIntrinsic::WMMA_I32_16x16x16_I8,
   };
-  static const WgpDetails rdna3Wgp = {
-      allComputeBits,   allStorageBits,          allSubgroupOps,
-      allDotProductOps, ARRAY_SIZE(rdna3MMAOps), rdna3MMAOps,
-      {32, 64},         {1024, 1024, 1024},      1024,
-      64 * 1024};
+  static const WgpDetails rdna3Wgp = {allComputeBits,
+                                      allStorageBits,
+                                      allSubgroupOps,
+                                      allDotProductOps,
+                                      ARRAY_SIZE(rdna3MMAOps),
+                                      rdna3MMAOps,
+                                      {32, 64},
+                                      {1024, 1024, 1024},
+                                      1024,
+                                      64 * 1024,
+                                      {0x7fffffff, 0x7fffffff, 0x7fffffff}};
   return &rdna3Wgp;
 }
 
 const WgpDetails *getRDNA2WgpDetails() {
   static const WgpDetails rdna2Wgp = {
-      allComputeBits, allStorageBits,     allSubgroupOps, allDotProductOps,
-      /*mmaCount=*/0, /*mmaOps=*/nullptr, {32, 64},       {1024, 1024, 1024},
-      1024,           64 * 1024};
+      allComputeBits,     allStorageBits,
+      allSubgroupOps,     allDotProductOps,
+      /*mmaCount=*/0,
+      /*mmaOps=*/nullptr, {32, 64},
+      {1024, 1024, 1024}, 1024,
+      64 * 1024,          {0x7fffffff, 0x7fffffff, 0x7fffffff}};
   return &rdna2Wgp;
 }
 
 const WgpDetails *getRDNA1WgpDetails() {
   static const WgpDetails rdna1Wgp = {
-      allComputeBits, allStorageBits,     allSubgroupOps, DotProductOps::None,
-      /*mmaCount=*/0, /*mmaOps=*/nullptr, {32, 64},       {1024, 1024, 1024},
-      1024,           64 * 1024};
+      allComputeBits,     allStorageBits,
+      allSubgroupOps,     DotProductOps::None,
+      /*mmaCount=*/0,
+      /*mmaOps=*/nullptr, {32, 64},
+      {1024, 1024, 1024}, 1024,
+      64 * 1024,          {0x7fffffff, 0x7fffffff, 0x7fffffff}};
   return &rdna1Wgp;
 }
 
@@ -279,7 +321,9 @@ std::optional<TargetDetails> getAppleTargetDetails() {
   static const WgpDetails wgp = {
       computeBitwdiths,   allStorageBits,     allSubgroupOps,  allDotProductOps,
       /*mmaCount=*/0,     /*mmaOps=*/nullptr, {32, 32},
-      {1024, 1024, 1024}, 1024,               32 * 1024};
+      {1024, 1024, 1024}, 1024,               32 * 1024,
+      // Note: These values have not been checked and may be higher
+      {0xffff, 0xffff, 0xffff}};
   // clang-format on
 
   return TargetDetails{&wgp, nullptr};
@@ -300,7 +344,9 @@ const WgpDetails *getValhallWgpDetails() {
   static const WgpDetails valhallWgp = {
       computeBitwdiths,   allStorageBits,     allSubgroupOps,  allDotProductOps,
       /*mmaCount=*/0,     /*mmaOps=*/nullptr, {16, 16},        {512, 512, 512},
-      512,                32 * 1024};
+      512,                32 * 1024,
+      // Note: These values have not been checked and may be higher
+      {0xffff, 0xffff, 0xffff}};
   // clang-format on
   return &valhallWgp;
 }
@@ -353,40 +399,53 @@ StringRef normalizeARMGPUTarget(StringRef target) {
 
 const WgpDetails *getAmpereWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
-      MMAIntrinsic::WMMA_F16_16x16x16_F32,
+      MMAIntrinsic::WMMA_F32_16x16x16_F16,
       MMAIntrinsic::WMMA_F16_16x16x16_F16,
   };
-  static const WgpDetails ampereWgp = {
-      allComputeBits,   allStorageBits,     allSubgroupOps,
-      allDotProductOps, ARRAY_SIZE(mmaOps), mmaOps,
-      {32, 32},         {1024, 1024, 1024}, 1024,
-      163 * 1024};
+  static const WgpDetails ampereWgp = {allComputeBits,
+                                       allStorageBits,
+                                       allSubgroupOps,
+                                       allDotProductOps,
+                                       ARRAY_SIZE(mmaOps),
+                                       mmaOps,
+                                       {32, 32},
+                                       {1024, 1024, 1024},
+                                       1024,
+                                       163 * 1024,
+                                       {0x7fffffff, 0xffff, 0xffff}};
   return &ampereWgp;
 }
 
 const WgpDetails *getTuringWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
-      MMAIntrinsic::WMMA_F16_16x16x16_F32,
+      MMAIntrinsic::WMMA_F32_16x16x16_F16,
       MMAIntrinsic::WMMA_F16_16x16x16_F16,
   };
-  static const WgpDetails turingWgp = {
-      allComputeBits,   allStorageBits,     allSubgroupOps,
-      allDotProductOps, ARRAY_SIZE(mmaOps), mmaOps,
-      {32, 32},         {1024, 1024, 1024}, 1024,
-      64 * 1024};
+  static const WgpDetails turingWgp = {allComputeBits,
+                                       allStorageBits,
+                                       allSubgroupOps,
+                                       allDotProductOps,
+                                       ARRAY_SIZE(mmaOps),
+                                       mmaOps,
+                                       {32, 32},
+                                       {1024, 1024, 1024},
+                                       1024,
+                                       64 * 1024,
+                                       {0x7fffffff, 0xffff, 0xffff}};
   return &turingWgp;
 }
 
 const WgpDetails *getVoltaWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
-      MMAIntrinsic::WMMA_F16_16x16x16_F32,
+      MMAIntrinsic::WMMA_F32_16x16x16_F16,
       MMAIntrinsic::WMMA_F16_16x16x16_F16,
   };
   // clang-format off
   static const WgpDetails voltaWgp = {
       allComputeBits,     allStorageBits, allSubgroupOps, DotProductOps::None,
       ARRAY_SIZE(mmaOps), mmaOps,         {32, 32},       {1024, 1024, 1024},
-      1024,               96 * 1024};
+      1024,               96 * 1024,
+      {0x7fffffff, 0xffff, 0xffff}};
   // clang-format on
   return &voltaWgp;
 }
@@ -396,7 +455,8 @@ const WgpDetails *getPascalWgpDetails() {
   static const WgpDetails pascalWgp = {
       allComputeBits, allStorageBits, allSubgroupOps, DotProductOps::None,
       0, nullptr, // Pascal does not have tensor core support.
-      {32, 32}, {1024, 1024, 1024}, 1024, 48 * 1024};
+      {32, 32}, {1024, 1024, 1024}, 1024, 48 * 1024,
+      {0x7fffffff, 0xffff, 0xffff}};
   // clang-format on
   return &pascalWgp;
 }
@@ -477,7 +537,9 @@ const WgpDetails *getAdrenoWgpDetails() {
       computeBitwdiths,   storageBitwidths,   allSubgroupOps,
       allDotProductOps,   /*mmaCount=*/0,     /*mmaOps=*/nullptr,
       {64, 64},           {1024, 1024, 1024}, 1024,
-      32 * 1024};
+      32 * 1024,
+      // Note: These values have not been checked and may be higher
+      {0xffff, 0xffff, 0xffff}};
   // clang-format on
   return &adrenoWgp;
 }
@@ -543,7 +605,8 @@ const WgpDetails *getAndroidBaseline2022WgpDetails() {
       computeBitwdiths,    storageBitwidths,   SubgroupOps::None,
       DotProductOps::None, /*mmaCount=*/0,     /*mmaOps=*/nullptr,
       {64, 64},            {128, 128, 64},     128,
-      16 * 1024};
+      16 * 1024,
+      {0xffff, 0xffff, 0xffff}};
   // clang-format on
   return &androidWgp;
 }
@@ -563,7 +626,7 @@ std::optional<TargetDetails> getAndroidProfileDetails(StringRef target) {
 //===----------------------------------------------------------------------===//
 
 TargetAttr getMetalTargetDetails(MLIRContext *context) {
-  return createTargetAttr(*getAppleTargetDetails(), /*arch=*/"",
+  return createTargetAttr(*getAppleTargetDetails(), /*arch=*/"apple",
                           /*features=*/"spirv:v1.3,cap:Shader", context);
 }
 
@@ -603,6 +666,8 @@ TargetAttr getVulkanTargetDetails(llvm::StringRef target,
   // SPIR-V 1.4. For non-mobile GPUs we target Vulkan 1.3, which accepts
   // SPIR-V 1.6 as the maximum.
 
+  // TODO: Add feature bits for physical storage buffer.
+
   if (std::optional<TargetDetails> details = getAMDGPUTargetDetails(target)) {
     return createTargetAttr(*details, normalizeAMDGPUTarget(target),
                             /*features=*/"spirv:v1.6,cap:Shader", context);
@@ -641,7 +706,8 @@ TargetAttr getWebGPUTargetDetails(MLIRContext *context) {
       computeBitwdiths,    storageBitwidths,   SubgroupOps::None,
       DotProductOps::None, /*mmaCount=*/0,     /*mmaOps=*/nullptr,
       {32, 32},            {128, 128, 64},     128,
-      16 * 1024};
+      16 * 1024,
+      {0xffff, 0xffff, 0xffff}};
   // clang-format on
 
   return createTargetAttr(
@@ -654,7 +720,8 @@ TargetAttr getFullTarget(StringRef targetAPI, StringRef aliasTarget,
                          StringRef features, MLIRContext *context) {
   return llvm::StringSwitch<TargetAttr>(targetAPI)
       .Case("cuda", getCUDATargetDetails(aliasTarget, features, context))
-      .Case("rocm", getHIPTargetDetails(aliasTarget, features, context))
+      .Case("hip", getHIPTargetDetails(aliasTarget, features, context))
+      .Case("vulkan", getVulkanTargetDetails(aliasTarget, context))
       .Default(nullptr);
 }
 

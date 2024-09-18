@@ -1732,6 +1732,102 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
+    e2e_matmul_vmvx_experimental_dt_f32_f32
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f32"
+    "--acc_type=f32"
+    "--shapes=small"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "vmvx"
+  DRIVERS
+    "local-task"
+  COMPILER_FLAGS
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-enable-early-materialization=false"
+  LABELS
+
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_vmvx_experimental_dt_uk_f32_f32
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f32"
+    "--acc_type=f32"
+    "--shapes=small"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "vmvx"
+  DRIVERS
+    "local-task"
+  COMPILER_FLAGS
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-enable-early-materialization=false"
+  LABELS
+
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_cuda_experimental_dt_f32_f32
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f32"
+    "--acc_type=f32"
+    "--shapes=small"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "cuda"
+  DRIVERS
+    "cuda"
+  COMPILER_FLAGS
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-enable-early-materialization=false"
+  LABELS
+
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_spirv_experimental_dt_f32_f32
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f32"
+    "--acc_type=f32"
+    "--shapes=small"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "vulkan-spirv"
+  DRIVERS
+    "vulkan"
+  COMPILER_FLAGS
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-enable-early-materialization=false"
+  LABELS
+
+)
+
+iree_generated_e2e_runner_test(
+  NAME
     e2e_matmul_vmvx_dt_uk_i8_small
   TEST_TYPE
     matmul
@@ -1815,7 +1911,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "cuda"
   COMPILER_FLAGS
-    "--iree-hal-cuda-llvm-target-arch=sm_80"
+    "--iree-cuda-target=sm_80"
   LABELS
     "noasan"
     "nomsan"
@@ -1841,7 +1937,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "cuda"
   COMPILER_FLAGS
-    "--iree-hal-cuda-llvm-target-arch=sm_80"
+    "--iree-cuda-target=sm_80"
   LABELS
     "noasan"
     "nomsan"
@@ -1867,7 +1963,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "cuda"
   COMPILER_FLAGS
-    "--iree-hal-cuda-llvm-target-arch=sm_80"
+    "--iree-cuda-target=sm_80"
   LABELS
     "noasan"
     "nomsan"
@@ -1894,7 +1990,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "cuda"
   COMPILER_FLAGS
-    "--iree-hal-cuda-llvm-target-arch=sm_80"
+    "--iree-cuda-target=sm_80"
   LABELS
     "noasan"
     "nomsan"
@@ -1921,7 +2017,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "cuda"
   COMPILER_FLAGS
-    "--iree-hal-cuda-llvm-target-arch=sm_80"
+    "--iree-cuda-target=sm_80"
   LABELS
     "noasan"
     "nomsan"
@@ -1948,7 +2044,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "cuda"
   COMPILER_FLAGS
-    "--iree-hal-cuda-llvm-target-arch=sm_80"
+    "--iree-cuda-target=sm_80"
   LABELS
     "noasan"
     "nomsan"
@@ -1974,7 +2070,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "cuda"
   COMPILER_FLAGS
-    "--iree-flow-split-matmul-reduction=4"
+    "--iree-dispatch-creation-split-matmul-reduction=4"
   LABELS
     "noasan"
     "nomsan"
@@ -2002,7 +2098,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "vulkan"
   COMPILER_FLAGS
-    "--iree-vulkan-target-triple=valhall-unknown-android31"
+    "--iree-vulkan-target=valhall"
   LABELS
     "requires-gpu-nvidia"
     "vulkan_uses_vk_khr_shader_float16_int8"
@@ -2026,7 +2122,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "vulkan"
   COMPILER_FLAGS
-    "--iree-vulkan-target-triple=valhall-unknown-android31"
+    "--iree-vulkan-target=valhall"
   LABELS
     "requires-gpu-nvidia"
     "vulkan_uses_vk_khr_shader_float16_int8"
@@ -2050,7 +2146,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "vulkan"
   COMPILER_FLAGS
-    "--iree-vulkan-target-triple=valhall-unknown-android31"
+    "--iree-vulkan-target=valhall"
   LABELS
     "requires-gpu-nvidia"
     "vulkan_uses_vk_khr_shader_float16_int8"
@@ -2074,7 +2170,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "vulkan"
   COMPILER_FLAGS
-    "--iree-vulkan-target-triple=ampere-unknown-linux"
+    "--iree-vulkan-target=ampere"
   LABELS
     "requires-gpu-sm80"
     "vulkan_uses_vk_khr_shader_float16_int8"
@@ -2098,7 +2194,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "vulkan"
   COMPILER_FLAGS
-    "--iree-vulkan-target-triple=ampere-unknown-linux"
+    "--iree-vulkan-target=ampere"
   LABELS
     "requires-gpu-sm80"
     "vulkan_uses_vk_khr_shader_float16_int8"
@@ -2122,7 +2218,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "vulkan"
   COMPILER_FLAGS
-    "--iree-vulkan-target-triple=ampere-unknown-linux"
+    "--iree-vulkan-target=ampere"
   LABELS
     "requires-gpu-sm80"
     "vulkan_uses_vk_khr_shader_float16_int8"
@@ -2146,7 +2242,7 @@ iree_generated_e2e_runner_test(
   DRIVERS
     "vulkan"
   COMPILER_FLAGS
-    "--iree-vulkan-target-triple=rdna3-unknown-linux"
+    "--iree-vulkan-target=rdna3"
   RUNNER_ARGS
     "--require_exact_results=false"
   LABELS
@@ -2162,7 +2258,7 @@ if(IREE_HIP_TEST_TARGET_CHIP MATCHES "^gfx9")
 
 unset(IREE_HIP_TEST_COMPILER_FLAGS)
 list(APPEND IREE_HIP_TEST_COMPILER_FLAGS
-  "--iree-rocm-target-chip=${IREE_HIP_TEST_TARGET_CHIP}"
+  "--iree-hip-target=${IREE_HIP_TEST_TARGET_CHIP}"
 )
 
 iree_generated_e2e_runner_test(
@@ -2174,6 +2270,34 @@ iree_generated_e2e_runner_test(
     "generate_e2e_matmul_tests.py"
   GENERATOR_ARGS
     "--lhs_rhs_type=f16"
+    "--acc_type=f32"
+    "--shapes=gpu_large_aligned"
+    "--compilation_info=LLVMGPUVectorDistributeMFMA"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-cdna3"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_rocm_f32_large_cdna3_mfma
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f32"
     "--acc_type=f32"
     "--shapes=gpu_large_aligned"
     "--compilation_info=LLVMGPUVectorDistributeMFMA"
@@ -2222,6 +2346,39 @@ iree_generated_e2e_runner_test(
     "requires-gpu-cdna3"
 )
 
+if(IREE_HIP_TEST_TARGET_CHIP MATCHES "^gfx94")
+
+# I8 Intrinsics has different layout on CDNA3/gfx94x,
+# and only CDNA3/gfx94x has F8 intrinsics.
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_rocm_f8_large_cdna3_mfma
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f8E4M3FNUZ"
+    "--acc_type=f32"
+    "--shapes=gpu_large_aligned"
+    "--compilation_info=LLVMGPUVectorDistributeMFMA"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-cdna3"
+)
+
 iree_generated_e2e_runner_test(
   NAME
     e2e_matmul_rocm_i8_large_cdna3_mfma_tb
@@ -2251,11 +2408,41 @@ iree_generated_e2e_runner_test(
     "requires-gpu-cdna3"
 )
 
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_cdna_experimental_dt_f32_f32
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f32"
+    "--acc_type=f32"
+    "--shapes=small"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-enable-early-materialization=false"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-cdna3"
+)
+endif()
+
 elseif(IREE_HIP_TEST_TARGET_CHIP MATCHES "^gfx11")
 
 unset(IREE_HIP_TEST_COMPILER_FLAGS)
 list(APPEND IREE_HIP_TEST_COMPILER_FLAGS
-  "--iree-rocm-target-chip=${IREE_HIP_TEST_TARGET_CHIP}"
+  "--iree-hip-target=${IREE_HIP_TEST_TARGET_CHIP}"
 )
 
 iree_generated_e2e_runner_test(
@@ -2320,4 +2507,63 @@ iree_generated_e2e_runner_test(
     "noubsan"
     "requires-gpu-rdna3"
 )
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_rocm_i8_large_rdna3_wmma_tb
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=i8"
+    "--acc_type=i32"
+    "--transpose_rhs"
+    "--shapes=gpu_large_aligned"
+    "--compilation_info=LLVMGPUVectorDistributeWMMA"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-rdna3"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_rdna3_experimental_dt_f32_f32
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f32"
+    "--acc_type=f32"
+    "--shapes=small"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-enable-early-materialization=false"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-rdna3"
+)
+
 endif()

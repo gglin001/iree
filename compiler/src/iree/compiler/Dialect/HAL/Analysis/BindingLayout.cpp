@@ -6,6 +6,7 @@
 
 #include "iree/compiler/Dialect/HAL/Analysis/BindingLayout.h"
 
+#include "iree/compiler/Dialect/HAL/Analysis/Captures.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
@@ -18,20 +19,15 @@ namespace mlir::iree_compiler::IREE::HAL {
 
 void PipelineLayout::print(llvm::raw_ostream &os) const {
   os << "PipelineLayout:\n";
-  os << "  push constants: " << pushConstantCount << "\n";
-  os << "  sets:\n";
-  for (auto &setLayout : setLayouts) {
-    os << "    set[" << setLayout.ordinal
-       << "]: " << stringifyDescriptorSetLayoutFlags(setLayout.flags) << "\n";
-    for (auto &binding : setLayout.bindings) {
-      os << "      binding[" << binding.ordinal
-         << "]: " << stringifyDescriptorType(binding.type) << "\n";
-    }
+  os << "  constants: " << constantCount << "\n";
+  os << "  bindings:\n";
+  for (auto &binding : bindings) {
+    os << "    binding[" << binding.ordinal
+       << "]: " << stringifyDescriptorType(binding.type) << "\n";
   }
   os << "  resource map:\n";
-  for (auto setBinding : llvm::enumerate(resourceMap)) {
-    os << "    resource[" << setBinding.index() << "]: set "
-       << setBinding.value().first << " binding " << setBinding.value().second
+  for (auto ordinal : llvm::enumerate(resourceMap)) {
+    os << "    resource[" << ordinal.index() << "]: binding " << ordinal.value()
        << "\n";
   }
 }
@@ -40,34 +36,18 @@ void PipelineLayout::print(llvm::raw_ostream &os) const {
 static PipelineLayout
 assumeExportLayout(IREE::HAL::PipelineLayoutAttr layoutAttr) {
   PipelineLayout pipelineLayout;
-  pipelineLayout.pushConstantCount = layoutAttr.getPushConstants();
+  pipelineLayout.constantCount = layoutAttr.getConstants();
 
-  auto setLayoutAttrs = layoutAttr.getSetLayouts();
-  int64_t bindingCount = 0;
-  for (auto setLayoutAttr : setLayoutAttrs) {
-    bindingCount += setLayoutAttr.getBindings().size();
-  }
-
-  pipelineLayout.setLayouts.resize(setLayoutAttrs.size());
+  size_t bindingCount = layoutAttr.getBindings().size();
+  pipelineLayout.bindings.resize(bindingCount);
   pipelineLayout.resourceMap.resize(bindingCount);
-  for (auto setLayoutAttr : setLayoutAttrs) {
-    DescriptorSetLayout setLayout;
-    setLayout.ordinal = setLayoutAttr.getOrdinal();
-    setLayout.flags = setLayoutAttr.getFlags().value_or(
-        IREE::HAL::DescriptorSetLayoutFlags::None);
-    auto bindingAttrs = setLayoutAttr.getBindings();
-    setLayout.bindings.resize(bindingAttrs.size());
-    for (auto bindingAttr : bindingAttrs) {
-      DescriptorSetLayoutBinding setBinding;
-      setBinding.ordinal = bindingAttr.getOrdinal();
-      setBinding.type = bindingAttr.getType();
-      setBinding.flags =
-          bindingAttr.getFlags().value_or(IREE::HAL::DescriptorFlags::None);
-      setLayout.bindings[setBinding.ordinal] = setBinding;
-      pipelineLayout.resourceMap.emplace_back(setLayout.ordinal,
-                                              setBinding.ordinal);
-    }
-    pipelineLayout.setLayouts[setLayout.ordinal] = setLayout;
+  for (auto [i, bindingAttr] : llvm::enumerate(layoutAttr.getBindings())) {
+    PipelineLayoutBinding binding;
+    binding.ordinal = i;
+    binding.type = bindingAttr.getType();
+    binding.flags = bindingAttr.getFlags();
+    pipelineLayout.bindings[binding.ordinal] = binding;
+    pipelineLayout.resourceMap[i] = binding.ordinal;
   }
 
   return pipelineLayout;
@@ -121,43 +101,78 @@ deriveStreamExportLayout(IREE::Stream::ExecutableExportOp exportOp,
   }
 
   // Check the usage of each binding at each dispatch site.
-  SmallVector<DescriptorFlags> bindingFlags(bindingCount);
+  struct DescriptorInfo {
+    DescriptorFlags flags = DescriptorFlags::None;
+  };
+  SmallVector<DescriptorInfo> descriptorInfos(bindingCount);
   for (auto dispatchOp : dispatchOps) {
+    // If any dispatch is performed within a reusable (non-one-shot) execution
+    // region we may opt in to indirect references. For those only executed once
+    // (though maybe from multiple dispatch sites) we try to bias towards direct
+    // references to avoid additional overheads.
+    auto parentOp = dispatchOp->getParentOfType<IREE::Stream::CmdExecuteOp>();
+    bool isRegionExecutedOnce = parentOp ? parentOp.getOnce() : false;
+
     auto resourceAccessesAttrs = dispatchOp.getResourceAccesses().getValue();
     for (unsigned i = 0; i < bindingCount; ++i) {
-      auto resourceAccessAttr = cast<IREE::Stream::ResourceAccessBitfieldAttr>(
-          resourceAccessesAttrs[i]);
+      auto &descriptorInfo = descriptorInfos[i];
+
+      // Opt into indirect descriptors when dynamic values are used from
+      // execution regions that may be executed more than once.
+      if (!isRegionExecutedOnce) {
+        Value resource = dispatchOp.getResources()[i];
+        if (auto blockArg = dyn_cast<BlockArgument>(resource)) {
+          if (blockArg.getOwner()->getParentOp() == parentOp) {
+            resource = parentOp.getResourceOperands()[blockArg.getArgNumber()];
+          }
+        }
+        switch (categorizeValue(resource)) {
+        default:
+        case ValueOrigin::Unknown:
+        case ValueOrigin::MutableGlobal:
+          descriptorInfo.flags =
+              descriptorInfo.flags | IREE::HAL::DescriptorFlags::Indirect;
+          break;
+        case ValueOrigin::LocalConstant:
+        case ValueOrigin::ImmutableGlobal:
+          break;
+        }
+      }
+
+      // Set binding flags based on the OR of all dispatch site access.
       auto resourceAccess = static_cast<IREE::Stream::ResourceAccessBitfield>(
-          resourceAccessAttr.getInt());
+          cast<IREE::Stream::ResourceAccessBitfieldAttr>(
+              resourceAccessesAttrs[i])
+              .getInt());
       if (!bitEnumContainsAll(resourceAccess,
                               IREE::Stream::ResourceAccessBitfield::Write)) {
         // Read-only.
-        bindingFlags[i] =
-            bindingFlags[i] | IREE::HAL::DescriptorFlags::ReadOnly;
+        descriptorInfo.flags =
+            descriptorInfo.flags | IREE::HAL::DescriptorFlags::ReadOnly;
       }
     }
   }
 
   PipelineLayout pipelineLayout;
-  pipelineLayout.pushConstantCount = operandCount;
+  pipelineLayout.constantCount = operandCount;
   pipelineLayout.resourceMap.resize(bindingCount);
 
-  // Only one set today - this creates a lot of pushes that we can't elide later
-  // on once interfaces are materialized.
-  DescriptorSetLayout setLayout;
-  setLayout.ordinal = 0;
-  setLayout.flags = IREE::HAL::DescriptorSetLayoutFlags::None;
-  setLayout.bindings.resize(bindingCount);
+  IREE::HAL::PipelineLayoutFlags layoutFlags =
+      IREE::HAL::PipelineLayoutFlags::None;
   for (unsigned i = 0; i < bindingCount; ++i) {
-    DescriptorSetLayoutBinding setBinding;
-    setBinding.ordinal = i;
-    setBinding.type = IREE::HAL::DescriptorType::StorageBuffer;
-    setBinding.flags = bindingFlags[i];
-    setLayout.bindings[i] = setBinding;
-    pipelineLayout.resourceMap[i] =
-        std::make_pair(setLayout.ordinal, setBinding.ordinal);
+    const auto &descriptorInfo = descriptorInfos[i];
+    if (allEnumBitsSet(descriptorInfo.flags,
+                       IREE::HAL::DescriptorFlags::Indirect)) {
+      layoutFlags = layoutFlags | IREE::HAL::PipelineLayoutFlags::Indirect;
+    }
+    PipelineLayoutBinding binding;
+    binding.ordinal = i;
+    binding.type = IREE::HAL::DescriptorType::StorageBuffer;
+    binding.flags = descriptorInfo.flags;
+    pipelineLayout.bindings.push_back(binding);
+    pipelineLayout.resourceMap[i] = binding.ordinal;
   }
-  pipelineLayout.setLayouts.push_back(setLayout);
+  pipelineLayout.flags = layoutFlags;
 
   LLVM_DEBUG({
     auto executableOp = exportOp->getParentOfType<IREE::Stream::ExecutableOp>();
@@ -209,6 +224,15 @@ BindingLayoutAnalysis::BindingLayoutAnalysis(Operation *rootOp,
         })
         .Default([&](auto op) {});
   }
+}
+
+bool BindingLayoutAnalysis::hasDispatches() const {
+  for (auto &it : exportInfos) {
+    if (!it.second->dispatchOps.empty()) {
+      return true; // found at least one dispatch
+    }
+  }
+  return false;
 }
 
 ArrayRef<IREE::Stream::CmdDispatchOp>

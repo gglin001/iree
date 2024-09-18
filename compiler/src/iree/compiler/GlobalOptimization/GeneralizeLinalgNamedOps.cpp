@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "iree/compiler/Dialect/Flow/Transforms/RegionOpUtils.h"
-#include "iree/compiler/GlobalOptimization/PassDetail.h"
 #include "iree/compiler/GlobalOptimization/Passes.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
@@ -20,10 +19,13 @@
 
 namespace mlir::iree_compiler::GlobalOptimization {
 
+#define GEN_PASS_DEF_GENERALIZELINALGNAMEDOPSPASS
+#include "iree/compiler/GlobalOptimization/Passes.h.inc"
+
 namespace {
 struct GeneralizeLinalgNamedOpsPass
-    : public GeneralizeLinalgNamedOpsBase<GeneralizeLinalgNamedOpsPass> {
-
+    : public impl::GeneralizeLinalgNamedOpsPassBase<
+          GeneralizeLinalgNamedOpsPass> {
   void runOnOperation() override;
 };
 } // namespace
@@ -40,7 +42,7 @@ void GeneralizeLinalgNamedOpsPass::runOnOperation() {
                         linalg::DivUnsignedOp, linalg::ElemwiseBinaryOp,
                         linalg::ElemwiseUnaryOp, linalg::ExpOp, linalg::FloorOp,
                         linalg::LogOp, linalg::MapOp, linalg::MaxOp,
-                        linalg::MulOp, linalg::NegfOp, linalg::ReduceOp,
+                        linalg::MulOp, linalg::NegFOp, linalg::ReduceOp,
                         linalg::SubOp, linalg::TransposeOp>(
             linalgOp.getOperation())) {
       namedOpCandidates.push_back(linalgOp);
@@ -57,11 +59,6 @@ void GeneralizeLinalgNamedOpsPass::runOnOperation() {
       return signalPassFailure();
     }
   }
-}
-
-std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createGeneralizeLinalgNamedOpsPass() {
-  return std::make_unique<GeneralizeLinalgNamedOpsPass>();
 }
 
 } // namespace mlir::iree_compiler::GlobalOptimization

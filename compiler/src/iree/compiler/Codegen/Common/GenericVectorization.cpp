@@ -4,7 +4,6 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree/compiler/Codegen/Common/PassDetail.h"
 #include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/Common/TileSizeSelection.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
@@ -24,11 +23,15 @@
 
 namespace mlir::iree_compiler {
 
+#define GEN_PASS_DEF_GENERICVECTORIZATIONPASS
+#include "iree/compiler/Codegen/Common/Passes.h.inc"
+
 namespace {
 
 struct VectorizationTileSizes {
   SmallVector<int64_t> destShape;
   SmallVector<int64_t> vectorSizes;
+  SmallVector<bool> vectorScalableFlags;
 };
 
 /// Returns a VectorizationTileSizes which contains the inferred bounded result
@@ -41,13 +44,25 @@ static std::optional<VectorizationTileSizes> inferSizesFromIR(Value val);
 /// Returns std::nullopt if vector sizes can't be inferred.
 static std::optional<VectorizationTileSizes>
 inferSizesFromIR(linalg::LinalgOp linalgOp, std::optional<OpResult> opResult) {
-  LLVM_DEBUG(VEC_DBGS() << "Inferring sizes for:\n"
-                        << linalgOp << " with OpResult.resultNumber="
-                        << opResult->getResultNumber() << "\n");
+  LLVM_DEBUG({
+    VEC_DBGS() << "Inferring sizes for:\n" << linalgOp;
+    if (opResult) {
+      VEC_DBGS() << " with OpResult.resultNumber="
+                 << opResult->getResultNumber();
+    }
+    VEC_DBGS() << '\n';
+  });
+
+  std::optional<vector::VscaleRange> vscaleRange;
+  if (!opResult) {
+    // Note: Inferring scalable sizes is not supported is `opResult` is set
+    // (which is used to compute sizes for tensor.pack/unpack).
+    auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(linalgOp);
+    vscaleRange = getDefaultVscaleRange(targetAttr);
+  }
 
   VectorizationTileSizes result;
   unsigned numDims = linalgOp.getNumLoops();
-
   for (int dim = 0; dim < numDims; ++dim) {
     // Map dimension `dim` to an operand dimension that we will use to
     // traverse the U-D chain to get `dim` vector size information.
@@ -63,22 +78,22 @@ inferSizesFromIR(linalg::LinalgOp linalgOp, std::optional<OpResult> opResult) {
     // Trivial case: `dim` size is available in the operand type.
     int64_t dimSize = llvm::cast<ShapedType>(firstOperand.getType())
                           .getShape()[firstOperandDim];
+    bool dimScalable = false;
     if (!ShapedType::isDynamic(dimSize)) {
       result.vectorSizes.push_back(dimSize);
+      result.vectorScalableFlags.push_back(dimScalable);
       LLVM_DEBUG(VEC_DBGS() << "Inferred iteration size '" << dimSize
                             << "' for dimension '" << dim << "'\n");
       continue;
     }
 
     // Use ValueBounds analysis to infer `dim` size upper bound.
-    FailureOr<int64_t> maybeDimBound;
+    FailureOr<DimBoundSize> maybeDimBound;
     for (auto operandDimPair : operandDimPairs) {
       Value operand = operandDimPair.first;
       unsigned operandDim = operandDimPair.second;
-      maybeDimBound = ValueBoundsConstraintSet::computeConstantBound(
-          presburger::BoundType::UB, {operand, operandDim},
-          /*stopCondition=*/nullptr, /*closedUB=*/true);
-
+      maybeDimBound = computeDimUpperBound(operand, operandDim, vscaleRange,
+                                           RoundUpVscaleMultiple::Yes);
       if (succeeded(maybeDimBound)) {
         break;
       }
@@ -88,13 +103,19 @@ inferSizesFromIR(linalg::LinalgOp linalgOp, std::optional<OpResult> opResult) {
       return std::nullopt;
     }
 
-    dimSize = maybeDimBound.value();
+    dimSize = maybeDimBound->baseSize;
+    dimScalable = maybeDimBound->scalable;
     result.vectorSizes.push_back(dimSize);
+    result.vectorScalableFlags.push_back(dimScalable);
+
     LLVM_DEBUG(VEC_DBGS() << "Inferred iteration size '" << dimSize
+                          << (dimScalable ? " x vscale" : "")
                           << "' for dimension '" << dim << "'\n");
   }
 
   if (opResult) {
+    assert(!llvm::is_contained(result.vectorScalableFlags, true) &&
+           "inferring scalable bounds with `opResult` not supported!");
     result.destShape = linalgOp.getIndexingMapMatchingResult(opResult.value())
                            .compose(result.vectorSizes);
   }
@@ -244,12 +265,14 @@ getVectorSizes(Operation *op, bool useConfiguredVectorSizes) {
 
   // Try to infer the vector sizes from the IR.
   std::optional<SmallVector<int64_t>> vectorSizes;
+  SmallVector<bool> scalableFlags;
   TypeSwitch<Operation *, void>(op)
       .Case<linalg::LinalgOp>([&](linalg::LinalgOp linalgOp) {
         std::optional<VectorizationTileSizes> result =
             inferSizesFromIR(linalgOp, /*opResult=*/std::nullopt);
         if (result) {
           vectorSizes = result->vectorSizes;
+          scalableFlags = result->vectorScalableFlags;
         }
       })
       .Case<tensor::PackOp, tensor::UnPackOp>([&](auto op) {
@@ -269,9 +292,8 @@ getVectorSizes(Operation *op, bool useConfiguredVectorSizes) {
       .Default([&](Operation *) {});
 
   if (vectorSizes) {
-    // This can't identify scalable flags, so pad them with `false`.
-    return std::make_pair(vectorSizes.value(),
-                          SmallVector<bool>(vectorSizes->size(), false));
+    scalableFlags.resize(vectorSizes->size(), false);
+    return std::make_pair(vectorSizes.value(), scalableFlags);
   }
   return std::nullopt;
 }
@@ -290,20 +312,11 @@ static LogicalResult isWithinVectorSizeLimit(linalg::LinalgOp linalgOp,
   return success(maxFlatVecSize < maxVectorSize);
 }
 
-class GenericVectorizationPass
-    : public GenericVectorizationBase<GenericVectorizationPass> {
+class GenericVectorizationPass final
+    : public impl::GenericVectorizationPassBase<GenericVectorizationPass> {
 public:
-  using GenericVectorizationBase::GenericVectorizationBase;
-  GenericVectorizationPass(const GenericVectorizationPassOptions &options) {
-    this->enableVectorMasking.setValue(options.enableVectorMasking);
-    this->useConfiguredVectorSizes.setValue(options.useConfiguredVectorSizes);
-    this->vectorizePadding.setValue(options.vectorizePadding);
-    this->vectorizeGatherAccesses.setValue(options.vectorizeGatherAccesses);
-    this->enableCleanup.setValue(options.enableCleanup);
-    this->generateContract.setValue(options.generateContract);
-    this->foldCastIntoContract.setValue(options.foldCastIntoContract);
-    this->maxVectorSize.setValue(options.maxVectorSize);
-  }
+  using impl::GenericVectorizationPassBase<
+      GenericVectorizationPass>::GenericVectorizationPassBase;
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<tensor::TensorDialect, linalg::LinalgDialect,
@@ -365,6 +378,16 @@ void GenericVectorizationPass::runOnOperation() {
   };
 
   {
+    // Eliminate (all-true) vector masks as early as possible (to avoid missing
+    // optimizations/folds). This is particularly beneficial for scalable
+    // vectors that use dynamic tensor shapes.
+    auto targetAttr =
+        iree_compiler::IREE::HAL::ExecutableTargetAttr::lookup(funcOp);
+    auto vscaleRange = iree_compiler::getDefaultVscaleRange(targetAttr);
+    vector::eliminateVectorMasks(rewriter, funcOp, vscaleRange);
+  }
+
+  {
     // Canonicalize mask related ops before we lower them.
     RewritePatternSet maskCanonPatterns(funcOp.getContext());
     vector::CreateMaskOp::getCanonicalizationPatterns(maskCanonPatterns,
@@ -386,6 +409,7 @@ void GenericVectorizationPass::runOnOperation() {
     vector::populateVectorTransferPermutationMapLoweringPatterns(
         vectorizationPatterns);
     vector::populateVectorReductionToContractPatterns(vectorizationPatterns);
+    vector::populateSinkVectorOpsPatterns(vectorizationPatterns);
   }
   if (foldCastIntoContract) {
     vector::populateFoldArithExtensionPatterns(vectorizationPatterns);
@@ -418,14 +442,4 @@ void GenericVectorizationPass::runOnOperation() {
 }
 
 } // namespace
-
-std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createGenericVectorizationPass() {
-  return std::make_unique<GenericVectorizationPass>();
-}
-std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createGenericVectorizationPass(const GenericVectorizationPassOptions &options) {
-  return std::make_unique<GenericVectorizationPass>(options);
-}
-
 } // namespace mlir::iree_compiler

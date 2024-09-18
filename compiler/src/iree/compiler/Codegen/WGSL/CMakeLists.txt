@@ -23,7 +23,6 @@ iree_cc_library(
   NAME
     PassHeaders
   HDRS
-    "PassDetail.h"
     "Passes.h"
     "Passes.h.inc"
   DEPS
@@ -45,7 +44,6 @@ iree_cc_library(
     "Passes.h"
   SRCS
     "Passes.cpp"
-    "WGSLReplacePushConstants.cpp"
   DEPS
     ::PassHeaders
     ::PassesIncGen

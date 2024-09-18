@@ -4,11 +4,12 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree/compiler/Codegen/Common/PassDetail.h"
 #include "iree/compiler/Codegen/Common/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/Transforms/Hoisting.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/Utils/Utils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
 #include "mlir/Interfaces/SubsetOpInterface.h"
@@ -22,15 +23,19 @@
 
 namespace mlir::iree_compiler {
 
+#define GEN_PASS_DEF_OPTIMIZETENSORINSERTEXTRACTSLICESPASS
+#include "iree/compiler/Codegen/Common/Passes.h.inc"
+
 namespace {
 
-class OptimizeTensorInsertExtractSlicesPass
-    : public OptimizeTensorInsertExtractSlicesBase<
+class OptimizeTensorInsertExtractSlicesPass final
+    : public impl::OptimizeTensorInsertExtractSlicesPassBase<
           OptimizeTensorInsertExtractSlicesPass> {
-public:
-  using OptimizeTensorInsertExtractSlicesBase::
-      OptimizeTensorInsertExtractSlicesBase;
+  using impl::OptimizeTensorInsertExtractSlicesPassBase<
+      OptimizeTensorInsertExtractSlicesPass>::
+      OptimizeTensorInsertExtractSlicesPassBase;
 
+public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<scf::SCFDialect, vector::VectorDialect>();
   }
@@ -108,10 +113,13 @@ hoistLoopInvariantSubsetAtIterArg(RewriterBase &rewriter,
             ArrayRef<BlockArgument> innerNewBBArgs) -> SmallVector<Value> {
       return {insertion.getSourceOperand().get()};
     };
+
+    // replaceInitOperandUsesInLoop is set to true S.T we will use new IV
+    // instead of hoisted out extract.
     FailureOr<LoopLikeOpInterface> newLoop =
         loopLike.replaceWithAdditionalYields(
             rewriter, extraction.getResult(),
-            /*replaceInitOperandUsesInLoop=*/false, newYieldValuesFn);
+            /*replaceInitOperandUsesInLoop=*/true, newYieldValuesFn);
     if (failed(newLoop))
       return loopLike;
     loopLike = *newLoop;
@@ -198,6 +206,38 @@ void hoistSubsetWithLoopInvariantTensor(RewriterBase &rewriter,
   }
 }
 
+namespace {
+struct CastLikeExtractSliceOpFolder final
+    : OpRewritePattern<tensor::ExtractSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tensor::ExtractSliceOp sliceOp,
+                                PatternRewriter &rewriter) const override {
+    if (!tensor::isCastLikeExtractSliceOp(sliceOp) ||
+        sliceOp.getSourceType() != sliceOp.getResultType()) {
+      return failure();
+    }
+    rewriter.replaceOp(sliceOp, sliceOp.getSource());
+    return success();
+  }
+};
+
+struct CastLikeInsertSliceOpFolder final
+    : OpRewritePattern<tensor::InsertSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(tensor::InsertSliceOp sliceOp,
+                                PatternRewriter &rewriter) const override {
+    if (!tensor::isCastLikeInsertSliceOp(sliceOp) ||
+        sliceOp.getSourceType() != sliceOp.getResultType()) {
+      return failure();
+    }
+    rewriter.replaceOp(sliceOp, sliceOp.getSource());
+    return success();
+  }
+};
+} // namespace
+
 void OptimizeTensorInsertExtractSlicesPass::runOnOperation() {
   auto funcOp = getOperation();
   linalg::hoistRedundantVectorTransfers(cast<func::FuncOp>(funcOp));
@@ -221,6 +261,10 @@ void OptimizeTensorInsertExtractSlicesPass::runOnOperation() {
   populateVectorTransferTensorSliceTransforms(patterns);
   scf::ForOp::getCanonicalizationPatterns(patterns, context);
   vector::TransferWriteOp::getCanonicalizationPatterns(patterns, context);
+  if (foldIdentitySlices) {
+    patterns.add<CastLikeExtractSliceOpFolder>(context);
+    patterns.add<CastLikeInsertSliceOpFolder>(context);
+  }
   if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
     return signalPassFailure();
   }
@@ -230,10 +274,4 @@ void OptimizeTensorInsertExtractSlicesPass::runOnOperation() {
 }
 
 } // namespace
-
-std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createOptimizeTensorInsertExtractSlicesPass() {
-  return std::make_unique<OptimizeTensorInsertExtractSlicesPass>();
-}
-
 } // namespace mlir::iree_compiler

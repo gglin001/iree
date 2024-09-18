@@ -19,7 +19,8 @@
       compute = fp32|int32, storage = b32, subgroup = none,
       dot = none, mma = [], subgroup_size_choices = [64, 64],
       max_workgroup_sizes = [128, 128, 64], max_thread_count_per_workgroup = 128,
-      max_workgroup_memory_bytes = 16384>
+      max_workgroup_memory_bytes = 16384,
+      max_workgroup_counts = [65535, 65535, 65535]>
   >
 }>
 
@@ -27,7 +28,7 @@
 // These can come from compiler flags and multiple targets can be supported
 // It's possible, for example, to support targeting multiple devices in the same
 // compiled binary.
-#vulkan_target = #hal.device.target<"vulkan", [#spirv_target]>
+#vulkan_target = #hal.device.target<"vulkan", [#spirv_target]> : !hal.device
 
 module @example attributes {hal.device.targets = [#vulkan_target]} {
 
@@ -66,24 +67,11 @@ module @example attributes {hal.device.targets = [#vulkan_target]} {
       }
       // The layout defines the required bindings and push constants and can be
       // thought of as the function signature.
-      layout(#hal.pipeline.layout<push_constants = 1, sets = [
-        <0, bindings = [
-            <0, storage_buffer, ReadOnly>,
-            <1, storage_buffer, ReadOnly>,
-            <2, storage_buffer>
-        ]>
+      layout(#hal.pipeline.layout<constants = 1, bindings = [
+        #hal.pipeline.binding<storage_buffer, ReadOnly>,
+        #hal.pipeline.binding<storage_buffer, ReadOnly>,
+        #hal.pipeline.binding<storage_buffer>
       ]>)
-      // Bindings are automatically inferred when possible as part of the ABI
-      // but can be overridden if the user wants to use features such as sparse
-      // bindings or multiple descriptor sets. To do so the
-      // `hal.interface.bindings` attribute can be added to a dispatch op as
-      // follows mapping tensor operands/results to the pipeline layout
-      // sets/bindings:
-      bindings([
-        #hal.interface.binding<0, 0>,
-        #hal.interface.binding<0, 1>,
-        #hal.interface.binding<0, 2>
-      ])
       // Object files linked into the executable.
       // Certain backends (today) support either wholesale definition or linking
       // of partial objects for imports used by generated code. Each compilation

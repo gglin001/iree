@@ -25,7 +25,7 @@ struct iree_thread_t {
   iree_atomic_ref_count_t ref_count;
   iree_allocator_t allocator;
 
-  char name[16];
+  char name[32];
   HANDLE handle;
   DWORD id;
 
@@ -278,8 +278,7 @@ void iree_thread_request_affinity(iree_thread_t* thread,
   int affinity_desc_length = snprintf(
       affinity_desc, IREE_ARRAYSIZE(affinity_desc), "group=%d, id=%d, smt=%d",
       affinity.group, affinity.id, affinity.smt);
-  IREE_TRACE_ZONE_APPEND_TEXT_STRING_VIEW(z0, affinity_desc,
-                                          affinity_desc_length);
+  IREE_TRACE_ZONE_APPEND_TEXT(z0, affinity_desc, affinity_desc_length);
 #endif  // IREE_TRACING_FEATURES & IREE_TRACING_FEATURE_INSTRUMENTATION
 
   GROUP_AFFINITY group_affinity;
@@ -319,6 +318,12 @@ void iree_thread_resume(iree_thread_t* thread) {
     ResumeThread(thread->handle);
   }
 
+  IREE_TRACE_ZONE_END(z0);
+}
+
+void iree_thread_join(iree_thread_t* thread) {
+  IREE_TRACE_ZONE_BEGIN(z0);
+  WaitForSingleObject(thread->handle, INFINITE);
   IREE_TRACE_ZONE_END(z0);
 }
 
