@@ -6,6 +6,8 @@
 
 #include "iree/compiler/ExternalInterfaces/UtilExternalModels.h"
 
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUOps.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingDialect.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingOps.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
@@ -168,6 +170,27 @@ struct LinalgOpTiedOpInterfaceHelper {
   }
 };
 
+// TODO(Max191): Remove this interface once GPU data tiling stops using early
+// materialization. This only exists for handling multi_mma ops before dispatch
+// workgroups are created, which only happens with early materialization.
+struct MultiMmaOpTiedOpInterface
+    : public IREE::Util::TiedOpInterface::ExternalModel<
+          MultiMmaOpTiedOpInterface, IREE::GPU::MultiMmaOp> {
+  Value getTiedResult(Operation *op, unsigned resultIndex) const {
+    auto linalgOp = cast<IREE::GPU::MultiMmaOp>(op);
+    return IREE::Util::TiedOpInterface::findTiedBaseValue(linalgOp.getAcc());
+  }
+
+  ::std::optional<unsigned>
+  getTiedResultOperandIndex(Operation *op, unsigned resultIndex) const {
+    return {2}; // acc
+  }
+
+  SmallVector<int64_t> getTiedResultOperandIndices(Operation *op) const {
+    return {2}; // acc
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // HoistableOpInterface
 //===----------------------------------------------------------------------===//
@@ -200,10 +223,13 @@ struct HoistableLinalgOpInterface
     : public IREE::Util::HoistableOpInterface::ExternalModel<
           HoistableLinalgOpInterface<OpTy>, OpTy> {
   bool isHoistableOp(Operation *) const { return true; }
+
+  /// FillOp and broadcasting ops are not hoistableLeaf ops, since it is
+  /// typically better to fuse them with their consumers.
   bool isHoistableLeafOp(Operation *op) const {
     auto genericOp = llvm::dyn_cast<linalg::GenericOp>(op);
     if (!genericOp)
-      return true;
+      return !isa<linalg::FillOp>(op);
     // Generally, we prefer to not hoist broadcasts.
     // Detect op that only broadcast input as fusing them makes the new
     // op cheaper.
@@ -217,14 +243,10 @@ struct HoistableLinalgOpInterface
         }
       }
     }
-    return true;
+    return !linalg::isaFillOpInterface(genericOp).has_value();
   }
   bool isAtomicallyHoistableOp(Operation *) const { return true; }
-  bool isOperandHoistable(Operation *op, OpOperand *operand) const {
-    linalg::LinalgOp linalgOp = llvm::cast<linalg::LinalgOp>(op);
-    // For linalg ops, we only want to hoist inputs.
-    return operand->getOperandNumber() < linalgOp.getNumDpsInputs();
-  }
+  bool isOperandHoistable(Operation *, OpOperand *) const { return true; }
 };
 
 /// Helper structures that iterates over all Op types in `OpTys` and registers
@@ -288,6 +310,11 @@ void registerUtilExternalModels(DialectRegistry &registry) {
         tensor::InsertSliceOp::attachInterface<InsertSliceOpTiedOpInterface>(
             *context);
       });
+
+  registry.addExtension(+[](MLIRContext *context,
+                            IREE::GPU::IREEGPUDialect *dialect) {
+    IREE::GPU::MultiMmaOp::attachInterface<MultiMmaOpTiedOpInterface>(*context);
+  });
 
   registry.addExtension(
       +[](MLIRContext *context, linalg::LinalgDialect *dialect) {

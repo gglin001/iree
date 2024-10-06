@@ -11,6 +11,7 @@
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUEnums.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUOps.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
@@ -28,6 +29,78 @@
 namespace mlir::iree_compiler::IREE::GPU {
 
 constexpr int64_t kCacheLineSizeBits = 128 * 8;
+
+LogicalResult
+setDataTiledMultiMmaLoweringConfig(IREE::GPU::TargetAttr target,
+                                   mlir::FunctionOpInterface entryPoint,
+                                   Operation *op) {
+  auto multiMmaOp = dyn_cast<IREE::GPU::MultiMmaOp>(op);
+  if (!multiMmaOp) {
+    return failure();
+  }
+  auto dataTiledMmaAttr = dyn_cast<DataTiledMMAAttr>(multiMmaOp.getKind());
+  if (!dataTiledMmaAttr) {
+    return failure();
+  }
+
+  LDBG("MultiMMA TileAndFuse Config");
+
+  // Compute workgroup size, which is given by the subgroup size times the
+  // number of subgroups. The number of subgroups is found by the product of
+  // subgroup unrolling factors, since the non-unrolled inner kernel takes a
+  // single subgroup.
+  const int64_t targetSubgroupSize = dataTiledMmaAttr.getSubgroupSize();
+  int64_t flatWorkgroupSize = targetSubgroupSize *
+                              dataTiledMmaAttr.getUnrollMToSubgroups() *
+                              dataTiledMmaAttr.getUnrollNToSubgroups();
+  std::array<int64_t, 3> workgroupSize{flatWorkgroupSize, 1, 1};
+
+  // Set all workgroup and reduction tile sizes to 1, since the data tiled
+  // kernel has the scope of an entire workgroup, and the reduction tiling is
+  // already baked into the "opaque" data tiled inner layout of the multi_mma.
+  SmallVector<AffineMap> indexingMaps = multiMmaOp.getIndexingMapsArray();
+  mlir::linalg::ContractionDimensions contractionDims =
+      mlir::linalg::inferContractionDims(indexingMaps).value();
+
+  int64_t iterationRank = indexingMaps.front().getNumDims();
+  SmallVector<int64_t> workgroupTileSizes(iterationRank, 1);
+  SmallVector<int64_t> reductionTileSizes(iterationRank, 0);
+  for (int64_t kDim : contractionDims.k) {
+    workgroupTileSizes[kDim] = 0;
+    reductionTileSizes[kDim] = 1;
+  }
+
+  // Set tile sizes.
+  MLIRContext *context = multiMmaOp.getContext();
+  SmallVector<NamedAttribute, 1> attrs;
+  Builder b(context);
+  attrs.emplace_back(b.getStringAttr("workgroup"),
+                     b.getI64ArrayAttr(workgroupTileSizes));
+  attrs.emplace_back(b.getStringAttr("reduction"),
+                     b.getI64ArrayAttr(reductionTileSizes));
+  // Promote operands to use shared memory for LHS and RHS.
+  GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1});
+  auto configDict = b.getDictionaryAttr(attrs);
+  auto loweringConfig = IREE::GPU::LoweringConfigAttr::get(context, configDict);
+
+  // Don't add any special padding or prefetching, since the data-tiled layout
+  // is already what we want.
+  SmallVector<NamedAttribute, 1> pipelineAttrs;
+  auto pipelineOptions = IREE::GPU::GPUPipelineOptionsAttr::get(
+      context, /*prefetchSharedMemory=*/false,
+      /*no_reduce_shared_memory_bank_conflicts=*/true,
+      /*reorder_workgroups_strategy=*/std::nullopt);
+  pipelineAttrs.emplace_back(
+      b.getStringAttr(IREE::GPU::GPUPipelineOptionsAttr::getDictKeyName()),
+      pipelineOptions);
+  auto pipelineConfig = b.getDictionaryAttr(pipelineAttrs);
+
+  // TODO(qedawkins): Use a shared pipeline identifier here.
+  return setOpConfigAndEntryPointFnTranslation(
+      entryPoint, op, loweringConfig,
+      IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUTileAndFuse,
+      workgroupSize, targetSubgroupSize, pipelineConfig);
+}
 
 LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
                                       mlir::FunctionOpInterface entryPoint,
@@ -193,12 +266,13 @@ LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
   SmallVector<NamedAttribute, 1> attrs;
   Builder b(context);
   attrs.emplace_back(StringAttr::get(context, "workgroup"),
-                     b.getIndexArrayAttr(workgroupTileSizes));
+                     b.getI64ArrayAttr(workgroupTileSizes));
   attrs.emplace_back(StringAttr::get(context, "reduction"),
-                     b.getIndexArrayAttr(reductionTileSizes));
+                     b.getI64ArrayAttr(reductionTileSizes));
   attrs.emplace_back(StringAttr::get(context, "subgroup"),
-                     b.getIndexArrayAttr(subgroupTileSizes));
+                     b.getI64ArrayAttr(subgroupTileSizes));
   attrs.emplace_back(StringAttr::get(context, "mma_kind"), mmaKind);
+  GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1});
   auto configDict = DictionaryAttr::get(context, attrs);
   auto loweringConfig = IREE::GPU::LoweringConfigAttr::get(context, configDict);
 
@@ -218,6 +292,35 @@ LogicalResult setMatmulLoweringConfig(IREE::GPU::TargetAttr target,
       entryPoint, op, loweringConfig,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUTileAndFuse,
       workgroupSize, targetSubgroupSize, pipelineConfig);
+}
+
+/// Helper to identify contraction like operations for operand promotiong.
+static bool isNonMatvecContraction(linalg::LinalgOp linalgOp) {
+  SmallVector<int64_t, 4> bounds = linalgOp.getStaticLoopRanges();
+  FailureOr<mlir::linalg::ContractionDimensions> contractionDims =
+      mlir::linalg::inferContractionDims(linalgOp);
+  if (failed(contractionDims)) {
+    return false;
+  }
+
+  if (contractionDims->k.size() < 1 || contractionDims->m.size() < 1 ||
+      contractionDims->n.size() < 1) {
+    return false;
+  }
+
+  auto getElementCount = [&](ArrayRef<unsigned> dims) {
+    int64_t acc = 1;
+    for (auto mDim : dims) {
+      int64_t size = bounds[mDim];
+      if (ShapedType::isDynamic(size)) {
+        return size;
+      }
+      acc *= size;
+    }
+    return acc;
+  };
+  return getElementCount(contractionDims->m) != 1 &&
+         getElementCount(contractionDims->n) != 1;
 }
 
 LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
@@ -248,23 +351,9 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
   const unsigned loopDepth = linalgOp.getNumLoops();
 
   // Configurations we need to decide.
-  std::array<int64_t, 3> workgroupSize;
-  SmallVector<int64_t> workgroupTileSizes;
-  SmallVector<int64_t> threadTileSizes;
-
-  // Initialize the configuration.
-  auto initConfiguration = [&]() {
-    workgroupSize = {subgroupSize, 1, 1};
-    workgroupTileSizes.resize(loopDepth, 0);
-    threadTileSizes.resize(loopDepth, 0);
-
-    // Initialize tiling along all partitioned loops with size 1.
-    for (int64_t loopIndex : partitionableLoops) {
-      workgroupTileSizes[loopIndex] = threadTileSizes[loopIndex] = 1;
-    }
-    // Override the innermost dimension to distribute to threads in a subgroup.
-    workgroupTileSizes[partitionableLoops.back()] = subgroupSize;
-  };
+  int64_t flatWorkgroupSize = 1;
+  SmallVector<int64_t> workgroupTileSizes(loopDepth, 0);
+  SmallVector<int64_t> threadTileSizes(loopDepth, 0);
 
   // Common case for all linalg ops.
 
@@ -302,7 +391,15 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
                                  std::optional<int64_t> lossFactor =
                                      std::nullopt) {
     LDBG("Loss factor: " << lossFactor << "\n");
-    initConfiguration();
+    // Initialize the configuration.
+    flatWorkgroupSize = 1;
+    // Initialize tiling along all partitioned loops with size 1.
+    for (int64_t loopIndex : partitionableLoops) {
+      workgroupTileSizes[loopIndex] = threadTileSizes[loopIndex] = 1;
+    }
+    // Override the innermost dimension to distribute to threads in a subgroup.
+    workgroupTileSizes[partitionableLoops.back()] = subgroupSize;
+
     // If there are more than 3 parallel dim try to tile the extra higher level
     // dimensions to 1 for extra dimensions.
     if (isa<linalg::GenericOp>(linalgOp.getOperation())) {
@@ -341,6 +438,7 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
         llvm::dbgs() << "]\n";
       });
 
+      int64_t candidateWorkgroupSize = 1;
       for (int64_t candidate : candidates) {
         int64_t scaledTileSize = candidate * scaleToByte;
         if (loopBound % scaledTileSize != 0) {
@@ -373,20 +471,22 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
           int vectorSize = hasIdleThreads ? 1 : 4;
           LLVM_DEBUG(llvm::dbgs() << "Use vector size: " << vectorSize << "\n");
           threadTileSizes[shapeDim] = vectorSize * scaleToByte;
-          workgroupSize[wgDim] = candidate / vectorSize;
+          candidateWorkgroupSize = candidate / vectorSize;
           assert(numThreads % (candidate / vectorSize) == 0);
           numThreads /= candidate / vectorSize;
         } else {
           if (wgDim == 0)
             vectorizable = false;
           threadTileSizes[shapeDim] = scaleToByte;
-          workgroupSize[wgDim] = candidate;
+          candidateWorkgroupSize = candidate;
           assert(numThreads % candidate == 0);
           numThreads /= candidate;
         }
         assert(numThreads >= 1);
         break;
       }
+
+      flatWorkgroupSize *= candidateWorkgroupSize;
 
       // Stop if we have distributed all threads.
       if (numThreads == 1)
@@ -437,10 +537,14 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
   SmallVector<NamedAttribute, 1> attrs;
   Builder b(context);
   attrs.emplace_back(StringAttr::get(context, "workgroup"),
-                     b.getIndexArrayAttr(workgroupTileSizes));
+                     b.getI64ArrayAttr(workgroupTileSizes));
 
   attrs.emplace_back(StringAttr::get(context, "thread"),
-                     b.getIndexArrayAttr(threadTileSizes));
+                     b.getI64ArrayAttr(threadTileSizes));
+
+  if (isNonMatvecContraction(linalgOp)) {
+    GPU::LoweringConfigAttr::setPromotedOperandList(context, attrs, {0, 1});
+  }
 
   // Heuristic value chosen to limit maximum vector sizes when tiling below.
   const unsigned maxVectorSize = 32;
@@ -470,7 +574,7 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
   }
   if (llvm::any_of(loopTileSizes, [](int64_t s) { return s != 0; })) {
     attrs.emplace_back(StringAttr::get(context, "reduction"),
-                       b.getIndexArrayAttr(loopTileSizes));
+                       b.getI64ArrayAttr(loopTileSizes));
   }
 
   auto configDict = DictionaryAttr::get(context, attrs);
@@ -482,7 +586,7 @@ LogicalResult setTileAndFuseLoweringConfig(IREE::GPU::TargetAttr target,
   return setOpConfigAndEntryPointFnTranslation(
       entryPoint, op, loweringConfig,
       IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUTileAndFuse,
-      workgroupSize, subgroupSize, DictionaryAttr());
+      {flatWorkgroupSize, 1, 1}, subgroupSize, DictionaryAttr());
 }
 
 //===----------------------------------------------------------------------===//

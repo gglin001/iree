@@ -98,18 +98,11 @@ LogicalResult UnsetEncodingOp::reifyResultShapes(
 
 EncodingAttr EncodingAttr::get(MLIRContext *ctx, int64_t operandIndex,
                                EncodingOpType opType, ArrayRef<Type> elemTypes,
-                               Type origType,
-                               std::optional<int64_t> matmulNarrowM,
-                               std::optional<int64_t> matmulNarrowN,
                                ArrayRef<AffineMap> maps,
                                std::optional<AffineMap> bcastMap,
                                ArrayRef<int64_t> roundDimsTo) {
   Builder b(ctx);
-  auto optionalToAttr = [&](std::optional<int64_t> x) {
-    return x ? b.getIndexAttr(*x) : IntegerAttr();
-  };
   auto opTypeAttr = EncodingOpTypeAttr::get(ctx, opType);
-  auto origTypeAttr = origType ? TypeAttr::get(origType) : TypeAttr();
   auto roundDimsToAttr = roundDimsTo.empty()
                              ? DenseI64ArrayAttr()
                              : b.getDenseI64ArrayAttr(roundDimsTo);
@@ -117,9 +110,8 @@ EncodingAttr EncodingAttr::get(MLIRContext *ctx, int64_t operandIndex,
                           ? AffineMapAttr::get(bcastMap.value())
                           : AffineMapAttr();
   return get(ctx, b.getIndexAttr(operandIndex), opTypeAttr,
-             b.getTypeArrayAttr(elemTypes), origTypeAttr,
-             optionalToAttr(matmulNarrowM), optionalToAttr(matmulNarrowN),
-             b.getAffineMapArrayAttr(maps), bcastMapAttr, roundDimsToAttr);
+             b.getTypeArrayAttr(elemTypes), b.getAffineMapArrayAttr(maps),
+             bcastMapAttr, roundDimsToAttr);
 }
 
 AffineMap EncodingAttr::getMapForOperandIndex() {
@@ -145,6 +137,33 @@ std::optional<unsigned> EncodingAttr::mapDimToOperandIndex(int64_t dimPos) {
       getAffineDimExpr(dimPos, getContext()));
 }
 
+MatmulNarrowDim getMatmulNarrowDim(linalg::LinalgOp linalgOp,
+                                   int narrowThreshold) {
+  linalg::ContractionDimensions cDims =
+      linalg::inferContractionDims(linalgOp).value();
+  auto map = linalgOp.getIndexingMapsArray().back();
+  auto outType = llvm::cast<ShapedType>(linalgOp.getDpsInits()[0].getType());
+  auto getOutputSizeAtDimPos = [=](unsigned dimPos) -> int64_t {
+    return outType.getDimSize(
+        map.getResultPosition(getAffineDimExpr(dimPos, linalgOp->getContext()))
+            .value());
+  };
+  // M or N can be empty instead of having an explicit dim size of 1 for matvec
+  // and vecmat, so set to 1 if empty.
+  int64_t mSize = cDims.m.empty() ? 1 : getOutputSizeAtDimPos(cDims.m[0]);
+  int64_t nSize = cDims.n.empty() ? 1 : getOutputSizeAtDimPos(cDims.n[0]);
+
+  MatmulNarrowDim narrowM, narrowN;
+  if (!ShapedType::isDynamic(mSize) && mSize < narrowThreshold) {
+    narrowM = {/*dim=*/MatmulNarrowDim::Dim::M, /*size=*/mSize};
+  }
+  if (!ShapedType::isDynamic(nSize) && nSize < narrowThreshold) {
+    narrowN = {/*dim=*/MatmulNarrowDim::Dim::N, /*size=*/nSize};
+  }
+
+  return (narrowM && (!narrowN || mSize <= nSize)) ? narrowM : narrowN;
+}
+
 ArrayRef<int64_t> EncodingAttr::getRoundDimsToArray() {
   auto roundDimsTo = getRoundDimsTo();
   if (!roundDimsTo) {
@@ -153,11 +172,35 @@ ArrayRef<int64_t> EncodingAttr::getRoundDimsToArray() {
   return llvm::cast<DenseI64ArrayAttr>(roundDimsTo).asArrayRef();
 }
 
+SmallVector<Type> EncodingAttr::getElementTypesArray() {
+  return llvm::map_to_vector(getElementTypes().getValue(), [](Attribute a) {
+    return llvm::cast<TypeAttr>(a).getValue();
+  });
+}
+
 EncodingAttr EncodingAttr::clone(AffineMap bcastMap) {
   return get(bcastMap.getContext(), getOperandIndex(), getOpType(),
-             getElementTypes(), getOriginalType(), getMatmulNarrow_M(),
-             getMatmulNarrow_N(), getUserIndexingMaps(),
+             getElementTypes(), getUserIndexingMaps(),
              AffineMapAttr::get(bcastMap), getRoundDimsTo());
+}
+
+MatmulNarrowDim getMatmulNarrowDim(EncodingAttr encoding) {
+  if (encoding.getOpType().getValue() != EncodingOpType::matmul) {
+    return {};
+  }
+  ArrayRef<int64_t> roundDimsTo = encoding.getRoundDimsToArray();
+  if (roundDimsTo.empty()) {
+    return {};
+  }
+  int m = roundDimsTo[0];
+  int n = roundDimsTo[1];
+  if (m < n) {
+    return {MatmulNarrowDim::Dim::M, m};
+  }
+  if (n < m) {
+    return {MatmulNarrowDim::Dim::N, n};
+  }
+  return {};
 }
 
 //===---------------------------------------------------------------------===//

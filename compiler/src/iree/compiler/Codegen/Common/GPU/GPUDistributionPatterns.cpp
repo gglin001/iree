@@ -1020,10 +1020,16 @@ struct DistributeTrivialLayoutConversions final
                                 PatternRewriter &rewriter) const override {
     auto input = cast<VectorValue>(toLayoutOp.getInput());
     auto output = cast<VectorValue>(toLayoutOp.getOutput());
-    VectorLayoutInterface currentLayout =
-        dyn_cast<LayoutAttr>(signature[input]);
-    VectorLayoutInterface targetLayout =
-        dyn_cast<LayoutAttr>(signature[output]);
+    VectorLayoutInterface currentLayout = signature[input];
+    VectorLayoutInterface targetLayout = signature[output];
+
+    if (!currentLayout) {
+      return rewriter.notifyMatchFailure(toLayoutOp, "No layout set on input");
+    }
+
+    if (!targetLayout) {
+      return rewriter.notifyMatchFailure(toLayoutOp, "No layout set on output");
+    }
 
     if (currentLayout != targetLayout) {
       return rewriter.notifyMatchFailure(toLayoutOp,
@@ -1031,6 +1037,55 @@ struct DistributeTrivialLayoutConversions final
     }
 
     rewriter.replaceOp(toLayoutOp, toLayoutOp.getOperand());
+    return success();
+  }
+};
+
+struct DistributeGather final : OpDistributionPattern<vector::GatherOp> {
+  using OpDistributionPattern::OpDistributionPattern;
+
+  LogicalResult matchAndRewrite(vector::GatherOp gatherOp,
+                                DistributionSignature &signature,
+                                PatternRewriter &rewriter) const override {
+    VectorValue result = gatherOp.getResult();
+    VectorValue indexVec = gatherOp.getIndexVec();
+    VectorValue mask = gatherOp.getMask();
+    VectorValue passThru = gatherOp.getPassThru();
+
+    VectorLayoutInterface resultLayout = signature[result];
+    VectorLayoutInterface indicesLayout = signature[indexVec];
+    VectorLayoutInterface maskLayout = signature[mask];
+    VectorLayoutInterface passThruLayout = signature[passThru];
+
+    if (!resultLayout) {
+      return rewriter.notifyMatchFailure(gatherOp,
+                                         "result does not have layout");
+    }
+    if (!indicesLayout) {
+      return rewriter.notifyMatchFailure(gatherOp,
+                                         "indices does not have layout");
+    }
+    if (!maskLayout) {
+      return rewriter.notifyMatchFailure(gatherOp, "mask does not have layout");
+    }
+    if (!passThruLayout) {
+      return rewriter.notifyMatchFailure(gatherOp,
+                                         "passThru does not have layout");
+    }
+
+    SmallVector<int64_t> distributedShape = resultLayout.getDistributedShape();
+    Type elementType = result.getType().getElementType();
+    VectorType distributedType = VectorType::get(distributedShape, elementType);
+
+    // Simply distribute all operands and results.
+    VectorValue distributed = rewriter.create<vector::GatherOp>(
+        gatherOp.getLoc(), distributedType, gatherOp.getBase(),
+        gatherOp.getIndices(),
+        getDistributed(rewriter, indexVec, indicesLayout),
+        getDistributed(rewriter, mask, maskLayout),
+        getDistributed(rewriter, passThru, passThruLayout));
+
+    replaceOpWithDistributedValues(rewriter, gatherOp, distributed);
     return success();
   }
 };
@@ -1047,6 +1102,8 @@ void populateGPUDistributionPatterns(RewritePatternSet &patterns) {
   // Elementwise patterns.
   patterns.add<DistributeElementwise>(patterns.getContext());
   patterns.add<DistributeTrivialLayoutConversions>(patterns.getContext());
+  // Gather patterns.
+  patterns.add<DistributeGather>(patterns.getContext());
 }
 
 void populateGPUDistributionLayoutAttrPatterns(Value laneId,

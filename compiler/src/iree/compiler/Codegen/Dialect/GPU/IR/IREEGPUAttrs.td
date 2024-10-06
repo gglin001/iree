@@ -39,6 +39,7 @@ def IREEGPU_LoweringConfigAttr :
         "getStaticTilingLevelSizes",
         "getTilingLevelSizes",
         "hasTilingLevel",
+        "hasWorkgroupTilingLevel",
       ]>
     ]> {
   let mnemonic = "lowering_config";
@@ -58,6 +59,12 @@ def IREEGPU_LoweringConfigAttr :
   let extraClassDeclaration = [{
     /// Helper to retrieve a target mma intrinsic if present.
     ::mlir::iree_compiler::IREE::GPU::MmaInterfaceAttr getMmaKind() const;
+
+    /// Helper to retrieve/set a list of operand indices to promote.
+    std::optional<SmallVector<int64_t>> getPromotedOperandList() const;
+    static void setPromotedOperandList(MLIRContext *context,
+                                       SmallVectorImpl<NamedAttribute> &attrs,
+                                       ArrayRef<int64_t> operands);
   }];
 }
 
@@ -129,6 +136,7 @@ class IREEGPU_MmaVectorLayoutAttr<string attrname, string mmaintrinsic> :
     "getContractionLayout",
     "getMNKShape",
     "getSubgroupSize",
+    "getMmaScope",
     "buildMmaOperation",
     "populateOperandOffsetsSizesStrides",
     "materializeOperandConcreteShape",
@@ -215,14 +223,12 @@ def IREEGPU_DataTiledMMAAttr :
     AttrDef<IREEGPU_Dialect, "DataTiledMMA", [
   DeclareAttrInterfaceMethods<IREEGPU_MmaInterfaceAttr, [
     "getABCElementTypes",
-    // TODO: Implement the interface method. The current implementation just
-    // returns {VectorType(), VectorType(), VectorType()} now because the dummy
-    // implementation is required by the MmaInterfaceAttr.
     "getABCVectorTypes",
     "getMNKShape",
     "getSubgroupSize",
-    // TODO: Implement the interface method.
-    // "populateOperandOffsetsSizesStrides",
+    "getMmaScope",
+    "populateOperandOffsetsSizesStrides",
+    "buildMmaOperation",
   ]>
 ]> {
   let mnemonic = "data_tiled_mma_layout";
@@ -252,9 +258,11 @@ def IREEGPU_DataTiledMMAAttr :
 
   let parameters = (ins
     "::mlir::iree_compiler::IREE::GPU::MMAIntrinsicAttr":$intrinsic,
-    "int64_t":$unroll_m,
-    "int64_t":$unroll_n,
-    "int64_t":$unroll_k
+    DefaultValuedParameter<"int64_t", "1", "Unrolling along the M dimension, on the same thread.">:$unroll_m,
+    DefaultValuedParameter<"int64_t", "1", "Unrolling along the M dimension, distributed across this many more threads.">:$unroll_m_to_subgroups,
+    DefaultValuedParameter<"int64_t", "1", "Unrolling along the N dimension, on the same thread.">:$unroll_n,
+    DefaultValuedParameter<"int64_t", "1", "Unrolling along the N dimension, distributed across this many more threads.">:$unroll_n_to_subgroups,
+    DefaultValuedParameter<"int64_t", "1", "Unrolling along the K dimension, on the same thread, with interleaved layout.">:$unroll_k
   );
 }
 

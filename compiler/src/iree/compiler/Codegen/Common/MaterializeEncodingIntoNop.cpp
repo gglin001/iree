@@ -45,11 +45,12 @@ struct MaterializeEncodingIntoNopPass final
 
     RewritePatternSet materializeEncodingPattern(context);
     MaterializeEncodingTypeConverter typeConverter(
-        materializeEncodingFn, IREE::HAL::ExecutableTargetAttr());
+        materializeEncodingFn, IREE::HAL::ExecutableTargetAttr(),
+        /*transposeNarrowN=*/false);
     MaterializeEncodingConversionTarget target(*context);
     populateMaterializeEncodingIntoPackUnPackPatterns(
         materializeEncodingPattern, typeConverter, materializeEncodingValueFn);
-    populateIREEMaterializeEncodingIntoPackUnPackPatterns(
+    populateShapeIndependentMaterializeEncodingPatterns(
         materializeEncodingPattern, target, typeConverter,
         materializeEncodingValueFn);
 

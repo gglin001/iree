@@ -1200,6 +1200,15 @@ LogicalResult WinogradOutputTransformOp::reifyResultShapes(
 // AttentionOp
 //===----------------------------------------------------------------------===//
 
+void AttentionOp::build(OpBuilder &odsBuilder, OperationState &odsState,
+                        TypeRange results, Value query, Value key, Value value,
+                        Value scale, ValueRange outputs, ArrayAttr indexingMaps,
+                        std::optional<Value> mask) {
+  Value maskIn = mask.value_or(Value());
+  build(odsBuilder, odsState, results, query, key, value, scale, maskIn,
+        outputs, indexingMaps);
+}
+
 LogicalResult AttentionOp::verify() {
   AttentionOp attnOp = *this;
 
@@ -1212,6 +1221,9 @@ LogicalResult AttentionOp::verify() {
 
   // Check if indexing maps can represent attention.
   SmallVector<AffineMap> indexingMaps = attnOp.getIndexingMapsArray();
+  if (indexingMaps.size() != getOperation()->getNumOperands()) {
+    return attnOp->emitOpError("expected an indexing map for each operand");
+  }
   FailureOr<AttentionOpDetail> maybeOpInfo =
       AttentionOpDetail::get(indexingMaps);
   if (failed(maybeOpInfo)) {
@@ -1246,8 +1258,8 @@ LogicalResult AttentionOp::verify() {
       }
       if (shape[pos] != valShape[i]) {
         return attnOp->emitError("Shape Mismatch for ")
-               << operandName << ". Expected: " << shape[pos]
-               << " Got: " << valShape[i];
+               << operandName << " at position " << i
+               << ". Expected: " << shape[pos] << " Got: " << valShape[i];
       }
     }
     return success();
@@ -1259,6 +1271,38 @@ LogicalResult AttentionOp::verify() {
       failed(
           checkShape("Output", getOutputType().getShape(), getOutputMap()))) {
     return failure();
+  }
+
+  // Additional check case if mask exists
+  if (auto maskMap = getMaskMap()) {
+    if (failed(checkShape("Mask", getMaskType()->getShape(), *maskMap)))
+      return failure();
+  }
+
+  int expectedSymbols = getQueryMap().getNumInputs();
+  auto checkDomain =
+      [&attnOp, &expectedSymbols](StringRef operandName,
+                                  AffineMap indexingMap) -> LogicalResult {
+    if (expectedSymbols != indexingMap.getNumInputs()) {
+      return attnOp->emitError("Mismatched map domain for ")
+             << operandName << ". Expected: " << expectedSymbols
+             << " Got: " << indexingMap.getNumInputs();
+    }
+    return success();
+  };
+
+  if (failed(checkDomain("Query", getQueryMap())) ||
+      failed(checkDomain("Key", getKeyMap())) ||
+      failed(checkDomain("Value", getValueMap())) ||
+      failed(checkDomain("Scale", getScaleMap())) ||
+      failed(checkDomain("Output", getOutputMap()))) {
+    return failure();
+  }
+
+  // Additional check case if mask exists
+  if (auto maskMap = getMaskMap()) {
+    if (failed(checkDomain("Mask", *maskMap)))
+      return failure();
   }
 
   if (isTiled) {
@@ -1324,19 +1368,28 @@ SmallVector<int64_t, 4> AttentionOp::getStaticLoopRanges() {
 
 SmallVector<AffineMap> AttentionOp::getIndexingMapsForOperands() {
   auto maps = getIndexingMapsArray();
-  return SmallVector<AffineMap>(maps.begin(),
-                                maps.begin() + getNumDpsInputs() - 1);
+  maps.resize(getNumDpsInputs());
+  return maps;
 }
 
 SmallVector<AffineMap> AttentionOp::getIndexingMapsForResults() {
   auto maps = getIndexingMapsArray();
-  return SmallVector<AffineMap>(maps.begin() + getNumDpsInputs() - 1,
-                                maps.end());
+  return SmallVector<AffineMap>(maps.begin() + getNumDpsInputs(), maps.end());
 }
 
 //===----------------------------------------------------------------------===//
 // OnlineAttentionOp
 //===----------------------------------------------------------------------===//
+
+void OnlineAttentionOp::build(OpBuilder &odsBuilder, OperationState &odsState,
+                              TypeRange results, Value query, Value key,
+                              Value value, Value scale, Value output, Value max,
+                              Value sum, ArrayAttr indexingMaps,
+                              std::optional<Value> mask) {
+  Value maskIn = mask.value_or(Value());
+  build(odsBuilder, odsState, results, query, key, value, maskIn, scale, output,
+        max, sum, indexingMaps);
+}
 
 LogicalResult OnlineAttentionOp::verify() {
   OnlineAttentionOp attnOp = *this;
@@ -1389,11 +1442,46 @@ LogicalResult OnlineAttentionOp::verify() {
     return failure();
   }
 
+  // Additional check case if mask exists
+  if (auto maskMap = getMaskMap()) {
+    if (failed(checkShape("Mask", getMask().getType().getShape(), *maskMap)))
+      return failure();
+  }
+
+  int expectedSymbols = getQueryMap().getNumInputs();
+  auto checkDomain =
+      [&attnOp, &expectedSymbols](StringRef operandName,
+                                  AffineMap indexingMap) -> LogicalResult {
+    if (expectedSymbols != indexingMap.getNumInputs()) {
+      return attnOp->emitError("Mismatched map domain for ")
+             << operandName << ". Expected: " << expectedSymbols
+             << " Got: " << indexingMap.getNumInputs();
+    }
+    return success();
+  };
+
+  if (failed(checkDomain("Query", getQueryMap())) ||
+      failed(checkDomain("Key", getKeyMap())) ||
+      failed(checkDomain("Value", getValueMap())) ||
+      failed(checkDomain("Scale", getScaleMap())) ||
+      failed(checkDomain("Output", getOutputMap())) ||
+      failed(checkDomain("Max", getMaxMap())) ||
+      failed(checkDomain("Sum", getSumMap()))) {
+    return failure();
+  }
+
+  // Additional check case if mask exists
+  if (auto maskMap = getMaskMap()) {
+    if (failed(checkDomain("Mask", *maskMap)))
+      return failure();
+  }
+
   return success();
 }
 
 MutableOperandRange OnlineAttentionOp::getDpsInitsMutable() {
-  return MutableOperandRange(*this, /*numInputs=*/4, /*numInits=*/3);
+  return MutableOperandRange(*this, /*numInputs=*/getMask() ? 5 : 4,
+                             /*numInits=*/3);
 }
 
 LogicalResult OnlineAttentionOp::reifyResultShapes(
@@ -1549,6 +1637,164 @@ Im2colOp::reifyResultShapes(OpBuilder &b,
       .reifyResultShapes(b, reifiedReturnShapes);
 }
 
+//===---------------------------------------------------------------------===//
+// Custom Op
+//===---------------------------------------------------------------------===//
+
+unsigned CustomOp::getNumLoops() { return getIteratorTypesAttr().size(); }
+
+int64_t CustomOp::getRank(Value v) {
+  Type type = v.getType();
+  if (type.isIntOrIndexOrFloat()) {
+    return 0;
+  }
+  return cast<RankedTensorType>(type).getRank();
+}
+
+LogicalResult CustomOp::verify() {
+  // All inputs/outputs must have indexing maps.
+  if (static_cast<int64_t>(getIndexingMapsAttr().size()) != getNumOperands()) {
+    return emitOpError("expected number of indexing maps (")
+           << getIndexingMapsAttr().size()
+           << ") to be same as the "
+              "number of input/output operands ("
+           << getNumOperands() << ")";
+  }
+
+  // Check the form of the indexing maps.
+  std::optional<unsigned> numSymbolDims;
+  for (auto [index, indexingMapAttr, operand] :
+       llvm::enumerate(getIndexingMapsAttr(), getOperands())) {
+    auto indexingMap = cast<AffineMapAttr>(indexingMapAttr).getValue();
+    if (indexingMap.isEmpty()) {
+      continue;
+    }
+
+    // Domain must be consistent.
+    unsigned numLoops = getNumLoops();
+    if (indexingMap.getNumDims() != numLoops) {
+      return emitOpError("expected indexing_map #")
+             << index << " to have " << numLoops
+             << " dim(s) to match the number of loops or be zero";
+    }
+
+    // Check that number of symbols is consistent.
+    if (numSymbolDims) {
+      if (indexingMap.getNumSymbols() != numSymbolDims.value()) {
+        return emitOpError(
+                   "inconsistent number of symbol dimensions in indexing_map #")
+               << index << ", expected " << numSymbolDims.value()
+               << " instead of " << indexingMap.getNumSymbols();
+      }
+    } else {
+      numSymbolDims = indexingMap.getNumSymbols();
+    }
+
+    // Range must match the rank of the operands.
+    int64_t rank = getRank(operand);
+    if (indexingMap.getNumResults() != rank) {
+      return emitOpError("expected operand rank(")
+             << rank << ") to match the result rank of indexing map #" << index;
+    }
+  }
+
+  // Check that number of basic block arguments is same as number of operands
+  Block *body = getBody();
+  if (body->getNumArguments() != getNumOperands()) {
+    return emitOpError("expected as many basic block arguments (")
+           << body->getNumArguments() << ") as the number of operands ("
+           << getNumOperands() << ")";
+  }
+
+  // Check that type of the basic block argument matches the type of the
+  // operands.
+  for (auto [index, bbArg, operand] :
+       llvm::enumerate(body->getArguments(), getOperands())) {
+    Type operandType = operand.getType();
+    Type bbArgType = bbArg.getType();
+
+    if (operandType.isIntOrIndexOrFloat()) {
+      if (operandType != bbArgType) {
+        return emitOpError("for (scalar) operand #")
+               << index
+               << " expected corresponding basic block argument to be of the "
+                  "same type";
+      }
+      continue;
+    }
+
+    auto operandTensorType = cast<RankedTensorType>(operandType);
+    auto bbArgTensorType = dyn_cast<RankedTensorType>(bbArgType);
+    if (!bbArgTensorType) {
+      return emitOpError("for (tensor) operand #")
+             << index
+             << " expected corresponding basic block argument to be tensor as "
+                "well";
+    }
+
+    // Check that the basic block arg has same rank/element type, but all shapes
+    // dynamic.
+    auto expectedBBArgType = RankedTensorType::get(
+        SmallVector<int64_t>(operandTensorType.getRank(), ShapedType::kDynamic),
+        operandTensorType.getElementType(), operandTensorType.getEncoding());
+    if (bbArgTensorType != expectedBBArgType) {
+      return emitOpError("expected basic block argument corresponding to "
+                         "(tensor) operand #")
+             << index << " to be " << expectedBBArgType << " instead of "
+             << bbArgTensorType;
+    }
+  }
+
+  // Check yield operation operand types.
+  auto yieldOp = cast<IREE::LinalgExt::YieldOp>(body->getTerminator());
+  if (yieldOp->getNumOperands() != getOutputs().size()) {
+    return emitOpError(
+        "expected as many yields as the numbers of `outs` operand");
+  }
+
+  for (auto [index, yieldVal, bbOperand] :
+       llvm::enumerate(yieldOp.getOperands(),
+                       body->getArguments().take_back(getOutputs().size()))) {
+    if (yieldVal.getType() != bbOperand.getType()) {
+      return emitOpError("expected type of ")
+             << index
+             << "-th operand of yield to match the corresponding output basic "
+                "block argument";
+    }
+  }
+
+  return success();
+}
+
+SmallVector<AffineMap> CustomOp::getIndexingMapsForOperands() {
+  return llvm::map_to_vector(
+      getIndexingMaps().getValue().take_front(getNumDpsInputs()),
+      [](Attribute attr) { return cast<AffineMapAttr>(attr).getValue(); });
+}
+
+SmallVector<AffineMap> CustomOp::getIndexingMapsForResults() {
+  return llvm::map_to_vector(
+      getIndexingMaps().getValue().take_back(getNumDpsInits()),
+      [](Attribute attr) { return cast<AffineMapAttr>(attr).getValue(); });
+}
+
+SmallVector<utils::IteratorType> CustomOp::getLoopIteratorTypes() {
+  return llvm::map_to_vector(getIteratorTypes(), [](Attribute attr) {
+    return cast<IREE::LinalgExt::IteratorTypeAttr>(attr).getValue();
+  });
+}
+
+LogicalResult
+CustomOp::reifyResultShapes(OpBuilder &builder,
+                            ReifiedRankedShapedTypeDims &reifiedReturnShapes) {
+  for (auto init : getOutputs()) {
+    SmallVector<OpFoldResult> sizes =
+        tensor::getMixedSizes(builder, getLoc(), init);
+    reifiedReturnShapes.emplace_back(std::move(sizes));
+  }
+  return success();
+}
+
 #define DEFINE_OP_GET_EFFECTS(OP_NAME)                                         \
   void OP_NAME::getEffects(                                                    \
       SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>      \
@@ -1569,6 +1815,7 @@ DEFINE_OP_GET_EFFECTS(WinogradOutputTransformOp)
 DEFINE_OP_GET_EFFECTS(AttentionOp)
 DEFINE_OP_GET_EFFECTS(OnlineAttentionOp)
 DEFINE_OP_GET_EFFECTS(Im2colOp)
+DEFINE_OP_GET_EFFECTS(CustomOp)
 
 } // namespace mlir::iree_compiler::IREE::LinalgExt
 
