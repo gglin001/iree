@@ -58,6 +58,7 @@ class TargetConverter:
                 ],
                 # MLIR
                 "@llvm-project//mlir:AllPassesAndDialects": ["MLIRAllDialects"],
+                "@llvm-project//mlir:ArithOpsIncGen": ["MLIRArithDialect"],
                 "@llvm-project//mlir:BufferizationInterfaces": [""],
                 "@llvm-project//mlir:CommonFolders": [""],
                 "@llvm-project//mlir:ConversionPasses": [""],
@@ -112,6 +113,7 @@ class TargetConverter:
                 "@com_google_googletest//:gtest": ["gmock", "gtest"],
                 "@spirv_cross//:spirv_cross_lib": ["spirv-cross-msl"],
                 "@cpuinfo": ["${IREE_CPUINFO_TARGET}"],
+                "@hsa_runtime_headers": ["hsa_runtime::headers"],
                 "@webgpu_headers": [],
             }
         )

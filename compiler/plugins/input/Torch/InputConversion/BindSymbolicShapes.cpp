@@ -30,17 +30,13 @@ namespace mlir::iree_compiler::TorchInput {
 
 namespace {
 
-Type getNarrowestType(Builder &builder,
-                      std::optional<std::pair<int64_t, int64_t>> minMaxBounds) {
-  if (!minMaxBounds)
-    return {};
-
-  auto maxBound = minMaxBounds->second;
-  if (maxBound <= std::numeric_limits<int32_t>::max())
-    return builder.getIntegerType(32);
-  else
-    return builder.getIntegerType(64);
-}
+// We aribtrarily say that unbounded dimensions in a torch program cannot
+// exceed 53bits, making the maximum safe dimension 9007199254740991. The
+// astute reader will note that this is also the maximum safe value in
+// JavaScript, which also "happens" to be the largest mantissa value in a
+// 64bit double. We need a maximum and in the absence of a better choice,
+// with this one we are at least in good company.
+static constexpr uint64_t MAX_DIM_VALUE = (static_cast<uint64_t>(1) << 53) - 1;
 
 // Torch "binds" symbolic shape information to all tensors in the program
 // which are not static. It does this by emitting side-effecting
@@ -107,15 +103,9 @@ class BindSymbolicShapesPass final
       auto maxVal = symbolDefOp.getMaxValAttr();
       if (minVal && maxVal) {
         uint64_t minValInt = minVal.getValue().getZExtValue();
-        uint64_t maxValInt = maxVal.getValue().getZExtValue();
-        // Note that torch represents open ranges in strange ways with various
-        // magic numbers in the high range of the uint64_t type. We somewhat
-        // arbitrarily say that anything over a fourth of the uint64_t
-        // range (which is half of the positive int64_t range, should these have
-        // originated as signed quantities), is a ridiculously large number not
-        // suitable as a shape dimension, and we drop the hint.
-        if (maxValInt >= minValInt &&
-            maxValInt < std::numeric_limits<uint64_t>::max() / 4) {
+        uint64_t maxValInt =
+            std::min(maxVal.getValue().getZExtValue(), MAX_DIM_VALUE);
+        if (maxValInt >= minValInt) {
           // Note that in Torch, min values are "weird" because they encode
           // some special cases about broadcast behavior. Here we just discard
           // them, but in the future, there may be more to derive here.
@@ -232,8 +222,8 @@ class BindSymbolicShapesPass final
       for (auto [pos, symbolValue] : llvm::enumerate(symbols)) {
         const SymbolInfo &symbolInfo = symbolInfos.at(symbolValue);
         if (!symbolInfo.minMaxBounds) {
-          lowerBounds.push_back({});
-          upperBounds.push_back({});
+          lowerBounds.push_back(1);
+          upperBounds.push_back(MAX_DIM_VALUE);
         } else {
           lowerBounds.push_back(symbolInfo.minMaxBounds->first);
           upperBounds.push_back(symbolInfo.minMaxBounds->second);
@@ -352,20 +342,25 @@ class BindSymbolicShapesPass final
         // Add optimization assumptions if the divisor or bounds are known.
         int64_t divisor = expr.getLargestKnownDivisor();
         auto bounds = evaluateExprBounds(expr, symbolInfos);
-        if (divisor != 1 || bounds) {
-          Type narrowType = getNarrowestType(builder, bounds);
-          if (narrowType) {
-            dimValue = builder.create<IREE::Util::AssumeNarrowOp>(
-                bindOp->getLoc(), dimValue, TypeAttr::get(narrowType));
-          }
-          if (bounds) {
-            dimValue = builder.create<IREE::Util::AssumeRangeOp>(
-                bindOp->getLoc(), dimValue, bounds->first, bounds->second);
-          }
-          if (divisor != 1) {
-            dimValue = builder.create<IREE::Util::AssumeDivisibleOp>(
-                bindOp->getLoc(), dimValue, divisor);
-          }
+        std::optional<uint64_t> optionalUmin;
+        std::optional<uint64_t> optionalUmax;
+        std::optional<int64_t> optionalDivisor;
+        if (bounds) {
+          optionalUmin = bounds->first;
+          optionalUmax = bounds->second;
+        }
+        if (divisor != 1) {
+          optionalDivisor = divisor;
+        }
+        if (optionalUmin || optionalUmax || optionalDivisor) {
+          auto assumption = builder.getAttr<IREE::Util::IntAssumptionAttr>(
+              /*umin=*/optionalUmin,
+              /*umax=*/optionalUmax,
+              /*divisor=*/optionalDivisor);
+          dimValue = builder
+                         .create<IREE::Util::AssumeIntOp>(bindOp->getLoc(),
+                                                          dimValue, assumption)
+                         .getResult(0);
         }
 
         materializedDims[index] = dimValue;

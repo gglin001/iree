@@ -28,21 +28,13 @@ LogicalResult
 splitReduction(RewriterBase &rewriter, LinalgExt::TopkOp topkOp,
                const TopkSplitReductionControlFn &splitReductionFn);
 
-// Patterns to convert linalg convolution ops into a gemm with an im2col
-// op and reshapes on the inputs.
+/// Patterns to convert linalg convolution ops into a gemm with an im2col
+/// op and reshapes on the inputs.
+/// TODO(Max191): Maybe move to transforms and use a funcOp walk instead of a
+///               rewrite pattern for this.
 void populateConv2DToIm2colOpPatterns(
     RewritePatternSet &patterns,
     std::optional<std::function<bool(Operation *)>> controlFn = std::nullopt);
-
-IREE::LinalgExt::AttentionOp
-tileAttention(IREE::LinalgExt::AttentionOp attnOp,
-              SmallVectorImpl<Operation *> &ops, RewriterBase &rewriter,
-              std::optional<uint64_t> tileSize = std::nullopt);
-
-void decomposeTiledAttention(IREE::LinalgExt::AttentionOp tiledAttnOp,
-                             SmallVectorImpl<Operation *> &ops,
-                             RewriterBase &rewriter,
-                             std::optional<uint64_t> tileSize = std::nullopt);
 
 void convertToOnlineAttention(IREE::LinalgExt::AttentionOp attnOp,
                               SmallVectorImpl<Operation *> &ops,

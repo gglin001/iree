@@ -95,13 +95,13 @@ void buildGlobalOptimizationPassPipeline(
 
   // Preprocessing passes to get the program into a canonical state.
   FunctionLikeNest(mainPassManager)
+      .addPass(IREE::Util::createOptimizeIntArithmeticPass)
       .addPass(createLinalgQuantizedConvToConvPass)
       .addPass(createLinalgQuantizedMatmulToMatmulPass)
       .addPass(IREE::Flow::createCanonicalizerPass)
       .addPass(createRemoveZeroExtentTensorsPass)
       .addPass(createDetachElementwiseFromNamedOpsPass)
-      .addPass(mlir::createLinalgNamedOpConversionPass)
-      .addPass(createConvert1X1FilterConv2DToMatmulPass);
+      .addPass(mlir::createLinalgNamedOpConversionPass);
   mainPassManager.addPass(createEraseUnusedLinalgOperandsPass());
 
   // Expand tensor shapes into SSA values and optimize the whole program.
@@ -182,20 +182,24 @@ void buildGlobalOptimizationPassPipeline(
   FunctionLikeNest(mainPassManager)
       .addPass(createGlobalLoopInvariantCodeMotionPass)
       .addPass(IREE::Flow::createCanonicalizerPass)
-      .addPass(mlir::createCSEPass);
+      .addPass(mlir::createCSEPass)
 
-  // Simplify util.global accesses early on; this can help with dispatch
-  // region formation as redundant store-loads are removed.
-  FunctionLikeNest(mainPassManager)
-      .addPass(IREE::Util::createSimplifyGlobalAccessesPass);
+      // Simplify util.global accesses early on; this can help with dispatch
+      // region formation as redundant store-loads are removed.
+      .addPass(IREE::Util::createSimplifyGlobalAccessesPass)
+
+      // Aggressive cleanup.
+      .addPass(IREE::Util::createApplyPatternsPass);
 
   // Module level cleanup and canonicalization of util.global (and other
   // util ops).
-  mainPassManager.addPass(IREE::Util::createApplyPatternsPass());
   mainPassManager.addPass(IREE::Util::createFoldGlobalsPass());
   mainPassManager.addPass(IREE::Util::createIPOPass());
-  mainPassManager.addPass(IREE::Flow::createCanonicalizerPass());
-  mainPassManager.addPass(createCSEPass());
+
+  FunctionLikeNest(mainPassManager)
+      .addPass(IREE::Util::createOptimizeIntArithmeticPass)
+      .addPass(IREE::Flow::createCanonicalizerPass)
+      .addPass(createCSEPass);
 
   if (transformOptions.options.constExprHoisting) {
     buildGlobalOptExprHoistingPassPipeline(mainPassManager, transformOptions);

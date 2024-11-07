@@ -429,6 +429,8 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
     ext_modules=[
         CMakeExtension("iree.compiler._mlir_libs._mlir"),
@@ -454,6 +456,7 @@ setup(
     packages=packages,
     entry_points={
         "console_scripts": [
+            "iree-build = iree.build.__main__:main",
             "iree-compile = iree.compiler.tools.scripts.iree_compile.__main__:main",
             "iree-import-onnx = iree.compiler.tools.import_onnx.__main__:_cli_main",
             "iree-ir-tool = iree.compiler.tools.ir_tool.__main__:_cli_main",

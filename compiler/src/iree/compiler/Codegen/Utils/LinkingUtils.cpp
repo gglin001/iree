@@ -28,6 +28,21 @@ gatherExecutableTargets(ArrayRef<IREE::HAL::ExecutableOp> executableOps) {
   return result;
 }
 
+SmallVector<IREE::HAL::ExecutableOp>
+gatherExecutablesForTarget(mlir::ModuleOp moduleOp, StringRef targetName) {
+  SmallVector<IREE::HAL::ExecutableOp> result;
+  for (auto executableOp : moduleOp.getOps<IREE::HAL::ExecutableOp>()) {
+    if (llvm::any_of(executableOp.getOps<IREE::HAL::ExecutableVariantOp>(),
+                     [&](IREE::HAL::ExecutableVariantOp variantOp) {
+                       return variantOp.getTarget().getBackend().getValue() ==
+                              targetName;
+                     })) {
+      result.push_back(executableOp);
+    }
+  }
+  return result;
+}
+
 // Renames |op| within |moduleOp| with a new name that is unique within both
 // |moduleOp| and |optionalSymbolTable| (if one is provided).
 static void
@@ -67,7 +82,8 @@ renameWithDisambiguatedName(Operation *op, Operation *moduleOp,
 // symbol tracked in |targetSymbolMap|.
 LogicalResult
 mergeModuleInto(Operation *sourceModuleOp, Operation *targetModuleOp,
-                DenseMap<StringRef, Operation *> &targetSymbolMap) {
+                DenseMap<StringRef, Operation *> &targetSymbolMap,
+                std::function<bool(mlir::Operation *op)> canRenameSymbol) {
   auto &sourceBlock = sourceModuleOp->getRegion(0).front();
   auto &targetBlock = targetModuleOp->getRegion(0).front();
   SymbolTable sourceSymbolTable(sourceModuleOp);
@@ -90,15 +106,19 @@ mergeModuleInto(Operation *sourceModuleOp, Operation *targetModuleOp,
           // use the existing target op.
           continue;
         }
-        if (symbolOp.getVisibility() == SymbolTable::Visibility::Private) {
+        if (canRenameSymbol(symbolOp)) {
           // Since the source symbol is private we can rename it as all uses
           // are known to be local to the source module.
           renameWithDisambiguatedName(sourceOp, sourceModuleOp, targetSymbolMap,
                                       &sourceSymbolTable);
         } else {
           // The source symbol has 'nested' or 'public' visibility.
-          if (SymbolTable::getSymbolVisibility(targetOp) !=
-              SymbolTable::Visibility::Private) {
+          if (canRenameSymbol(targetOp)) {
+            // Keep the original name for our new op, rename the target op.
+            renameWithDisambiguatedName(targetOp, targetModuleOp,
+                                        targetSymbolMap,
+                                        /*optionalSymbolTable=*/nullptr);
+          } else {
             // Oops! Both symbols are public and we can't safely rename either.
             // If you hit this with ops that you think are safe to rename, mark
             // them private.
@@ -109,11 +129,6 @@ mergeModuleInto(Operation *sourceModuleOp, Operation *targetModuleOp,
             // where that isn't true.
             return sourceOp->emitError()
                    << "multiple public symbols with the name: " << symbolName;
-          } else {
-            // Keep the original name for our new op, rename the target op.
-            renameWithDisambiguatedName(targetOp, targetModuleOp,
-                                        targetSymbolMap,
-                                        /*optionalSymbolTable=*/nullptr);
           }
         }
       }
@@ -221,8 +236,9 @@ LogicalResult linkExecutablesInto(
       // TODO(benvanik): allow for grouping when multi-versioning is supported?
       // We could, for example, link all aarch64 variants together and then
       // use function multi-versioning to let LLVM insert runtime switches.
-      if (variantOp.getTarget() != linkedTargetOp.getTarget())
+      if (variantOp.getTarget() != linkedTargetOp.getTarget()) {
         continue;
+      }
 
       // Add any required object files to the set we will link in the target.
       if (auto objectsAttr = variantOp.getObjectsAttr()) {

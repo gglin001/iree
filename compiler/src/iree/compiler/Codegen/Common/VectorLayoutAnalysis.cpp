@@ -13,6 +13,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -122,7 +123,7 @@ public:
 
   LogicalResult initialize(Operation *root) override;
 
-  LogicalResult visit(ProgramPoint point) override;
+  LogicalResult visit(ProgramPoint *point) override;
 
   void registerNewValue(Value val, const VectorLayoutInterface &layout);
 
@@ -134,6 +135,9 @@ private:
   void visitRegionSuccessors(RegionBranchOpInterface branch,
                              RegionBranchPoint branchPoint,
                              MutableArrayRef<OpOperand> operands);
+
+  void visitRegionBranchTerminatorOpInterface(RegionBranchOpInterface branch,
+                                              RegionBranchPoint branchPoint);
 
   DistributionLayout *getLatticeElement(Value val);
 
@@ -147,7 +151,7 @@ public:
 
   LogicalResult initialize(Operation *root) override;
 
-  LogicalResult visit(ProgramPoint point) override;
+  LogicalResult visit(ProgramPoint *point) override;
 
   /// Register a new value to be part of the dataflow analysis. The value should
   /// not be part of the analysis already. This is used for new values that are
@@ -205,6 +209,7 @@ ChangeResult DistributionLayout::resolveWithPossibleConflict(
   if (!opOperand.get().hasOneUse() && !vectorLayout &&
       llvm::dyn_cast_or_null<arith::ConstantOp>(
           opOperand.get().getDefiningOp())) {
+    builder.setInsertionPoint(opOperand.get().getDefiningOp());
     Operation *copiedConstOp = builder.clone(*opOperand.get().getDefiningOp());
     Value copiedConst = copiedConstOp->getResult(0);
     builder.replaceAllUsesExcept(opOperand.get(), copiedConst,
@@ -308,7 +313,7 @@ void DistributionLayout::onUpdate(DataFlowSolver *solver) const {
   if (propagation) {
     // Make propagation run again on all users of this value.
     for (Operation *user : value.getUsers()) {
-      solver->enqueue({user, propagation});
+      solver->enqueue({solver->getProgramPointAfter(user), propagation});
     }
     // TODO: Maybe we need to run it on the parent operation as well to give
     // layout to other results? Seems unlikely though as results usually
@@ -318,17 +323,19 @@ void DistributionLayout::onUpdate(DataFlowSolver *solver) const {
   if (enforcement) {
     // Make enforcement run on the parent.
     if (Operation *definingOp = value.getDefiningOp()) {
-      solver->enqueue({definingOp, enforcement});
+      solver->enqueue({solver->getProgramPointAfter(definingOp), enforcement});
     } else {
       // TODO: This is not always correct. Ideally, we should enqueue all
       // predecessors of these block arguements.
-      solver->enqueue({value.getParentBlock()->getParentOp(), enforcement});
+      solver->enqueue(
+          {solver->getProgramPointAfter(value.getParentBlock()->getParentOp()),
+           enforcement});
     }
 
     // Enforce users of this value also, as some other operands may need to
     // be updated.
     for (Operation *user : value.getUsers()) {
-      solver->enqueue({user, enforcement});
+      solver->enqueue({solver->getProgramPointAfter(user), enforcement});
     }
   }
 }
@@ -659,6 +666,9 @@ static void enforceLayoutToMultiReductionOp(
     ArrayRef<DistributionLayout *> operandLattices,
     ArrayRef<const DistributionLayout *> resultLattices,
     std::function<void(DistributionLayout *, ChangeResult)> update) {
+  if (resultLattices.empty()) {
+    return;
+  }
   // Reductions should always propagate value layout to result. Result can
   // enforce it's layout on init.
   const DistributionLayout *result = resultLattices[0];
@@ -724,9 +734,12 @@ static void enforceLayoutToBroadcastOp(
 
   auto resultShape = broadcast.getResultVectorType().getShape();
   auto inputType = broadcast.getSourceType();
-  assert(isa<VectorType>(inputType) &&
-         "Scalar broadcast not supported for now.");
-  auto inputShape = cast<VectorType>(inputType).getShape();
+
+  VectorType inputVectorType = dyn_cast<VectorType>(inputType);
+  if (!inputVectorType)
+    return;
+
+  auto inputShape = inputVectorType.getShape();
 
   SmallVector<bool> reductionMask(resultShape.size(), false);
   // Set the trailing dimensions to be reduced.
@@ -748,6 +761,8 @@ static void enforceLayoutToContractionOp(
     ArrayRef<DistributionLayout *> operandLattices,
     ArrayRef<const DistributionLayout *> resultLattices,
     std::function<void(DistributionLayout *, ChangeResult)> update) {
+  if (resultLattices.empty())
+    return;
   // Contraction has only one vector result.
   const DistributionLayout *result = resultLattices[0];
   // Contraction has init value at position 2.
@@ -849,8 +864,11 @@ LogicalResult PropagateLayout::initialize(Operation *root) {
   return success();
 }
 
-LogicalResult PropagateLayout::visit(ProgramPoint point) {
-  if (Operation *op = dyn_cast_or_null<Operation *>(point)) {
+LogicalResult PropagateLayout::visit(ProgramPoint *point) {
+  if (point->isBlockStart())
+    return success();
+
+  if (auto op = point->getPrevOp()) {
     visitOperation(op);
     return success();
   }
@@ -969,8 +987,11 @@ LogicalResult EnforceLayout::initialize(Operation *root) {
   return success();
 }
 
-LogicalResult EnforceLayout::visit(ProgramPoint point) {
-  if (Operation *op = dyn_cast_or_null<Operation *>(point)) {
+LogicalResult EnforceLayout::visit(ProgramPoint *point) {
+  if (point->isBlockStart())
+    return success();
+
+  if (auto op = point->getPrevOp()) {
     visitOperation(op);
     return success();
   }
@@ -985,6 +1006,9 @@ void EnforceLayout::visitOperation(Operation *op) {
   if (auto branch = dyn_cast<RegionBranchOpInterface>(op)) {
     visitRegionSuccessors(branch, RegionBranchPoint::parent(),
                           branch->getOpOperands());
+
+    // Handle the propagation from scf.for to yield op.
+    visitRegionBranchTerminatorOpInterface(branch, RegionBranchPoint::parent());
     return;
   }
 
@@ -1075,6 +1099,43 @@ void EnforceLayout::visitRegionSuccessors(RegionBranchOpInterface branch,
       curr++;
     }
   }
+}
+
+void EnforceLayout::visitRegionBranchTerminatorOpInterface(
+    RegionBranchOpInterface branch, RegionBranchPoint branchPoint) {
+  SmallVector<RegionSuccessor> successors;
+  branch.getSuccessorRegions(branchPoint, successors);
+  if (!branch.hasLoop())
+    return;
+  SmallVector<DistributionLayout *> resultLattices;
+  for (Value result : branch->getResults()) {
+    DistributionLayout *resultLattice = getLatticeElement(result);
+    if (resultLattice->isUninitialized())
+      continue;
+    resultLattices.push_back(resultLattice);
+  }
+
+  // We do not support multiple results yet.
+  if (resultLattices.size() != 1)
+    return;
+
+  for (RegionSuccessor successor : successors) {
+    if (Region *succ = successor.getSuccessor()) {
+      Operation *terminator = succ->back().getTerminator();
+      if (scf::YieldOp yieldOp = dyn_cast<scf::YieldOp>(terminator)) {
+        for (Value operand : yieldOp.getOperands()) {
+          if (!isa<VectorType>(operand.getType())) {
+            continue;
+          }
+          DistributionLayout *forwardLattice = getLatticeElement(operand);
+          ChangeResult changed = forwardLattice->resolve(resultLattices[0]);
+          propagateIfChanged(forwardLattice, changed);
+        }
+      }
+    }
+  }
+
+  return;
 }
 
 DistributionLayout *EnforceLayout::getLatticeElement(Value val) {

@@ -17,16 +17,14 @@ iree_lit_test_suite(
     "amdgpu_chained_matmul.mlir"
     "amdgpu_contraction_distribution.mlir"
     "amdgpu_set_anchor_layouts.mlir"
-    "attention.mlir"
-    "attention_mfma.mlir"
+    "assign_constant_ordinals.mlir"
     "cast_address_space_function.mlir"
     "cast_type_to_fit_mma.mlir"
+    "config_custom_op.mlir"
     "config_matvec.mlir"
     "config_winograd.mlir"
     "configure_tensor_layout.mlir"
-    "configure_vector_layout.mlir"
     "conv_pipeline_test_cuda.mlir"
-    "conv_pipeline_test_rocm.mlir"
     "convert_to_nvvm.mlir"
     "convert_to_rocdl.mlir"
     "create_async_groups.mlir"
@@ -39,6 +37,7 @@ iree_lit_test_suite(
     "illegal_configuration.mlir"
     "legalize.mlir"
     "linalg_transform.mlir"
+    "link_executables.mlir"
     "llvmgpu_bufferize.mlir"
     "nvvm_extract_address_computation.mlir"
     "nvvm_mma_sync_pipeline_test.mlir"
@@ -49,13 +48,8 @@ iree_lit_test_suite(
     "promote_matmul_to_fit_mma.mlir"
     "reduction_pipeline_cuda.mlir"
     "reduction_pipeline_rocm.mlir"
-    "reduction_pipeline_transform_cuda.mlir"
-    "reduction_pipeline_transform_rocm.mlir"
+    "reduction_pipeline_softmax_rocm.mlir"
     "rocdl_pipeline_test.mlir"
-    "set_transform_strategy_batch_matmul.mlir"
-    "set_transform_strategy_convolution.mlir"
-    "set_transform_strategy_matmul.mlir"
-    "set_transform_strategy_pad.mlir"
     "tensor_pad.mlir"
     "tensorcore_vectorization.mlir"
     "transform_dialect_bufferize.mlir"
@@ -77,8 +71,6 @@ iree_lit_test_suite(
     FileCheck
     iree-opt
   DATA
-    attention_mfma_transform_spec.mlir
-    attention_transform_spec.mlir
     transform_dialect_codegen_bufferize_spec.mlir
     transform_dialect_codegen_foreach_to_gpu_spec.mlir
     transform_dialect_codegen_vector_distribution_spec.mlir

@@ -27,32 +27,19 @@ class LLVMGPUPromoteMatmulToFitMMAPass final
 public:
   using impl::LLVMGPUPromoteMatmulToFitMMAPassBase<
       LLVMGPUPromoteMatmulToFitMMAPass>::LLVMGPUPromoteMatmulToFitMMAPassBase;
-  explicit LLVMGPUPromoteMatmulToFitMMAPass(
-      const LLVMGPUMatmulPadOption &option) {
-    this->targetDimensions.setValue(option);
-  }
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<tensor::TensorDialect, linalg::LinalgDialect>();
   }
 
   void padWithZeroValue(RewriterBase &rewriter, linalg::LinalgOp op,
-                        utils::IteratorType targetIterType, bool nofold) const {
+                        ArrayRef<int64_t> padToMultipleOf) const {
     LLVM_DEBUG(llvm::dbgs() << "candidate: " << op << "\n");
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointAfter(op);
 
-    SmallVector<int64_t> paddingDims;
-    for (auto [index, iterType] : llvm::enumerate(op.getIteratorTypesArray())) {
-      if (iterType == targetIterType) {
-        paddingDims.push_back(index);
-      }
-    }
+    SmallVector<int64_t> paddingDims =
+        llvm::to_vector(llvm::seq<int64_t>(padToMultipleOf.size()));
 
-    SmallVector<bool> packPaddings(op.getNumDpsInputs(), nofold);
-
-    // One is enough because they will essentially be padded to corresponding
-    // tile sizes, which should be multiple of MMA shapes.
-    SmallVector<int64_t> padToMultipleOf(paddingDims.size(), 1);
     SmallVector<Attribute> paddingValueAttributes;
     for (auto &operand : op->getOpOperands()) {
       auto elemType = getElementTypeOrSelf(operand.get().getType());
@@ -64,7 +51,6 @@ public:
             .setPaddingDimensions(paddingDims)
             .setPaddingValues(paddingValueAttributes)
             .setPadToMultipleOf(padToMultipleOf)
-            .setPackPaddings(packPaddings)
             .setCopyBackOp(linalg::LinalgPaddingOptions::CopyBackOp::None);
 
     FailureOr<linalg::LinalgOp> result =
@@ -78,26 +64,6 @@ public:
     MLIRContext *ctx = &getContext();
     auto funcOp = getOperation();
 
-    // Preserve the innermost tensor.pad ops (i.e., pad for reduction dims), so
-    // we can kick canonicalization patterns to fold outer tensor.pad ops away.
-    bool nofold = false;
-    utils::IteratorType targetIterType = utils::IteratorType::parallel;
-    switch (targetDimensions) {
-    case LLVMGPUMatmulPadOption::ParallelDims:
-      LLVM_DEBUG(llvm::dbgs() << "padding parallel dims\n");
-      targetIterType = utils::IteratorType::parallel;
-      nofold = false;
-      break;
-    case LLVMGPUMatmulPadOption::ReductionDims:
-      LLVM_DEBUG(llvm::dbgs() << "padding reduction dims\n");
-      targetIterType = utils::IteratorType::reduction;
-      nofold = true;
-      break;
-    default: // Unreachable.
-      assert(false);
-      break;
-    };
-
     SmallVector<linalg::LinalgOp> candidates;
     funcOp->walk([&](linalg::LinalgOp op) {
       if (linalg::isaContractionOpInterface(op)) {
@@ -106,8 +72,28 @@ public:
     });
 
     IRRewriter rewriter(ctx);
-    for (auto op : candidates) {
-      padWithZeroValue(rewriter, op, targetIterType, nofold);
+    for (linalg::LinalgOp op : candidates) {
+      auto config = dyn_cast_or_null<IREE::GPU::LoweringConfigAttr>(
+          getLoweringConfig(op));
+      if (!config) {
+        continue;
+      }
+
+      SmallVector<int64_t> wgTiles = config.getStaticTilingLevelSizes(
+          static_cast<unsigned>(IREE::GPU::TilingLevel::Workgroup), op);
+      SmallVector<int64_t> redTiles = config.getStaticTilingLevelSizes(
+          static_cast<unsigned>(IREE::GPU::TilingLevel::Reduction), op);
+
+      // Populate padding dimensions to maximum of possible tile sizes.
+      SmallVector<int64_t> padToMultipleOf(op.getNumLoops(), 1);
+      for (auto [wgTile, redTile, padMultiple] :
+           llvm::zip_equal(wgTiles, redTiles, padToMultipleOf)) {
+        padMultiple = std::max({wgTile, redTile, padMultiple});
+      }
+      SmallVector<int64_t> paddingDimensions =
+          llvm::to_vector(llvm::seq<int64_t>(op.getNumLoops()));
+
+      padWithZeroValue(rewriter, op, padToMultipleOf);
     }
 
     {
@@ -123,58 +109,8 @@ public:
         return signalPassFailure();
       }
     }
-
-    // XXX(hanchung): This is needed for pad op fusion, which will remove
-    // outer pad ops. I.e., it mainly wants to remove first pad op in the
-    // pad->extract_slice->pad chain, while the canonicalization pattern can
-    // only recognize slice->pad->slice->pad.
-    {
-      SmallVector<tensor::PadOp> padOps;
-      funcOp.walk([&](tensor::PadOp op) { padOps.push_back(op); });
-      for (auto op : padOps) {
-        auto srcExtractSliceOp =
-            op.getSource().getDefiningOp<tensor::ExtractSliceOp>();
-        if (!srcExtractSliceOp) {
-          continue;
-        }
-        auto producerPadOp =
-            srcExtractSliceOp.getSource().getDefiningOp<tensor::PadOp>();
-        if (!producerPadOp) {
-          continue;
-        }
-        auto src = producerPadOp.getSource()
-                       .getDefiningOp<IREE::Flow::DispatchTensorLoadOp>();
-        if (!src) {
-          continue;
-        }
-
-        rewriter.setInsertionPointAfter(src);
-        SmallVector<OpFoldResult> sizes =
-            tensor::getMixedSizes(rewriter, op.getLoc(), src);
-        SmallVector<OpFoldResult> offsets(sizes.size(),
-                                          rewriter.getIndexAttr(0));
-        SmallVector<OpFoldResult> strides(sizes.size(),
-                                          rewriter.getIndexAttr(1));
-        auto extractSliceOp = rewriter.create<tensor::ExtractSliceOp>(
-            op.getLoc(), src.getResult(), offsets, sizes, strides);
-        rewriter.startOpModification(op);
-        producerPadOp.getSourceMutable().assign(extractSliceOp.getResult());
-        rewriter.finalizeOpModification(op);
-      }
-
-      RewritePatternSet patterns(ctx);
-      tensor::PadOp::getCanonicalizationPatterns(patterns, ctx);
-      if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
-        return signalPassFailure();
-      }
-    }
   }
 };
 } // namespace
-
-std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createLLVMGPUPromoteMatmulToFitMMAPass(LLVMGPUMatmulPadOption option) {
-  return std::make_unique<LLVMGPUPromoteMatmulToFitMMAPass>(option);
-}
 
 } // namespace mlir::iree_compiler

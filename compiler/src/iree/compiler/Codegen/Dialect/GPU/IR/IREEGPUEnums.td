@@ -98,32 +98,71 @@ class IREEGPU_I32MmaEnumAttr<string name, string summary, list<I32EnumAttrCase> 
   let genSpecializedAttr = 0;
 }
 
-// Format: <kind>_<output-type>_<M>x<N>x<K>_<input-type>
-def MFMA_F32_16x16x4_F32 : I32EnumAttrCase<"MFMA_F32_16x16x4_F32", 0>;
-def MFMA_F32_16x16x16_F16 : I32EnumAttrCase<"MFMA_F32_16x16x16_F16", 1>;
-def MFMA_F32_32x32x8_F16  : I32EnumAttrCase<"MFMA_F32_32x32x8_F16", 2>;
-def MFMA_F32_16x16x32_F8E4M3FNUZ  : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E4M3FNUZ", 3>;
-def MFMA_I32_16x16x32_I8  : I32EnumAttrCase<"MFMA_I32_16x16x32_I8", 4>;
-def MFMA_I32_32x32x16_I8  : I32EnumAttrCase<"MFMA_I32_32x32x16_I8", 5>;
+// Format: <virtual><kind>_<output-type>_<M>x<N>x<K>_<input-type>
+//
+// "virtual": Prefixes intrinsic with "V" to represent Non native-MFMA
+//             emulating a larger MMA with smaller ones. This is useful
+//             to interleave reads in K-dim, S.T we can have wider reads
+//             or align layouts between matmuls.
+//
+// Values: 0xABCD where:
+// * A = vendor:
+//   * 0 = AMD
+//   * 1 = NVIDIA
+// * B is architecture:
+//   * For AMD:
+//     * 0 = RDNA3
+//     * 8 = CDNA2
+//     * 9 = CDNA3
+// * C is A/B data type:
+//   * 0 = f32
+//   * 1 = f16
+//   * 2 = bf16
+//   * 3 = f8e5m2 (and variants like fnuz).
+//   * 4 = f8e4m3 (and variants like fnuz).
+//   * 8 = i8
+// * D enumerates intrinsics for the same data type.
+//
+// CDNA3 instrinsics
+def MFMA_F32_16x16x4_F32 : I32EnumAttrCase<"MFMA_F32_16x16x4_F32", 0x0900>;
+def MFMA_F32_16x16x16_F16 : I32EnumAttrCase<"MFMA_F32_16x16x16_F16", 0x0910>;
+def MFMA_F32_32x32x8_F16  : I32EnumAttrCase<"MFMA_F32_32x32x8_F16", 0x0911>;
+def VMFMA_F32_16x16x32_F16  : I32EnumAttrCase<"VMFMA_F32_16x16x32_F16", 0x0912>;
+def VMFMA_F32_32x32x16_F16  : I32EnumAttrCase<"VMFMA_F32_32x32x16_F16", 0x0913>;
+def MFMA_F32_16x16x16_BF16  : I32EnumAttrCase<"MFMA_F32_16x16x16_BF16", 0x0920>;
+def MFMA_F32_32x32x8_BF16  : I32EnumAttrCase<"MFMA_F32_32x32x8_BF16", 0x0921>;
+def MFMA_F32_16x16x32_F8E5M2FNUZ  : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E5M2FNUZ", 0x0930>;
+def MFMA_F32_16x16x32_F8E4M3FNUZ  : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E4M3FNUZ", 0x0940>;
+// V-Intrinsic below interleaves read from K-dim from one 8xF8 to two 4xF8.
+// (Useful in F8 chained-MM to align B-layout of 2nd MM to C-layout of 1st MM)
+def VMFMA_F32_16x16x32_F8E4M3FNUZ  : I32EnumAttrCase<"VMFMA_F32_16x16x32_F8E4M3FNUZ", 0x0941>;
+def MFMA_I32_16x16x32_I8  : I32EnumAttrCase<"MFMA_I32_16x16x32_I8", 0x0980>;
+def MFMA_I32_32x32x16_I8  : I32EnumAttrCase<"MFMA_I32_32x32x16_I8", 0x0981>;
 
 // CDNA2 instrinsics
-def MFMA_I32_16x16x16_I8  : I32EnumAttrCase<"MFMA_I32_16x16x16_I8", 6>;
-def MFMA_I32_32x32x8_I8  : I32EnumAttrCase<"MFMA_I32_32x32x8_I8", 7>;
+def MFMA_I32_16x16x16_I8  : I32EnumAttrCase<"MFMA_I32_16x16x16_I8", 0x0880>;
+def MFMA_I32_32x32x8_I8  : I32EnumAttrCase<"MFMA_I32_32x32x8_I8", 0x0881>;
 
 // TODO: Create separate WMMA ops for AMD and NVIDIA GPUs
-def WMMA_F32_16x16x16_F16 : I32EnumAttrCase<"WMMA_F32_16x16x16_F16", 8>;
-def WMMA_F16_16x16x16_F16 : I32EnumAttrCase<"WMMA_F16_16x16x16_F16", 9>;
+def WMMA_F32_16x16x16_F16 : I32EnumAttrCase<"WMMA_F32_16x16x16_F16", 0x0010>;
+def WMMA_F16_16x16x16_F16 : I32EnumAttrCase<"WMMA_F16_16x16x16_F16", 0x0011>;
 
 // TODO: The actual I8 instruction allows specifying (mixed) signedness.
 // This will need to become its own class of MMA attribute.
-def WMMA_I32_16x16x16_I8 : I32EnumAttrCase<"WMMA_I32_16x16x16_I8", 10>;
+def WMMA_I32_16x16x16_I8 : I32EnumAttrCase<"WMMA_I32_16x16x16_I8", 0x0080>;
 
 def IREEGPU_MMAIntrinsic : IREEGPU_I32MmaEnumAttr<"MMAIntrinsic",
     "Descriptor for different MMA intrinsics", [
       MFMA_F32_16x16x4_F32,
       MFMA_F32_16x16x16_F16,
       MFMA_F32_32x32x8_F16,
+      VMFMA_F32_16x16x32_F16,
+      VMFMA_F32_32x32x16_F16,
+      MFMA_F32_16x16x16_BF16,
+      MFMA_F32_32x32x8_BF16,
       MFMA_F32_16x16x32_F8E4M3FNUZ,
+      MFMA_F32_16x16x32_F8E5M2FNUZ,
+      VMFMA_F32_16x16x32_F8E4M3FNUZ,
       MFMA_I32_16x16x32_I8,
       MFMA_I32_32x32x16_I8,
       MFMA_I32_16x16x16_I8,

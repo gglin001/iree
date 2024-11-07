@@ -57,8 +57,23 @@ def IREEGPU_LoweringConfigAttr :
         "The configured fields, including tiling levels">:$attributes
   );
   let extraClassDeclaration = [{
-    /// Helper to retrieve a target mma intrinsic if present.
+    /// Helper to retrieve/set a target mma intrinsic.
     ::mlir::iree_compiler::IREE::GPU::MmaInterfaceAttr getMmaKind() const;
+    static void setMmaKind(MLIRContext *context,
+                          SmallVectorImpl<NamedAttribute> &attrs,
+                          ::mlir::iree_compiler::IREE::GPU::MmaInterfaceAttr kind);
+
+    // TODO: Merge subgroup counts functionality into subgroup tiling level
+    //       lowering, when we have it implemented.
+    /// Helper to retrieve/set a target subgroup M/N counts.
+    std::optional<int64_t> getSubgroupMCount() const;
+    std::optional<int64_t> getSubgroupNCount() const;
+    static void setSubgroupMCount(MLIRContext *context,
+                                   SmallVectorImpl<NamedAttribute> &attrs,
+                                   int64_t subgroup_m_count);
+    static void setSubgroupNCount(MLIRContext *context,
+                                   SmallVectorImpl<NamedAttribute> &attrs,
+                                   int64_t subgroup_n_count);
 
     /// Helper to retrieve/set a list of operand indices to promote.
     std::optional<SmallVector<int64_t>> getPromotedOperandList() const;
@@ -216,6 +231,8 @@ def IREEGPU_MMAAttr : IREEGPU_MmaVectorLayoutAttr<"MMA", "MMAIntrinsicAttr"> {
     MMASingleSubgroupLayout getASingleSubgroupLayout() const;
     MMASingleSubgroupLayout getBSingleSubgroupLayout() const;
     MMASingleSubgroupLayout getCSingleSubgroupLayout() const;
+
+    SmallVector<MMAIntrinsic> getVirtualIntrinsics() const;
   }];
 }
 
@@ -333,11 +350,17 @@ def IREEGPU_TargetWgpAttr : AttrDef<IREEGPU_Dialect, "TargetWgp"> {
     // The maximal number of threads per X/Y/Z dimension in one workgroup.
     "DenseI32ArrayAttr":$max_workgroup_sizes,
     // The maximal number of threads we can have in one workgroup.
-    "uint32_t":$max_thread_count_per_workgroup,
+    "int32_t":$max_thread_count_per_workgroup,
     // The maximal number of shared memory bytes we can allocate per workgroup.
-    "uint32_t":$max_workgroup_memory_bytes,
-    // Tthe maximum number of workgroups per X/Y/Z dimension in a dispatch.
+    "int32_t":$max_workgroup_memory_bytes,
+    // The maximum number of workgroups per X/Y/Z dimension in a dispatch.
     "DenseI32ArrayAttr":$max_workgroup_counts,
+    // Max load instruction size in bits. TODO(#18849): populate on all GPUs.
+    OptionalParameter<"std::optional<int32_t>">:$max_load_instruction_bits,
+    // Number of SIMDs per workgroup processor. TODO(#18849): populate on all GPUs.
+    OptionalParameter<"std::optional<int32_t>">:$simds_per_wgp,
+    // VGPR register space size in bits. TODO(#18849): populate on all GPUs.
+    OptionalParameter<"std::optional<int32_t>">:$vgpr_space_bits,
 
     // An optional extra dict
     // This field allows to inject more features/limits not supported in the
@@ -481,8 +504,8 @@ def IREEGPU_LaneIdAttr : AttrDef<IREEGPU_Dialect, "LaneId", [
 //===----------------------------------------------------------------------===//
 
 def IREEGPU_ReorderWorkgroupsStrategyAttr :
-    EnumAttr<IREEGPU_Dialect, IREEGPU_ReorderWorkgroupsStrategy, ""> {
-  let assemblyFormat = "``$value";
+    EnumAttr<IREEGPU_Dialect, IREEGPU_ReorderWorkgroupsStrategy, "reorder_workgroups_strategy"> {
+  let assemblyFormat = "`<` $value `>`";
   let cppNamespace = "::mlir::iree_compiler::IREE::GPU";
 }
 
@@ -505,6 +528,7 @@ def IREEGPU_GPUPipelineOptionsAttr : AttrDef<IREEGPU_Dialect, "GPUPipelineOption
   let parameters = (ins
     OptionalParameter<"BoolAttr">:$prefetch_shared_memory,
     OptionalParameter<"BoolAttr">:$no_reduce_shared_memory_bank_conflicts,
+    OptionalParameter<"BoolAttr">:$use_igemm_convolution,
     OptionalParameter<"ReorderWorkgroupsStrategyAttr">:$reorder_workgroups_strategy
   );
 
@@ -512,6 +536,7 @@ def IREEGPU_GPUPipelineOptionsAttr : AttrDef<IREEGPU_Dialect, "GPUPipelineOption
     AttrBuilder<(ins
         CArg<"bool", "false">:$prefetch_shared_memory,
         CArg<"bool", "false">:$no_reduce_shared_memory_bank_conflicts,
+        CArg<"bool", "false">:$use_igemm_convolution,
         CArg<"std::optional<ReorderWorkgroupsStrategy>", "{}">:$reorder_workgroups_strategy)>
   ];
 

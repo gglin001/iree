@@ -20,6 +20,14 @@ struct Range;
 
 namespace mlir::iree_compiler::IREE::LinalgExt {
 
+// Helper method to add 2 OpFoldResult inputs with affine.apply.
+OpFoldResult addOfrs(OpBuilder &builder, Location loc, OpFoldResult a,
+                     OpFoldResult b);
+
+// Helper method to multiply 2 OpFoldResult inputs with affine.apply.
+OpFoldResult mulOfrs(OpBuilder &builder, Location loc, OpFoldResult a,
+                     OpFoldResult b);
+
 /// Returns a `memref.dim` or `tensor.dim` operation to get the shape of `v` at
 /// `dim`.
 Value getDimValue(OpBuilder &builder, Location loc, Value v, int64_t dim);
@@ -113,6 +121,44 @@ static void permute(SmallVectorImpl<T> &vector) {
     break;
   }
 }
+
+/// Return dim expresssions that can be used as replacements in map that
+/// contains `numSymbols` symbols. The new dim expressions have positions
+/// `numDims, numDims + 1, numDims + 2, ...., numDims + numSymbols - 1`.
+SmallVector<AffineExpr> getDimExprsForSymbols(MLIRContext *context,
+                                              unsigned numDims,
+                                              unsigned numSymbols);
+
+/// Convert all symbols in the map to dim expressions, such that the new dim
+/// expressions have positions `numDims, numDims + 1, numDims + 2, ...., numDims
+/// + numSymbols - 1`.
+AffineMap convertDimsToSymbols(AffineMap map, unsigned numDims,
+                               unsigned numSymbols,
+                               SmallVector<AffineExpr> &symbolReplacements);
+SmallVector<AffineMap>
+convertDimsToSymbols(ArrayRef<AffineMap> maps, unsigned numDims,
+                     unsigned numSymbols,
+                     SmallVector<AffineExpr> &symbolReplacements);
+SmallVector<AffineMap> convertDimsToSymbols(MLIRContext *context,
+                                            ArrayRef<AffineMap> map,
+                                            unsigned numDims,
+                                            unsigned numSymbols);
+
+/// Returns the indexing maps array for a convolution operation with IGEMM
+/// indexing. The resulting indexing maps should represent the indexing of some
+/// contraction that computes the equivalent IGEMM matmul of the convolution.
+FailureOr<SmallVector<AffineMap>>
+getIGEMMContractionIndexingMaps(linalg::LinalgOp linalgOp);
+
+/// Returns the loop bounds of a convolution op with IGEMM indexing. This
+/// function assumes the same ordering of dimensions as
+/// getIGEMMContractionIndexingMaps;
+FailureOr<SmallVector<int64_t>> getIGEMMLoopBounds(linalg::LinalgOp linalgOp);
+
+/// Returns the operand list for a convolution with IGEMM indexing. This is
+/// used to determine which inputs are the lhs and rhs, since depending on the
+/// layout, the order can be different (e.g., NCHW has the lhs and rhs swapped).
+FailureOr<SmallVector<Value>> getIGEMMOperands(linalg::LinalgOp linalgOp);
 
 /// Returns true if the operation increases bitwidths of tensors.
 /// This function checks that the genericOp:

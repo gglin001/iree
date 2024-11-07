@@ -1,4 +1,5 @@
 // RUN: iree-opt --split-input-file --mlir-print-local-scope --pass-pipeline="builtin.module(func.func(iree-codegen-gpu-apply-tiling-level, canonicalize, cse))" %s | FileCheck %s
+// RUN: iree-opt --split-input-file --mlir-print-local-scope --pass-pipeline="builtin.module(func.func(iree-codegen-gpu-apply-tiling-level{allow-zero-slices=true}, canonicalize, cse))" %s | FileCheck %s --check-prefix=NOZERO
 // RUN: iree-opt --split-input-file --mlir-print-local-scope --pass-pipeline="builtin.module(func.func(iree-codegen-gpu-apply-tiling-level{tiling-level=thread}, canonicalize, cse))" %s | FileCheck %s --check-prefix=THREAD
 // RUN: iree-opt --split-input-file --mlir-print-local-scope --pass-pipeline="builtin.module(func.func(iree-codegen-gpu-apply-tiling-level{tiling-level=subgroup}, canonicalize, cse))" %s | FileCheck %s --check-prefix=SUBGROUP
 
@@ -389,7 +390,8 @@ module {
       } {
     %4 = iree_linalg_ext.im2col {lowering_config = #config}
       strides = [1, 1] dilations = [1, 1] kernel_size = [3, 3]
-      m_offset = [0] k_offset = [0] batch_pos = [0] m_pos = [2, 3] k_pos = [1]
+      m_offset = [0] * [1] k_offset = [0] * [1]
+      batch_pos = [0] m_pos = [2, 3] k_pos = [1]
       ins(%2 : tensor<2x34x34x128xf16>)
       outs(%3 : tensor<2x128x8xf16>) -> tensor<2x128x8xf16>
     return %4 : tensor<2x128x8xf16>
@@ -473,3 +475,51 @@ module {
 //       SUBGROUP:     scf.forall.in_parallel
 //       SUBGROUP:       tensor.parallel_insert_slice %[[MMA]] into %[[INIT]]
 //       SUBGROUP:   return
+
+// -----
+
+// This test only checks when a tensor.pad gets fused when tiling. We disable
+// tensor.pad fusion by default, because it generates a gaurd to prevent
+// empty slices, which is hard to vectorize.
+//
+// However, if we already know no zero slices will be generated, we can fuse
+// the pad directly.
+
+#map = affine_map<()[s0] -> (s0 * -16 + 19, 16)>
+#map1 = affine_map<()[s0] -> (-s0 + 16)>
+module {
+  func.func @fuse_pad_no_zero_slice(%arg0: tensor<?x17xf32>, %arg1: tensor<17x17xf32>, %arg2: index, %arg3: index) -> tensor<?x17xf32> {
+    %cst = arith.constant 0.000000e+00 : f32
+    %0 = affine.min #map()[%arg2]
+    %1 = tensor.empty() : tensor<16x32xf32>
+    %2 = linalg.fill ins(%cst : f32) outs(%1 : tensor<16x32xf32>) -> tensor<16x32xf32>
+    %3 = affine.apply #map1()[%0]
+    %padded = tensor.pad %arg0 low[0, 0] high[%3, 7] {
+    ^bb0(%arg4: index, %arg5: index):
+      tensor.yield %cst : f32
+    } : tensor<?x17xf32> to tensor<16x24xf32>
+    %padded_0 = tensor.pad %arg1 low[0, 0] high[7, 15] {
+    ^bb0(%arg4: index, %arg5: index):
+      tensor.yield %cst : f32
+    } : tensor<17x17xf32> to tensor<24x32xf32>
+    %4 = linalg.matmul {lowering_config = #iree_gpu.lowering_config<{reduction = [0, 0, 8]}>} ins(%padded, %padded_0 : tensor<16x24xf32>, tensor<24x32xf32>) outs(%2 : tensor<16x32xf32>) -> tensor<16x32xf32>
+    %extracted_slice = tensor.extract_slice %4[0, 0] [%0, 17] [1, 1] : tensor<16x32xf32> to tensor<?x17xf32>
+    return %extracted_slice : tensor<?x17xf32>
+  }
+}
+
+// Only fuse pad when no-zero-slices is true.
+
+// CHECK-LABEL: @fuse_pad_no_zero_slice
+// CHECK: tensor.pad
+// CHECK: tensor.pad
+// CHECK: scf.for
+// CHECK-NOT: tensor.pad
+// CHECK: linalg.matmul
+
+// NOZERO-LABEL: @fuse_pad_no_zero_slice
+// NOZERO-NOT: tensor.pad
+// NOZERO: scf.for
+// NOZERO: tensor.pad
+// NOZERO: tensor.pad
+// NOZERO: linalg.matmul

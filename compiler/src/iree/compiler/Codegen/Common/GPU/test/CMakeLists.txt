@@ -23,6 +23,7 @@ iree_lit_test_suite(
     "gpu_distribute_scf_for.mlir"
     "gpu_distribute_shared_memory.mlir"
     "gpu_generalize_named_ops.mlir"
+    "gpu_greedily_distribute_to_threads.mlir"
     "gpu_infer_memory_space.mlir"
     "gpu_lower_to_ukernels.mlir"
     "gpu_materialize_encoding.mlir"
@@ -43,7 +44,6 @@ iree_lit_test_suite(
     "reduce_bank_conflicts.mlir"
     "transform_gpu_distribute_shared_memory.mlir"
     "transform_gpu_reduce_bank_conflicts.mlir"
-    "transform_gpu_workgroup_swizzle.mlir"
     "vector_reduction_to_gpu.mlir"
   TOOLS
     FileCheck

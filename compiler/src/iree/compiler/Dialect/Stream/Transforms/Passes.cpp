@@ -37,12 +37,19 @@ static void addCleanupPatterns(OpPassManager &passManager) {
       .addPass(mlir::createCanonicalizerPass)
       .addPass(mlir::createCSEPass)
 
+      // Integer optimizations. These operate best on a canonical form both
+      // for performance (post-simplifications cause less analysis) and
+      // simplified pattern matching.
+      .addPass(IREE::Util::createOptimizeIntArithmeticPass)
+
       // Simplify util.global accesses; this can help with data flow tracking as
       // redundant store-loads are removed.
-      .addPass(IREE::Util::createSimplifyGlobalAccessesPass);
+      .addPass(IREE::Util::createSimplifyGlobalAccessesPass)
+
+      // Aggressive cleanup.
+      .addPass(IREE::Util::createApplyPatternsPass);
 
   // Cleanup and canonicalization of util.global (and other util ops).
-  passManager.addPass(IREE::Util::createApplyPatternsPass());
   passManager.addPass(IREE::Util::createFoldGlobalsPass());
   passManager.addPass(IREE::Util::createFuseGlobalsPass());
 
@@ -304,6 +311,7 @@ void buildStreamOptimizationPassPipeline(
   // sites. This allows codegen to see the potential values for the operands
   // when operating locally on executables.
   passManager.addPass(IREE::Stream::createAnnotateDispatchArgumentsPass());
+  passManager.addPass(IREE::Stream::createAnnotateDispatchAssumptionsPass());
 
   // Pack dispatch operands on stream.executable into i32 values.
   // We do this prior to exiting the pipeline as here we can still easily

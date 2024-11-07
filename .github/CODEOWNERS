@@ -32,7 +32,6 @@
 # Experimental
 # It's experimental, but we still don't want any old directory added here.
 /experimental/ @benvanik @stellaraccident
-/experimental/rocm/ @benvanik
 /experimental/web/ @ScottTodd
 /experimental/webgpu/ @benvanik @ScottTodd
 
@@ -62,8 +61,8 @@
 /compiler/src/iree/compiler/Codegen/LLVMCPU/ @hanhanW @MaheshRavishankar
 /compiler/src/iree/compiler/Codegen/LLVMGPU/ @MaheshRavishankar @qedawkins @kuhar @Groverkss
 /compiler/src/iree/compiler/Codegen/SPIRV/ @antiagainst @MaheshRavishankar @kuhar
-/compiler/src/iree/compiler/Codegen/TransformStrategies/ @qedawkins @MaheshRavishankar
 /compiler/src/iree/compiler/ConstEval/ @hanhanW @stellaraccident
+/compiler/src/iree/compiler/Dialect/Encoding/ @bjacob @hanhanW
 /compiler/src/iree/compiler/Dialect/Flow/ @hanhanW @MaheshRavishankar @IanWood1
 /compiler/src/iree/compiler/Dialect/LinalgExt/ @hanhanW @MaheshRavishankar
 /compiler/src/iree/compiler/Dialect/Vulkan/ @antiagainst @kuhar
