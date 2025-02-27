@@ -66,7 +66,7 @@ func.func @quantized_matmul(%arg0: tensor<2x4x128x16x1xi8>, %arg1: tensor<2x4x16
   %5 = linalg.fill ins(%cst : f32) outs(%4 : tensor<2x4x688x16x16xf32>) -> tensor<2x4x688x16x16xf32>
   %6 = linalg.batch_mmt4d {lowering_config = #config2} ins(%1, %3 : tensor<2x4x128x16x1xf32>, tensor<2x688x128x16x1xf32>) outs(%5 : tensor<2x4x688x16x16xf32>) -> tensor<2x4x688x16x16xf32>
   %7 = tensor.empty() : tensor<2x11008x64xf32>
-  %unpack = tensor.unpack %6 outer_dims_perm = [0, 2, 1] inner_dims_pos = [2, 1] inner_tiles = [16, 16] into %7 : tensor<2x4x688x16x16xf32> -> tensor<2x11008x64xf32>
+  %unpack = linalg.unpack %6 outer_dims_perm = [0, 2, 1] inner_dims_pos = [2, 1] inner_tiles = [16, 16] into %7 : tensor<2x4x688x16x16xf32> -> tensor<2x11008x64xf32>
   return %unpack : tensor<2x11008x64xf32>
 }
 //      CHECK: func.func @quantized_matmul(
@@ -76,7 +76,7 @@ func.func @quantized_matmul(%arg0: tensor<2x4x128x16x1xi8>, %arg1: tensor<2x4x16
 //      CHECK:       linalg.generic
 //      CHECK:       linalg.fill
 //      CHECK:       linalg.batch_mmt4d
-//      CHECK:       tensor.unpack
+//      CHECK:       linalg.unpack
 //      CHECK:   }
 
 
@@ -117,3 +117,23 @@ func.func @dequant_avgpool(%arg0: tensor<1x320x65x65xi8>) -> tensor<1x320x1x1xf3
 // CHECK-REDUCTION:               }
 // CHECK-REDUCTION:             }
 // CHECK-REDUCTION:           }
+
+// -----
+
+module {
+// Silently bail in the case of no root op.
+  func.func @silently_bail_no_root_op(%arg0: tensor<1x2x1x2xi8>, %arg1: tensor<1x2x4x2xi8>, %arg2: tensor<1x1x1x4xi32>) -> tensor<1x1x1x4xi32> {
+    %c1794_i32 = arith.constant 1794 : i32
+    %c2_i32 = arith.constant 2 : i32
+    %c4_i32 = arith.constant 4 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c2 = arith.constant 2 : index
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %0:2 = iree_codegen.ukernel.generic "iree_uk_mmt4d" ins(%arg0, %arg1 : tensor<1x2x1x2xi8>, tensor<1x2x4x2xi8>) outs(%arg2 : tensor<1x1x1x4xi32>) (%c1, %c1, %c2, %c1_i32, %c4_i32, %c2_i32, %c1794_i32 : index, index, index, i32, i32, i32, i32) fn_def_attrs {hal.import.bitcode = true, hal.import.fields = ["processor_data"]} strided_outer_dims(1) -> tensor<1x1x1x4xi32>, i32
+    return %0#0 : tensor<1x1x1x4xi32>
+  }
+}
+
+// CHECK-REDUCTION-LABEL:   func.func @silently_bail_no_root_op(
+// CHECK-REDUCTION-NOT:       scf.for

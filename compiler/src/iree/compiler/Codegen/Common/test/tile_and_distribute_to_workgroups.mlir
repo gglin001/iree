@@ -13,7 +13,7 @@
   native_vector_size = 16 : index,
   target_triple = "aarch64-none-elf"
 }>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @matmul_tensors {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_arm_64_) {
     hal.executable.export public @matmul_tensors layout(#pipeline_layout) {
@@ -55,7 +55,7 @@ hal.executable private @matmul_tensors {
 //  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
 //  CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0] -> (s0 * 64)>
 //  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0)[s0] -> (-d0 + s0, 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable.export public @matmul_tensors
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
 // CHECK-SAME:    %[[WORKLOAD_M:[a-zA-Z0-9_]+]]: index
@@ -110,7 +110,7 @@ hal.executable private @matmul_tensors {
 }>
 #map0 = affine_map<(d0, d1) -> (d0, d1)>
 #map1 = affine_map<(d0, d1) -> (d1)>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @add {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @add layout(#pipeline_layout) {
@@ -151,7 +151,7 @@ hal.executable private @add {
   }
 }
 //  CHECK-DAG: #[[MAP:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable private @add
 //      CHECK: hal.executable.export public @add
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
@@ -181,7 +181,7 @@ hal.executable private @add {
   native_vector_size = 16 : index,
   target_triple = "x86_64-unknown-linux-gnu"}>
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @add4D {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @add4D layout(#pipeline_layout) {
@@ -225,7 +225,7 @@ hal.executable private @add4D {
   }
 }
 //  CHECK-DAG: #[[MAP:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable.export public @add4D
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
 // CHECK-SAME:    %[[WORKLOAD_0:[a-zA-Z0-9_]+]]: index
@@ -258,7 +258,7 @@ hal.executable private @add4D {
   native_vector_size = 16 : index,
   target_triple = "x86_64-unknown-linux-gnu"}>
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @add_distribute4D {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @add_distribute4D layout(#pipeline_layout) {
@@ -303,16 +303,16 @@ hal.executable private @add_distribute4D {
 }
 //  CHECK-DAG: #[[MAP:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
 //  CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0, s1] -> ((s0 ceildiv 64) * (s1 ceildiv 2))>
-//  CHECK-DAG: #[[MAP2:.+]] = affine_map<()[s0, s1] -> ((s0 floordiv (s1 ceildiv 64)) * 2)>
-//  CHECK-DAG: #[[MAP3:.+]] = affine_map<()[s0] -> ((s0 ceildiv 2) * 2)>
-//  CHECK-DAG: #[[MAP4:.+]] = affine_map<(d0)[s0] -> (-d0 + s0, 2)>
-//  CHECK-DAG: #[[MAP5:.+]] = affine_map<()[s0, s1] -> ((s0 mod (s1 ceildiv 64)) * 64)>
-//  CHECK-DAG: #[[MAP6:.+]] = affine_map<()[s0] -> ((s0 ceildiv 64) * 64)>
-//  CHECK-DAG: #[[MAP7:.+]] = affine_map<(d0)[s0] -> (-d0 + s0, 64)>
-//  CHECK-DAG: #[[MAP8:.+]] = affine_map<()[s0] -> (s0 * 64)>
+//  CHECK-DAG: #[[MAP2:.+]] = affine_map<()[s0] -> (s0 ceildiv 2)>
+//  CHECK-DAG: #[[MAP3:.+]] = affine_map<()[s0] -> (s0 * 2)>
+//  CHECK-DAG: #[[MAP4:.+]] = affine_map<()[s0] -> ((s0 ceildiv 2) * 2)>
+//  CHECK-DAG: #[[MAP5:.+]] = affine_map<(d0)[s0] -> (-d0 + s0, 2)>
+//  CHECK-DAG: #[[MAP6:.+]] = affine_map<()[s0] -> (s0 * 64)>
+//  CHECK-DAG: #[[MAP7:.+]] = affine_map<()[s0] -> ((s0 ceildiv 64) * 64)>
+//  CHECK-DAG: #[[MAP8:.+]] = affine_map<(d0)[s0] -> (-d0 + s0, 64)>
 //  CHECK-DAG: #[[MAP9:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
 
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable.export public @add_distribute4D
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
 // CHECK-SAME:    %[[WORKLOAD_0:[a-zA-Z0-9_]+]]: index
@@ -337,31 +337,34 @@ hal.executable private @add_distribute4D {
 //      CHECK:      %[[WORKGROUP_ID_Y:.*]] = hal.interface.workgroup.id[1] : index
 //      CHECK:      %[[WORKGROUP_COUNT_Y:.*]] = hal.interface.workgroup.count[1] : index
 //      CHECK:      %[[WORKGROUP_ID_Z:.*]] = hal.interface.workgroup.id[2] : index
-//  CHECK-DAG:      %[[D7:.*]] = affine.apply #map2(){{\[}}%[[WORKGROUP_ID_Z]], %[[D1]]]
-//  CHECK-DAG:      %[[D8:.*]] = affine.apply #map3(){{\[}}%[[D0]]]
-//      CHECK:      scf.for %[[ARG0:.*]] = %[[D7]] to %[[D0]] step %[[D8]] {
-//  CHECK-DAG:        %[[D9:.*]] = affine.min #map4(%[[ARG0]]){{\[}}%[[D0]]]
-//  CHECK-DAG:        %[[D10:.*]] = affine.apply #map5(){{\[}}%[[WORKGROUP_ID_Z]], %[[D1]]]
-//  CHECK-DAG:        %[[D11:.*]] = affine.apply #map6(){{\[}}%[[D1]]]
-//      CHECK:        scf.for %[[ARG1:.*]] = %[[D10]] to %[[D1]] step %[[D11]] {
-//  CHECK-DAG:          %[[D12:.*]] = affine.min #map7(%[[ARG1]]){{\[}}%[[D1]]]
-//  CHECK-DAG:          %[[D13:.*]] = affine.apply #map8(){{\[}}%[[WORKGROUP_ID_Y]]]
-//  CHECK-DAG:          %[[D14:.*]] = affine.apply #map8(){{\[}}%[[WORKGROUP_COUNT_Y]]]
-//      CHECK:          scf.for %[[ARG2:.*]] = %[[D13]] to %[[D2]] step %[[D14]] {
-//  CHECK-DAG:            %[[D15:.*]] = affine.min #map7(%[[ARG2]]){{\[}}%[[D2]]]
-//  CHECK-DAG:            %[[D16:.*]] = affine.apply #map8(){{\[}}%[[WORKGROUP_ID_X]]]
-//  CHECK-DAG:            %[[D17:.*]] = affine.apply #map8(){{\[}}%[[WORKGROUP_COUNT_X]]]
-//      CHECK:            scf.for %[[ARG3:.*]] = %[[D16]] to %[[D3]] step %[[D17]] {
-//      CHECK:              %[[D18:.*]] = affine.min #map7(%[[ARG3]]){{\[}}%[[D3]]]
-//      CHECK:              %[[D19:.*]] = flow.dispatch.tensor.load %[[D4]], offsets = {{\[}}%[[ARG0]], %[[ARG1]], %[[ARG2]], %[[ARG3]]], sizes = {{\[}}%[[D9]], %[[D12]], %[[D15]], %[[D18]]], strides = [1, 1, 1, 1] : !flow.dispatch.tensor<readonly:tensor<?x?x?x?xf32>>{%[[D0]], %[[D1]], %[[D2]], %[[D3]]} -> tensor<?x?x?x?xf32>
-//      CHECK:              %[[D20:.*]] = flow.dispatch.tensor.load %[[D5]], offsets = {{\[}}%[[ARG0]], %[[ARG1]], %[[ARG2]], %[[ARG3]]], sizes = {{\[}}%[[D9]], %[[D12]], %[[D15]], %[[D18]]], strides = [1, 1, 1, 1] : !flow.dispatch.tensor<readonly:tensor<?x?x?x?xf32>>{%[[D0]], %[[D1]], %[[D2]], %[[D3]]} -> tensor<?x?x?x?xf32>
-//      CHECK:              %[[D21:.*]] = tensor.empty(%[[D9]], %[[D12]], %[[D15]], %[[D18]]) : tensor<?x?x?x?xf32>
-//      CHECK:              %[[D22:.*]] = linalg.generic {indexing_maps = [#map9, #map9, #map9], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%[[D19]], %[[D20]] : tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>) outs(%[[D21]] : tensor<?x?x?x?xf32>) attrs =  {lowering_config = #config} {
+//  CHECK-DAG:      %[[D7:.*]] = affine.apply #map(){{\[}}%[[D1]]]
+//  CHECK-DAG:      %[[D8:.*]] = affine.apply #map2(){{\[}}%[[D0]]]
+//  CHECK-DAG:      %[[D9:.*]]:2 = affine.delinearize_index %[[WORKGROUP_ID_Z]] into (%[[D8]], %[[D7]])
+//  CHECK-DAG:      %[[D10:.*]] = affine.apply #map3(){{\[}}%[[D9]]
+//  CHECK-DAG:      %[[D11:.*]] = affine.apply #map4(){{\[}}%[[D0]]
+//      CHECK:      scf.for %[[ARG0:.*]] = %[[D10]] to %[[D0]] step %[[D11]] {
+//  CHECK-DAG:        %[[D12:.*]] = affine.min #map5(%[[ARG0]]){{\[}}%[[D0]]]
+//  CHECK-DAG:        %[[D13:.*]] = affine.apply #map6(){{\[}}%[[D9]]#1]
+//  CHECK-DAG:        %[[D14:.*]] = affine.apply #map7(){{\[}}%[[D1]]]
+//      CHECK:        scf.for %[[ARG1:.*]] = %[[D13]] to %[[D1]] step %[[D14]] {
+//  CHECK-DAG:          %[[D15:.*]] = affine.min #map8(%[[ARG1]]){{\[}}%[[D1]]]
+//  CHECK-DAG:          %[[D16:.*]] = affine.apply #map6(){{\[}}%[[WORKGROUP_ID_Y]]]
+//  CHECK-DAG:          %[[D17:.*]] = affine.apply #map6(){{\[}}%[[WORKGROUP_COUNT_Y]]]
+//      CHECK:          scf.for %[[ARG2:.*]] = %[[D16]] to %[[D2]] step %[[D17]] {
+//  CHECK-DAG:            %[[D18:.*]] = affine.min #map8(%[[ARG2]]){{\[}}%[[D2]]]
+//  CHECK-DAG:            %[[D19:.*]] = affine.apply #map6(){{\[}}%[[WORKGROUP_ID_X]]]
+//  CHECK-DAG:            %[[D20:.*]] = affine.apply #map6(){{\[}}%[[WORKGROUP_COUNT_X]]]
+//      CHECK:            scf.for %[[ARG3:.*]] = %[[D19]] to %[[D3]] step %[[D20]] {
+//      CHECK:              %[[D21:.*]] = affine.min #map8(%[[ARG3]]){{\[}}%[[D3]]]
+//      CHECK:              %[[D22:.*]] = flow.dispatch.tensor.load %[[D4]], offsets = {{\[}}%[[ARG0]], %[[ARG1]], %[[ARG2]], %[[ARG3]]], sizes = {{\[}}%[[D12]], %[[D15]], %[[D18]], %[[D21]]], strides = [1, 1, 1, 1] : !flow.dispatch.tensor<readonly:tensor<?x?x?x?xf32>>{%[[D0]], %[[D1]], %[[D2]], %[[D3]]} -> tensor<?x?x?x?xf32>
+//      CHECK:              %[[D23:.*]] = flow.dispatch.tensor.load %[[D5]], offsets = {{\[}}%[[ARG0]], %[[ARG1]], %[[ARG2]], %[[ARG3]]], sizes = {{\[}}%[[D12]], %[[D15]], %[[D18]], %[[D21]]], strides = [1, 1, 1, 1] : !flow.dispatch.tensor<readonly:tensor<?x?x?x?xf32>>{%[[D0]], %[[D1]], %[[D2]], %[[D3]]} -> tensor<?x?x?x?xf32>
+//      CHECK:              %[[D24:.*]] = tensor.empty(%[[D12]], %[[D15]], %[[D18]], %[[D21]]) : tensor<?x?x?x?xf32>
+//      CHECK:              %[[D25:.*]] = linalg.generic {indexing_maps = [#map9, #map9, #map9], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%[[D22]], %[[D23]] : tensor<?x?x?x?xf32>, tensor<?x?x?x?xf32>) outs(%[[D24]] : tensor<?x?x?x?xf32>) attrs =  {lowering_config = #config} {
 //      CHECK:              ^bb0(%[[IN:.*]]: f32, %[[IN_0:.*]]: f32, %[[OUT:.*]]: f32):
-//      CHECK:                %[[D23:.*]] = arith.addf %[[IN]], %[[IN_0]] : f32
-//      CHECK:                linalg.yield %[[D23]] : f32
+//      CHECK:                %[[D26:.*]] = arith.addf %[[IN]], %[[IN_0]] : f32
+//      CHECK:                linalg.yield %[[D26]] : f32
 //      CHECK:              } -> tensor<?x?x?x?xf32>
-//      CHECK:              flow.dispatch.tensor.store %[[D22:.*]], %[[D6]], offsets = {{\[}}%[[ARG0]], %[[ARG1]], %[[ARG2]], %[[ARG3]]], sizes = {{\[}}%[[D9]], %[[D12]], %[[D15]], %[[D18]]], strides = [1, 1, 1, 1] : tensor<?x?x?x?xf32> -> !flow.dispatch.tensor<writeonly:tensor<?x?x?x?xf32>>{%[[D0]], %[[D1]], %[[D2]], %[[D3]]}
+//      CHECK:              flow.dispatch.tensor.store %[[D25:.*]], %[[D6]], offsets = {{\[}}%[[ARG0]], %[[ARG1]], %[[ARG2]], %[[ARG3]]], sizes = {{\[}}%[[D12]], %[[D15]], %[[D18]], %[[D21]]], strides = [1, 1, 1, 1] : tensor<?x?x?x?xf32> -> !flow.dispatch.tensor<writeonly:tensor<?x?x?x?xf32>>{%[[D0]], %[[D1]], %[[D2]], %[[D3]]}
 
 // -----
 
@@ -376,7 +379,7 @@ hal.executable private @add_distribute4D {
   native_vector_size = 16 : index,
   target_triple = "x86_64-unknown-linux-gnu"}>
 #map = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @add_distribute4D_zero_tile_size {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @add_distribute4D_zero_tile_size layout(#pipeline_layout) {
@@ -422,7 +425,7 @@ hal.executable private @add_distribute4D_zero_tile_size {
 //  CHECK-DAG: #[[MAP:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
 //  CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0] -> (s0 ceildiv 2)>
 
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable.export public @add_distribute4D_zero_tile_size
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
 // CHECK-SAME:    %[[WORKLOAD_0:[a-zA-Z0-9_]+]]: index
@@ -448,7 +451,7 @@ hal.executable private @add_distribute4D_zero_tile_size {
   data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
   native_vector_size = 16 : index,
   target_triple = "aarch64-none-elf"}>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @batch_matmul_tensors {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_arm_64_) {
     hal.executable.export public @batch_matmul_tensors layout(#pipeline_layout) {
@@ -489,7 +492,7 @@ hal.executable private @batch_matmul_tensors {
   }
 }
 //  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable.export public @batch_matmul_tensors
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
 // CHECK-SAME:    %[[WORKLOAD_0:[a-zA-Z0-9_]+]]: index
@@ -517,7 +520,7 @@ hal.executable private @batch_matmul_tensors {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #executable_target_system_elf_x86_64_ = #hal.executable.target<"llvm-cpu", "system-elf-x86_64">
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @preset_config_matmul_tensors {
   hal.executable.variant public @system_elf_x86_64 target(#executable_target_system_elf_x86_64_) {
     hal.executable.export public @preset_config layout(#pipeline_layout) {
@@ -578,7 +581,7 @@ hal.executable private @preset_config_matmul_tensors {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #executable_target_system_elf_x86_64_ = #hal.executable.target<"llvm-cpu", "system-elf-x86_64">
-#translation = #iree_codegen.translation_info<CPUBufferOpsTileAndVectorize>
+#translation = #iree_codegen.translation_info<pipeline = CPUBufferOpsTileAndVectorize>
 hal.executable public @copy_op {
   hal.executable.variant public @system_elf_x86_64 target(#executable_target_system_elf_x86_64_) {
     hal.executable.export public @copy_op layout(#pipeline_layout) {
@@ -629,7 +632,7 @@ hal.executable public @copy_op {
 //  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
 //  CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0] -> (s0 * 64)>
 //  CHECK-DAG: #[[MAP2:.+]] = affine_map<(d0)[s0] -> (-d0 + s0, 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUBufferOpsTileAndVectorize>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUBufferOpsTileAndVectorize>
 //      CHECK: hal.executable.export public @copy_op
 //      CHECK:   %[[C1:.+]] = arith.constant 1 : index
 //      CHECK:   %[[D0:.+]] = affine.apply #[[MAP0]]()[%{{.+}}]
@@ -677,7 +680,7 @@ hal.executable public @copy_op {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #executable_target_system_elf_x86_64_ = #hal.executable.target<"llvm-cpu", "system-elf-x86_64">
-#translation = #iree_codegen.translation_info<CPUDefault>
+#translation = #iree_codegen.translation_info<pipeline = CPUDefault>
 hal.executable private @static_1d_fft_stage2 {
   hal.executable.variant public @system_elf_x86_64 target(#executable_target_system_elf_x86_64_) {
     hal.executable.export public @static_1d_fft_stage2 layout(#pipeline_layout) {
@@ -709,7 +712,7 @@ hal.executable private @static_1d_fft_stage2 {
     }
   }
 }
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDefault>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDefault>
 //      CHECK: hal.executable private @static_1d_fft_stage2
 //      CHECK: hal.executable.export public @static_1d_fft_stage2
 //  CHECK-DAG:   %[[C3:.+]] = arith.constant 3 : index
@@ -730,7 +733,7 @@ hal.executable private @static_1d_fft_stage2 {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #executable_target_system_elf_x86_64_ = #hal.executable.target<"llvm-cpu", "system-elf-x86_64">
-#translation = #iree_codegen.translation_info<CPUDefault>
+#translation = #iree_codegen.translation_info<pipeline = CPUDefault>
 hal.executable private @static_3d_fft_stage3 {
   hal.executable.variant public @system_elf_x86_64 target(#executable_target_system_elf_x86_64_) {
     hal.executable.export public @static_3d_fft_stage3 layout(#pipeline_layout) {
@@ -743,8 +746,8 @@ hal.executable private @static_3d_fft_stage3 {
         %c3 = arith.constant 3 : index
         %cst = arith.constant dense<[1.000000e+00, 0.707106769, 6.12323426E-17, -0.707106769]> : tensor<4xf32>
         %cst_0 = arith.constant dense<[-0.000000e+00, -0.707106769, -1.000000e+00, -0.707106769]> : tensor<4xf32>
-        %0 = bufferization.to_memref %cst_0 : memref<4xf32>
-        %1 = bufferization.to_memref %cst : memref<4xf32>
+        %0 = bufferization.to_memref %cst_0 : tensor<4xf32> to memref<4xf32>
+        %1 = bufferization.to_memref %cst : tensor<4xf32> to memref<4xf32>
         %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) : memref<64x128x32xf32>
         %3 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) : memref<64x128x32xf32>
         iree_linalg_ext.fft {lowering_config = #config}
@@ -754,7 +757,7 @@ hal.executable private @static_3d_fft_stage3 {
     }
   }
 }
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDefault>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDefault>
 //      CHECK: hal.executable private @static_3d_fft_stage3
 //      CHECK: hal.executable.export public @static_3d_fft_stage3
 //  CHECK-DAG:   %[[C1:.+]] = arith.constant 1 : index
@@ -784,7 +787,7 @@ hal.executable private @static_3d_fft_stage3 {
 #map1 = affine_map<(d0, d1, d2) -> (d0, d2)>
 #map2 = affine_map<(d0, d1, d2) -> (d2, d1)>
 #map3 = affine_map<(d0, d1, d2) -> (d0, d1)>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @outs_fusion {
   hal.executable.variant public @system_elf_x86_64 target(#executable_target_system_elf_x86_64_) {
     hal.executable.export public @outs_fusion_fn layout(#pipeline_layout) {
@@ -832,7 +835,7 @@ hal.executable private @outs_fusion {
   }
 }
 //  CHECK-DAG: #[[MAP:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable private @outs_fusion
 //      CHECK: hal.executable.export public @outs_fusion_fn
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
@@ -866,7 +869,7 @@ hal.executable private @outs_fusion {
   data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
   native_vector_size = 16 : index,
   target_triple = "x86_64-unknown-linux-gnu"}>
-#translation = #iree_codegen.translation_info<CPUDefault>
+#translation = #iree_codegen.translation_info<pipeline = CPUDefault>
 hal.executable private @conv {
   hal.executable.variant public @system_elf_x86_64 target(#executable_target_system_elf_x86_64_) {
     hal.executable.export public @conv layout(#pipeline_layout) {
@@ -916,7 +919,7 @@ hal.executable private @conv {
   }
 }
 //  CHECK-DAG: #[[MAP:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDefault>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDefault>
 //      CHECK: hal.executable private @conv
 //      CHECK: hal.executable.export public @conv
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
@@ -954,7 +957,7 @@ hal.executable private @conv {
   data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
   native_vector_size = 16 : index,
   target_triple = "x86_64-unknown-linux-gnu"}>
-#translation = #iree_codegen.translation_info<CPUDefault>
+#translation = #iree_codegen.translation_info<pipeline = CPUDefault>
 hal.executable private @conv_static {
   hal.executable.variant public @system_elf_x86_64 target(#executable_target_system_elf_x86_64_) {
     hal.executable.export public @conv_static layout(#pipeline_layout) {
@@ -989,7 +992,7 @@ hal.executable private @conv_static {
 //  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 * 20)>
 //  CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0] -> (s0 * 40)>
 //  CHECK-DAG: #[[MAP2:.+]] = affine_map<()[s0] -> (s0 * 48)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDefault>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDefault>
 //      CHECK: hal.executable private @conv_static
 //      CHECK: hal.executable.export public @conv_static
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
@@ -1027,7 +1030,7 @@ hal.executable private @conv_static {
   target_triple = "x86_64-pc-linux-gnu"}>
 #map0 = affine_map<(d0, d1) -> (d1, d0)>
 #map1 = affine_map<(d0, d1) -> (d0, d1)>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @generic_static {
   hal.executable.variant public @system_elf_x86_64 target(#executable_target_system_elf_x86_64_) {
     hal.executable.export public @generic_static layout(#pipeline_layout) {
@@ -1058,7 +1061,7 @@ hal.executable private @generic_static {
   }
 }
 //  CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0] -> (s0 * 32)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable private @generic_static
 //      CHECK: hal.executable.export public @generic_static
 //  CHECK-DAG:   %[[C1:.+]] = arith.constant 1 : index
@@ -1091,7 +1094,7 @@ hal.executable private @generic_static {
   data_layout = "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
   native_vector_size = 16 : index,
   target_triple = "aarch64-none-linux-android30"}>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @matmul_static {
   hal.executable.variant public @system_elf_arm_64 target(#executable_target_system_elf_arm_64_) {
     hal.executable.export public @matmul_static layout(#pipeline_layout) {
@@ -1144,7 +1147,7 @@ hal.executable private @matmul_static {
   data_layout = "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
   native_vector_size = 16 : index,
   target_triple = "aarch64-none-linux-android30"}>
-#translation = #iree_codegen.translation_info<CPUDefault>
+#translation = #iree_codegen.translation_info<pipeline = CPUDefault>
 hal.executable private @restrict_num_workgroups {
   hal.executable.variant public @system_elf_arm_64 target(#executable_target_system_elf_arm_64_) {
     hal.executable.export public @restrict_num_workgroups layout(#pipeline_layout) {
@@ -1199,7 +1202,7 @@ hal.executable private @restrict_num_workgroups {
 #map0 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 #map1 = affine_map<(d0, d1, d2) -> (d0)>
 #map2 = affine_map<(d0) -> (d0)>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @reduction {
   hal.executable.variant public @reduction target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @reduction ordinal(0) layout(#pipeline_layout) attributes {translation_info = #translation} {
@@ -1238,7 +1241,7 @@ hal.executable private @reduction {
   }
 }
 //  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 * 4)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable private @reduction
 //      CHECK: hal.executable.export public @reduction
 //  CHECK-DAG:   %[[C1:.+]] = arith.constant 1 : index
@@ -1267,7 +1270,7 @@ hal.executable private @reduction {
   data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
   native_vector_size = 16 : index,
   target_triple = "x86_64-none-elf"}>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @gemm_unit_N {
   hal.executable.variant public @embedded_elf_x86_64 target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @gemm_unit_N ordinal(0) layout(#pipeline_layout) {
@@ -1304,7 +1307,7 @@ hal.executable private @gemm_unit_N {
   }
 }
 //  CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0] -> (s0 * 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable private @gemm_unit_N
 //      CHECK: hal.executable.export public @gemm_unit_N
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
@@ -1337,7 +1340,7 @@ hal.executable private @gemm_unit_N {
   data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
   native_vector_size = 16 : index,
   target_triple = "x86_64-none-elf"}>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @gemm_unit_M_unit_N {
   hal.executable.variant public @embedded_elf_x86_64 target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @gemm_unit_M_unit_N ordinal(0) layout(#pipeline_layout) {
@@ -1370,7 +1373,7 @@ hal.executable private @gemm_unit_M_unit_N {
     }
   }
 }
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable private @gemm_unit_M_unit_N
 //      CHECK: hal.executable.export public @gemm_unit_M_unit_N
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device)
@@ -1394,7 +1397,7 @@ hal.executable private @gemm_unit_M_unit_N {
   native_vector_size = 16 : index,
   target_triple = "x86_64-unknown-linux-gnu"}>
 #map = affine_map<(d0, d1, d2, d3, d4, d5, d6, d7) -> (d0, d1, d2, d3, d4, d5, d6, d7)>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @generic_unit_dims {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @generic_unit_dims layout(#pipeline_layout) {
@@ -1434,7 +1437,7 @@ hal.executable private @generic_unit_dims {
   }
 }
 //  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable private @generic_unit_dims
 //      CHECK: hal.executable.export public @generic_unit_dims
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
@@ -1467,7 +1470,7 @@ hal.executable private @generic_unit_dims {
   target_triple = "x86_64-unknown-linux-gnu"}>
 #map0 = affine_map<(d0) -> (d0)>
 #map1 = affine_map<(d0) -> ()>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @reduce_to_scalar {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @reduce_to_scalar layout(#pipeline_layout) {
@@ -1501,7 +1504,7 @@ hal.executable private @reduce_to_scalar {
     }
   }
 }
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable private @reduce_to_scalar
 //      CHECK: hal.executable.export public @reduce_to_scalar
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
@@ -1524,7 +1527,7 @@ hal.executable private @reduce_to_scalar {
   native_vector_size = 16 : index,
   target_triple = "x86_64-unknown-linux-gnu"}>
 #map = affine_map<() -> ()>
-#translation = #iree_codegen.translation_info<CPUDefault>
+#translation = #iree_codegen.translation_info<pipeline = CPUDefault>
 hal.executable private @scalar {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @scalar layout(#pipeline_layout) {
@@ -1557,7 +1560,7 @@ hal.executable private @scalar {
     }
   }
 }
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDefault>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDefault>
 //      CHECK: hal.executable private @scalar
 //      CHECK: hal.executable.export public @scalar
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device)
@@ -1579,7 +1582,7 @@ hal.executable private @scalar {
   native_vector_size = 16 : index,
   target_triple = "aarch64-none-elf"
 }>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @rank_reduced_slice {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_arm_64_) {
     hal.executable.export public @rank_reduced_slice layout(#pipeline_layout) {
@@ -1613,7 +1616,7 @@ hal.executable private @rank_reduced_slice {
 }
 //  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 * 2)>
 //  CHECK-DAG: #[[MAP:.+]] = affine_map<()[s0] -> (s0 + 10)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable.export public @rank_reduced_slice
 // CHECK-NEXT:   %[[WORKLOAD:[a-zA-Z0-9]+]]: index
 //  CHECK-DAG:   %[[C1:.+]] = arith.constant 1
@@ -1645,7 +1648,7 @@ hal.executable private @rank_reduced_slice {
   data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
   native_vector_size = 16 : index,
   target_triple = "x86_64-unknown-linux-gnu"}>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @matmul_interchange {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_x86_64_) {
     hal.executable.export public @matmul_interchange layout(#pipeline_layout) {
@@ -1686,7 +1689,7 @@ hal.executable private @matmul_interchange {
 }
 //  CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 ceildiv 32)>
 //  CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0] -> (s0 ceildiv 64)>
-//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+//  CHECK-DAG: #[[TRANSLATION:.+]] = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 //      CHECK: hal.executable.export public @matmul_interchange
 // CHECK-NEXT:   (%[[DEVICE:.+]]: !hal.device,
 // CHECK-SAME:    %[[WORKLOAD_0:[a-zA-Z0-9_]+]]: index
@@ -1717,7 +1720,7 @@ hal.executable private @no_compute {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @no_compute() attributes {translation_info = #iree_codegen.translation_info<CPUDefault>} {
+      func.func @no_compute() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDefault>} {
         %c0 = arith.constant 0 : index
         %cl_0 = hal.interface.constant.load layout(#pipeline_layout) ordinal(0) : i32
         %cl_1 = hal.interface.constant.load layout(#pipeline_layout) ordinal(1) : i32
@@ -1764,7 +1767,7 @@ hal.executable private @tile_multiuse_producer {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @tile_multiuse_producer() attributes {translation_info = #iree_codegen.translation_info<CPUDoubleTilingExpert>} {
+      func.func @tile_multiuse_producer() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>} {
         %c0 = arith.constant 0 : index
         %cst = arith.constant 0.000000e+00 : f32
         %cst_0 = arith.constant 1.000000e+00 : f32
@@ -1864,7 +1867,7 @@ hal.executable private @no_tile {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @no_tile() attributes {translation_info = #iree_codegen.translation_info<CPUDefault>} {
+      func.func @no_tile() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDefault>} {
         %c0 = arith.constant 0 : index
         %c64 = arith.constant 64 : index
         %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !flow.dispatch.tensor<readonly:tensor<10xf32>>
@@ -1905,7 +1908,7 @@ hal.executable private @pack_lowering {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @gemm_lhs_pack() attributes {translation_info = #iree_codegen.translation_info<CPUDataTiling>} {
+      func.func @gemm_lhs_pack() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDataTiling>} {
         %c0 = arith.constant 0 : index
         %cst = arith.constant 0.000000e+00 : f32
         %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0)
@@ -1915,7 +1918,7 @@ hal.executable private @pack_lowering {
         %2 = flow.dispatch.tensor.load %0, offsets = [0, 0], sizes = [100, 250], strides = [1, 1]
             : !flow.dispatch.tensor<readonly:tensor<100x250xf32>> -> tensor<100x250xf32>
         %3 = tensor.empty() : tensor<14x64x8x4xf32>
-        %4 = tensor.pack %2 padding_value(%cst : f32) inner_dims_pos = [0, 1] inner_tiles = [8, 4] into %3
+        %4 = linalg.pack %2 padding_value(%cst : f32) inner_dims_pos = [0, 1] inner_tiles = [8, 4] into %3
             {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[12, 12]]>}
             : tensor<100x250xf32> -> tensor<14x64x8x4xf32>
         flow.dispatch.tensor.store %4, %1, offsets = [0, 0, 0, 0], sizes = [14, 64, 8, 4], strides = [1, 1, 1, 1]
@@ -1946,7 +1949,7 @@ hal.executable private @pack_lowering {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @gemm_rhs_transpose_pack() attributes {translation_info = #iree_codegen.translation_info<CPUDataTiling>} {
+      func.func @gemm_rhs_transpose_pack() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDataTiling>} {
         %c0 = arith.constant 0 : index
         %c114688 = arith.constant 114688 : index
         %cst = arith.constant 0.000000e+00 : f32
@@ -1957,7 +1960,7 @@ hal.executable private @pack_lowering {
         %2 = flow.dispatch.tensor.load %0, offsets = [0, 0], sizes = [250, 500], strides = [1, 1]
             : !flow.dispatch.tensor<readonly:tensor<250x500xf32>> -> tensor<250x500xf32>
         %3 = tensor.empty() : tensor<64x64x8x4xf32>
-        %4 = tensor.pack %2 padding_value(%cst : f32) outer_dims_perm = [1, 0] inner_dims_pos = [1, 0] inner_tiles = [8, 4] into %3
+        %4 = linalg.pack %2 padding_value(%cst : f32) outer_dims_perm = [1, 0] inner_dims_pos = [1, 0] inner_tiles = [8, 4] into %3
             {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[12, 14]]>}
             : tensor<250x500xf32> -> tensor<64x64x8x4xf32>
         flow.dispatch.tensor.store %4, %1, offsets = [0, 0, 0, 0], sizes = [64, 64, 8, 4], strides = [1, 1, 1, 1]
@@ -1987,7 +1990,7 @@ hal.executable private @clone_index_computations {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @clone_index_computations() attributes {translation_info = #iree_codegen.translation_info<CPUDataTiling>} {
+      func.func @clone_index_computations() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDataTiling>} {
         %cst = arith.constant 0.000000e+00 : f32
         %c0 = arith.constant 0 : index
         %cl_0 = hal.interface.constant.load layout(#pipeline_layout) ordinal(0) : i32
@@ -2015,7 +2018,7 @@ hal.executable private @clone_index_computations {
         %15 = affine.apply affine_map<()[s0] -> (s0 ceildiv 8)>()[%13]
         %16 = affine.apply affine_map<()[s0] -> (s0 ceildiv 4)>()[%14]
         %17 = tensor.empty(%15, %16) : tensor<?x?x8x4xf32>
-        %18 = tensor.pack %12 padding_value(%cst : f32) inner_dims_pos = [0, 1] inner_tiles = [8, 4] into %17
+        %18 = linalg.pack %12 padding_value(%cst : f32) inner_dims_pos = [0, 1] inner_tiles = [8, 4] into %17
             {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[64, 64]]>}
             : tensor<?x?xf32> -> tensor<?x?x8x4xf32>
         %19 = affine.apply affine_map<()[s0] -> (s0 ceildiv 8)>()[%6]
@@ -2053,7 +2056,7 @@ hal.executable private @dynamic_unpack {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @dynamic_unpack() attributes {translation_info = #iree_codegen.translation_info<CPUDataTiling>} {
+      func.func @dynamic_unpack() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDataTiling>} {
         %c131072 = arith.constant 131072 : index
         %c0 = arith.constant 0 : index
         %cl_0 = hal.interface.constant.load layout(#pipeline_layout) ordinal(0) : i32
@@ -2072,7 +2075,7 @@ hal.executable private @dynamic_unpack {
         %9 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c131072) : !flow.dispatch.tensor<writeonly:tensor<?x?xi32>>{%6, %7}
         %10 = flow.dispatch.tensor.load %8, offsets = [0, 0, 0, 0], sizes = [%4, %5, 32, 16], strides = [1, 1, 1, 1] : !flow.dispatch.tensor<readonly:tensor<?x?x32x16xi32>>{%4, %5} -> tensor<?x?x32x16xi32>
         %11 = tensor.empty(%6, %7) : tensor<?x?xi32>
-        %12 = tensor.unpack %10 inner_dims_pos = [0, 1] inner_tiles = [32, 16] into %11
+        %12 = linalg.unpack %10 inner_dims_pos = [0, 1] inner_tiles = [32, 16] into %11
           {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[64, 64]]>}
           : tensor<?x?x32x16xi32> -> tensor<?x?xi32>
         flow.dispatch.tensor.store %12, %9, offsets = [0, 0], sizes = [%6, %7], strides = [1, 1] : tensor<?x?xi32> -> !flow.dispatch.tensor<writeonly:tensor<?x?xi32>>{%6, %7}
@@ -2084,7 +2087,7 @@ hal.executable private @dynamic_unpack {
 // CHECK-LABEL: func.func @dynamic_unpack
 // CHECK:         scf.for
 // CHECK:           scf.for
-// CHECK:             tensor.unpack
+// CHECK:             linalg.unpack
 
 // -----
 
@@ -2100,7 +2103,7 @@ hal.executable private @dynamic_unpack_dynamic_tile {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @dynamic_unpack_dynamic_tile() attributes {translation_info = #iree_codegen.translation_info<CPUDataTiling>} {
+      func.func @dynamic_unpack_dynamic_tile() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDataTiling>} {
         %c131072 = arith.constant 131072 : index
         %c0 = arith.constant 0 : index
         %c16 = arith.constant 16 : index
@@ -2125,7 +2128,7 @@ hal.executable private @dynamic_unpack_dynamic_tile {
         %9 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c131072) : !flow.dispatch.tensor<writeonly:tensor<?x?xi32>>{%6, %7}
         %10 = flow.dispatch.tensor.load %8, offsets = [0, 0, 0, 0], sizes = [%4, %5, %c32, %c16], strides = [1, 1, 1, 1] : !flow.dispatch.tensor<readonly:tensor<?x?x?x?xi32>>{%4, %5, %c32, %c16} -> tensor<?x?x?x?xi32>
         %11 = tensor.empty(%6, %7) : tensor<?x?xi32>
-        %12 = tensor.unpack %10 inner_dims_pos = [0, 1] inner_tiles = [%tile0, %tile1] into %11
+        %12 = linalg.unpack %10 inner_dims_pos = [0, 1] inner_tiles = [%tile0, %tile1] into %11
           {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[64, 64]]>}
           : tensor<?x?x?x?xi32> -> tensor<?x?xi32>
         flow.dispatch.tensor.store %12, %9, offsets = [0, 0], sizes = [%6, %7], strides = [1, 1] : tensor<?x?xi32> -> !flow.dispatch.tensor<writeonly:tensor<?x?xi32>>{%6, %7}
@@ -2137,7 +2140,7 @@ hal.executable private @dynamic_unpack_dynamic_tile {
 // CHECK-LABEL: func.func @dynamic_unpack_dynamic_tile
 // CHECK:         scf.for
 // CHECK:           scf.for
-// CHECK:             tensor.unpack
+// CHECK:             linalg.unpack
 
 // -----
 
@@ -2153,13 +2156,13 @@ hal.executable private @unpack_elem {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @unpack_elem() attributes {translation_info = #iree_codegen.translation_info<CPUDataTiling>} {
+      func.func @unpack_elem() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDataTiling>} {
         %c0 = arith.constant 0 : index
         %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !flow.dispatch.tensor<readonly:tensor<16x48x8x8xf32>>
         %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : !flow.dispatch.tensor<writeonly:tensor<128x384xf32>>
         %2 = flow.dispatch.tensor.load %0, offsets = [0, 0, 0, 0], sizes = [16, 48, 8, 8], strides = [1, 1, 1, 1] : !flow.dispatch.tensor<readonly:tensor<16x48x8x8xf32>> -> tensor<16x48x8x8xf32>
         %3 = tensor.empty() : tensor<128x384xf32>
-        %4 = tensor.unpack %2 inner_dims_pos = [0, 1] inner_tiles = [8, 8] into %3 {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[64, 64]]>} : tensor<16x48x8x8xf32> -> tensor<128x384xf32>
+        %4 = linalg.unpack %2 inner_dims_pos = [0, 1] inner_tiles = [8, 8] into %3 {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[64, 64]]>} : tensor<16x48x8x8xf32> -> tensor<128x384xf32>
         %5 = linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%4 : tensor<128x384xf32>) outs(%3 : tensor<128x384xf32>) {
         ^bb0(%in: f32, %out: f32):
           %6 = arith.addf %in, %in : f32
@@ -2175,7 +2178,7 @@ hal.executable private @unpack_elem {
 // CHECK-LABEL: func.func @unpack_elem
 // CHECK:         scf.for
 // CHECK:           scf.for
-// CHECK:             tensor.unpack
+// CHECK:             linalg.unpack
 // CHECK:             linalg.generic
 
 // -----
@@ -2195,7 +2198,7 @@ hal.executable private @dynamic_unpack_fusion {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @dynamic_unpack_fusion() attributes {translation_info = #iree_codegen.translation_info<VMVXDefault>} {
+      func.func @dynamic_unpack_fusion() attributes {translation_info = #iree_codegen.translation_info<pipeline = VMVXDefault>} {
         %c200960 = arith.constant 200960 : index
         %c1003776 = arith.constant 1003776 : index
         %c1053952 = arith.constant 1053952 : index
@@ -2218,7 +2221,7 @@ hal.executable private @dynamic_unpack_fusion {
         %12 = flow.dispatch.tensor.load %5, offsets = [0], sizes = [16], strides = [1] : !flow.dispatch.tensor<readonly:tensor<16xi32>> -> tensor<16xi32>
         %13 = tensor.empty() : tensor<12544x16xi32>
         %14 = tensor.empty() : tensor<12544x16xi32>
-        %16 = tensor.unpack %10 inner_dims_pos = [0, 1] inner_tiles = [%0#0, %0#1] into %14 {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[16, 16]]>} : tensor<?x?x?x?xi32> -> tensor<12544x16xi32>
+        %16 = linalg.unpack %10 inner_dims_pos = [0, 1] inner_tiles = [%0#0, %0#1] into %14 {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[16, 16]]>} : tensor<?x?x?x?xi32> -> tensor<12544x16xi32>
         %17 = linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d1)>, affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0)>, affine_map<(d0, d1) -> (d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%cst, %16, %11, %12 : tensor<16xi32>, tensor<12544x16xi32>, tensor<12544xi32>, tensor<16xi32>) outs(%13 : tensor<12544x16xi32>) {
         ^bb0(%in: i32, %in_0: i32, %in_1: i32, %in_2: i32, %out: i32):
           %18 = arith.muli %in_1, %c-30_i32 : i32
@@ -2237,7 +2240,7 @@ hal.executable private @dynamic_unpack_fusion {
 }
 // CHECK-LABEL: func.func @dynamic_unpack_fusion
 // CHECK:         scf.for
-// CHECK:           tensor.unpack
+// CHECK:           linalg.unpack
 // CHECK:           tensor.extract_slice
 // CHECK:           linalg.generic
 
@@ -2259,7 +2262,7 @@ hal.executable private @elem_pack {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @elem_pack() attributes {translation_info = #iree_codegen.translation_info<CPUDataTiling>} {
+      func.func @elem_pack() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDataTiling>} {
         %c1339392 = arith.constant 1339392 : index
         %c0 = arith.constant 0 : index
         %c823296 = arith.constant 823296 : index
@@ -2297,7 +2300,7 @@ hal.executable private @elem_pack {
           linalg.yield %23, %25 : f32, f32
         } -> (tensor<384x512xf32>, tensor<384x512xf32>)
         %17 = tensor.empty() : tensor<48x512x8x1xf32>
-        %18 = tensor.pack %16#0 inner_dims_pos = [0, 1] inner_tiles = [8, 1] into %17 {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[8, 64]]>} : tensor<384x512xf32> -> tensor<48x512x8x1xf32>
+        %18 = linalg.pack %16#0 inner_dims_pos = [0, 1] inner_tiles = [8, 1] into %17 {lowering_config = #iree_codegen.lowering_config<tile_sizes = [[8, 64]]>} : tensor<384x512xf32> -> tensor<48x512x8x1xf32>
         flow.dispatch.tensor.store %18, %6, offsets = [0, 0, 0, 0], sizes = [48, 512, 8, 1], strides = [1, 1, 1, 1] : tensor<48x512x8x1xf32> -> !flow.dispatch.tensor<writeonly:tensor<48x512x8x1xf32>>
         flow.dispatch.tensor.store %16#0, %7, offsets = [0, 0], sizes = [384, 512], strides = [1, 1] : tensor<384x512xf32> -> !flow.dispatch.tensor<writeonly:tensor<384x512xf32>>
         return
@@ -2309,7 +2312,7 @@ hal.executable private @elem_pack {
 // CHECK:         scf.for
 // CHECK:           scf.for
 // CHECK:             %[[ELEM:.+]]:2 = linalg.generic
-// CHECK:             %[[PACK:.+]] = tensor.pack
+// CHECK:             %[[PACK:.+]] = linalg.pack
 // CHECK-DAG:         flow.dispatch.tensor.store %[[PACK]], {{.*}} sizes = [8, 64, 8, 1]
 // CHECK-DAG:         flow.dispatch.tensor.store %[[ELEM]]#0, {{.*}} sizes = [64, 64]
 
@@ -2332,7 +2335,7 @@ hal.executable private @scatter {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @scatter() attributes {translation_info = #iree_codegen.translation_info<LLVMGPUDistribute workgroup_size = [1, 1, 1]>} {
+      func.func @scatter() attributes {translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUDistribute workgroup_size = [1, 1, 1]>} {
         %c228075520 = arith.constant 228075520 : index
         %c251668480 = arith.constant 251668480 : index
         %c0 = arith.constant 0 : index
@@ -2412,7 +2415,7 @@ hal.executable private @collapse_workgroups_dispatch_dispatch_0 {
   native_vector_size = 16 : index,
   target_triple = "aarch64-none-elf"
 }>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @matmul_tensors {
   hal.executable.variant public @llvm target(#executable_target_embedded_elf_arm_64_) {
     hal.executable.export public @matmul_tensor_count_from_dag_root layout(#pipeline_layout) {
@@ -2472,7 +2475,7 @@ hal.executable private @matmul_tensors {
   #hal.pipeline.binding<storage_buffer>,
   #hal.pipeline.binding<storage_buffer>
 ]>
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 module {
   hal.executable private @matmul_tensors {
     hal.executable.variant public @llvm target(#executable_target_embedded_elf_arm_64_) {
@@ -2528,7 +2531,7 @@ module {
 ]>
 hal.executable private @avoid_unit_range_distribute {
   hal.executable.variant public @rocm_hsaco_fb target(<"rocm", "rocm-hsaco-fb">) {
-    hal.executable.export public @avoid_unit_range_distribute ordinal(0) layout(#pipeline_layout) attributes {subgroup_size = 32 : index, translation_info = #iree_codegen.translation_info<LLVMGPUVectorDistribute>, workgroup_size = [32 : index, 1 : index, 1 : index]} {
+    hal.executable.export public @avoid_unit_range_distribute ordinal(0) layout(#pipeline_layout) attributes {subgroup_size = 32 : index, translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUVectorDistribute>, workgroup_size = [32 : index, 1 : index, 1 : index]} {
     ^bb0(%arg0: !hal.device, %arg1: index, %arg2: index):
       %x, %y, %z = flow.dispatch.workgroup_count_from_slice %arg1, %arg2
       hal.return %x, %y, %z : index, index, index
@@ -2610,7 +2613,7 @@ hal.executable private @set_size_to_tilesize_when_divisible {
       hal.return %x, %y, %z : index, index, index
     }
     builtin.module {
-      func.func @set_size_to_tilesize_when_divisible() attributes {translation_info = #iree_codegen.translation_info<LLVMGPUVectorDistribute workgroup_size = [128, 1, 1] subgroup_size = 32, {mma_schedule = #iree_gpu.mma_schedule<intrinsic = #iree_gpu.mma_layout<WMMA_F32_16x16x16_F16>, subgroup_m_count = 1, subgroup_n_count = 4>}>} {
+      func.func @set_size_to_tilesize_when_divisible() attributes {translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUVectorDistribute workgroup_size = [128, 1, 1] subgroup_size = 32, {mma_schedule = #iree_gpu.mma_schedule<intrinsic = #iree_gpu.mma_layout<WMMAR3_F32_16x16x16_F16>, subgroup_m_count = 1, subgroup_n_count = 4>}>} {
         %c0 = arith.constant 0 : index
         %c32_i64 = arith.constant 32 : i64
         %cst = arith.constant 0.000000e+00 : f16
@@ -2678,7 +2681,7 @@ hal.executable private @set_size_to_tilesize_when_divisible {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #executable_target_system_elf_x86_64_ = #hal.executable.target<"llvm-cpu", "system-elf-x86_64">
-#translation = #iree_codegen.translation_info<CPUDoubleTilingExpert>
+#translation = #iree_codegen.translation_info<pipeline = CPUDoubleTilingExpert>
 hal.executable private @reshape_matmul_tensors {
   hal.executable.variant public @system_elf_x86_64 target(#executable_target_system_elf_x86_64_) {
     hal.executable.export public @reshape_matmul layout(#pipeline_layout) {

@@ -11,9 +11,8 @@
 #include "compiler/src/iree/compiler/Dialect/Flow/Transforms/RegionOpUtils.h"
 #include "iree/compiler/Dialect/LinalgExt/Utils/Utils.h"
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/IR/Dominance.h"
-#include "mlir/IR/OpDefinition.h"
 #include "mlir/Transforms/RegionUtils.h"
 
 namespace mlir::iree_compiler::DispatchCreation {
@@ -101,22 +100,44 @@ bool areFusableAsElementwiseOps(MLIRContext *context, OpOperand *fusedOperand,
   return true;
 }
 
-bool isHorizontalToGroup(Operation *op, ArrayRef<Operation *> currGroup,
-                         const DominanceInfo &dominanceInfo,
-                         Operation *seedOp) {
-  assert(dominanceInfo.properlyDominates(seedOp, op) &&
-         op->getParentRegion() == seedOp->getParentRegion());
+LogicalResult moveOperandDefs(RewriterBase &rewriter,
+                              ArrayRef<Operation *> operations,
+                              Operation *insertionPoint,
+                              DominanceInfo &dominanceInfo,
+                              ArrayRef<Operation *> ignoreOperations) {
   BackwardSliceOptions options;
-  options.omitUsesFromAbove = false;
-  // Limit the slice to the seed to make sure the slice is small.
+  llvm::DenseSet<Operation *> ignoreOperationsSet;
+  ignoreOperationsSet.insert(ignoreOperations.begin(), ignoreOperations.end());
   options.filter = [&](Operation *op) {
-    return !dominanceInfo.properlyDominates(op, seedOp);
+    return !dominanceInfo.properlyDominates(op, insertionPoint) &&
+           !ignoreOperationsSet.contains(op);
   };
+  // Set inclusive to true cause the slice is computed from the operand, and
+  // we want to include the defining op (which is the point here)
+  options.omitUsesFromAbove = false;
+  options.inclusive = true;
+
   llvm::SetVector<Operation *> slice;
-  getBackwardSlice(op, &slice, options);
-  return !llvm::any_of(currGroup, [&](Operation *groupedOp) {
-    return slice.contains(groupedOp);
-  });
+  for (auto op : operations) {
+    for (auto operand : op->getOperands()) {
+      getBackwardSlice(operand, &slice, options);
+    }
+    auto regions = op->getRegions();
+    if (regions.empty()) {
+      continue;
+    }
+    llvm::SetVector<Value> capturedVals;
+    mlir::getUsedValuesDefinedAbove(regions, capturedVals);
+    for (auto value : capturedVals) {
+      getBackwardSlice(value, &slice, options);
+    }
+  }
+
+  mlir::topologicalSort(slice);
+  for (auto op : slice) {
+    rewriter.moveOpBefore(op, insertionPoint);
+  }
+  return success();
 }
 
 } // namespace mlir::iree_compiler::DispatchCreation

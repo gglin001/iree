@@ -126,8 +126,10 @@ convertPipelineLayout(IREE::Input::PipelineLayoutAttr src) {
 
 static IREE::HAL::ExecutableObjectAttr
 convertExecutableObject(IREE::Input::ExecutableObjectAttr src) {
-  return IREE::HAL::ExecutableObjectAttr::get(src.getContext(), src.getPath(),
-                                              src.getData());
+  return IREE::HAL::ExecutableObjectAttr::get(
+      src.getContext(), src.getPath(),
+      dyn_cast_if_present<IREE::Util::SerializableAttrInterface>(
+          src.getData()));
 }
 
 static IREE::HAL::ExecutableTargetAttr
@@ -394,7 +396,7 @@ class FuncCallOpPattern : public OpConversionPattern<func::CallOp> {
         srcOp->getAttrOfType<ArrayAttr>("iree.abi.tied_operands");
     rewriter.replaceOpWithNewOp<IREE::Util::CallOp>(
         srcOp, resultTypes, srcOp.getCallee(), adaptor.getOperands(),
-        tiedOperandsAttr);
+        tiedOperandsAttr, srcOp.getArgAttrsAttr(), srcOp.getResAttrsAttr());
     return success();
   }
 };

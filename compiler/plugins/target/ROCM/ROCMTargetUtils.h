@@ -11,11 +11,15 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
 
+namespace mlir::amdgpu {
+struct Chipset;
+} // namespace mlir::amdgpu
+
 namespace mlir::iree_compiler::IREE::HAL {
 
 // Sets HIP platform globals based on the target architecture.
 LogicalResult setHIPGlobals(Location loc, llvm::Module *module,
-                            StringRef targetChip);
+                            const amdgpu::Chipset &targetChip, bool isWave64);
 
 // Links HIP device bitcode if the module uses any symbols from it.
 LogicalResult linkHIPBitcodeIfNeeded(Location loc, llvm::Module *module,
@@ -33,9 +37,6 @@ LogicalResult linkUkernelBitcodeFiles(Location loc, llvm::Module *module,
 // Compiles the `isa` to the HSA Code Object format. Returns the object file as
 // a blob.
 std::string createHsaco(Location loc, StringRef isa, StringRef name);
-
-// Returns true if the rocm archtecture target is supported for ukernels.
-bool hasUkernelSupportedRocmArch(IREE::HAL::ExecutableTargetAttr targetAttr);
 
 } // namespace mlir::iree_compiler::IREE::HAL
 

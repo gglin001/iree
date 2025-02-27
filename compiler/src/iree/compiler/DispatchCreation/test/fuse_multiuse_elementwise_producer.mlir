@@ -142,81 +142,43 @@ util.func public @math_sin() {
 
 // -----
 
-#map = affine_map<(d0, d1) -> (d0, d1)>
-util.func public @fuse_by_moving_consumer(%arg0: tensor<5x5xf32>, %arg1: tensor<5x5xf32>) -> (tensor<5x5xf32>, tensor<25xf32>) {
-  %cst = arith.constant 1.000000e+00 : f32
-  %cst_0 = arith.constant 2.000000e+00 : f32
-  %cst_1 = arith.constant 3.000000e+00 : f32
-  %4 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg0 : tensor<5x5xf32>) outs(%arg1 : tensor<5x5xf32>) {
-  ^bb0(%arg2: f32, %arg3: f32):
-    %8 = arith.addf %arg2, %cst : f32
-    linalg.yield %8 : f32
-  } -> tensor<5x5xf32>
-  // expected-note @below {{prior use here}}
-  %collapsed = tensor.collapse_shape %4 [[0, 1]] : tensor<5x5xf32> into tensor<25xf32>
-  %5 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%4 : tensor<5x5xf32>) outs(%arg1 : tensor<5x5xf32>) {
-  ^bb0(%arg2: f32, %arg3: f32):
-    %8 = arith.subf %arg2, %cst_0 : f32
-    linalg.yield %8 : f32
-  } -> tensor<5x5xf32>
-  util.return %5, %collapsed: tensor<5x5xf32>, tensor<25xf32>
-}
-// CHECK-LABEL: util.func public @fuse_by_moving_consumer
-// CHECK:         linalg.generic
-// CHECK-NOT:     linalg.generic
-
-
-// -----
-
-#map = affine_map<(d0, d1) -> (d0, d1)>
-util.func public @dont_fuse_use_from_above(%arg0: tensor<5x5xf32>, %arg1: tensor<5x5xf32>) -> (tensor<5x5xf32>, tensor<25xf32>) {
-  %cst = arith.constant 1.000000e+00 : f32
-  %cst_0 = arith.constant 2.000000e+00 : f32
-  %cst_1 = arith.constant 3.000000e+00 : f32
-  %0 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg0 : tensor<5x5xf32>) outs(%arg1 : tensor<5x5xf32>) {
+util.func public @use_in_generic(%arg0 : tensor<1x20x128x2x8xf32>) -> tensor<1x20x128x2x8xf32> {
+  %cst = arith.constant dense_resource<__elided__> : tensor<128x2x8xf32>
+  %cst_0 = arith.constant dense_resource<__elided__> : tensor<128x2x8xf32>
+  %cst_1 = arith.constant 2.500000e-01 : f32
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %1 = tensor.empty() : tensor<1x20x128x2x8xf32>
+  %2 = linalg.generic {indexing_maps = [affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>, affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>], iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]} ins(%arg0: tensor<1x20x128x2x8xf32>) outs(%1 : tensor<1x20x128x2x8xf32>) {
   ^bb0(%in: f32, %out: f32):
-    %2 = arith.addf %in, %cst : f32
-    linalg.yield %2 : f32
-  } -> tensor<5x5xf32>
-  %collapsed = tensor.collapse_shape %0 [[0, 1]] : tensor<5x5xf32> into tensor<25xf32>
-  %1 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%0 : tensor<5x5xf32>) outs(%arg1 : tensor<5x5xf32>) {
-  ^bb0(%in: f32, %out: f32):
-    %c2 = arith.constant 2 : index
-    %extracted = tensor.extract %collapsed[%c2] : tensor<25xf32>
-    %2 = arith.addf %extracted, %extracted : f32
-    linalg.yield %2 : f32
-  } -> tensor<5x5xf32>
-  util.return %1, %collapsed : tensor<5x5xf32>, tensor<25xf32>
+    %6 = arith.mulf %in, %cst_1 : f32
+    linalg.yield %6 : f32
+  } -> tensor<1x20x128x2x8xf32>
+  %3 = linalg.generic {indexing_maps = [affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>, affine_map<(d0, d1, d2, d3, d4) -> (d2, d3, d4)>, affine_map<(d0, d1, d2, d3, d4) -> (d2, d3, d4)>, affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>], iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]} ins(%2, %cst_0, %cst : tensor<1x20x128x2x8xf32>, tensor<128x2x8xf32>, tensor<128x2x8xf32>) outs(%1 : tensor<1x20x128x2x8xf32>) {
+  ^bb0(%in: f32, %in_2: f32, %in_3: f32, %out: f32):
+    %6 = linalg.index 0 : index
+    %7 = linalg.index 1 : index
+    %8 = linalg.index 2 : index
+    %9 = linalg.index 3 : index
+    %10 = linalg.index 4 : index
+    %11 = affine.apply affine_map<()[s0, s1] -> (s0 + s1 * 20)>()[%7, %6]
+    %12 = arith.subi %c1, %9 : index
+    %extracted = tensor.extract %2[%c0, %11, %8, %12, %10] : tensor<1x20x128x2x8xf32>
+    %13 = arith.negf %extracted : f32
+    %14 = arith.cmpi eq, %12, %c1 : index
+    %15 = arith.select %14, %13, %extracted : f32
+    %16 = arith.mulf %15, %in_3 : f32
+    %17 = arith.mulf %in, %in_2 : f32
+    %18 = arith.addf %17, %16 : f32
+    linalg.yield %18 : f32
+  } -> tensor<1x20x128x2x8xf32>
+  util.return %3 : tensor<1x20x128x2x8xf32>
 }
 
-// CHECK-LABEL: util.func public @dont_fuse_use_from_above
-// CHECK:         linalg.generic
-// CHECK:         linalg.generic
-
-
-// -----
-
-#map = affine_map<(d0, d1) -> (d0, d1)>
-util.func public @do_fuse_use_from_above(%arg0: tensor<5x5xf32>, %arg1: tensor<5x5xf32>) -> (tensor<5x5xf32>, tensor<25xf32>) {
-  %cst = arith.constant 1.000000e+00 : f32
-  %cst_0 = arith.constant 2.000000e+00 : f32
-  %cst_1 = arith.constant 3.000000e+00 : f32
-  %0 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%arg0 : tensor<5x5xf32>) outs(%arg1 : tensor<5x5xf32>) {
-  ^bb0(%in: f32, %out: f32):
-    %2 = arith.addf %in, %cst : f32
-    linalg.yield %2 : f32
-  } -> tensor<5x5xf32>
-  %collapsed = tensor.collapse_shape %0 [[0, 1]] : tensor<5x5xf32> into tensor<25xf32>
-  %1 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%0 : tensor<5x5xf32>) outs(%arg1 : tensor<5x5xf32>) {
-  ^bb0(%in: f32, %out: f32):
-    %c2 = arith.constant 2 : index
-    %extracted = tensor.extract %arg0[%c2, %c2] : tensor<5x5xf32>
-    %2 = arith.addf %extracted, %extracted : f32
-    linalg.yield %2 : f32
-  } -> tensor<5x5xf32>
-  util.return %1, %collapsed : tensor<5x5xf32>, tensor<25xf32>
-}
-
-// CHECK-LABEL: util.func public @do_fuse_use_from_above
-// CHECK:         linalg.generic
-// CHECK-NOT:     linalg.generic
+// These cannot be fused because %2 is an operand of %3 and used in its body.
+//
+// CHECK-LABEL: util.func public @use_in_generic(
+//       CHECK:   %[[GENERIC0:.+]] = linalg.generic
+//       CHECK:   %[[GENERIC1:.+]] = linalg.generic
+//  CHECK-SAME:     ins(%[[GENERIC0]]
+//       CHECK:   util.return %[[GENERIC1]]

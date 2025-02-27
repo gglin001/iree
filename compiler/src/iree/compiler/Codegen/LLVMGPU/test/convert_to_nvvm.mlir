@@ -13,7 +13,7 @@ hal.executable @abs_ex_dispatch_0 {
       func.func @abs_ex_dispatch_0() {
         %c0 = arith.constant 0 : index
         %c128 = arith.constant 128 : index
-        %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) offset(%c128) flags(ReadOnly) : memref<16xf32, strided<[1], offset: 32>>
+        %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) offset(%c128) flags(ReadOnly) : memref<16xf32, strided<[1], offset: ?>>
         %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) : memref<16xi32>
         %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(2) : memref<16xf32>
         %3 = gpu.block_id x
@@ -21,7 +21,7 @@ hal.executable @abs_ex_dispatch_0 {
         %5 = gpu.thread_id x
         %6 = arith.muli %3, %4 : index
         %7 = arith.addi %6, %5 : index
-        %9 = memref.load %0[%7] : memref<16xf32, strided<[1], offset: 32>>
+        %9 = memref.load %0[%7] : memref<16xf32, strided<[1], offset: ?>>
         %10 = memref.load %1[%7] : memref<16xi32>
         %11 = arith.sitofp %10 : i32 to f32
         %12 = arith.addf %9, %11 : f32
@@ -32,9 +32,9 @@ hal.executable @abs_ex_dispatch_0 {
   }
 }
 // CHECK-LABEL: llvm.func @abs_ex_dispatch_0
-//  CHECK-SAME: (%[[ARG0:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias},
-//  CHECK-SAME:  %[[ARG1:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.readonly},
-//  CHECK-SAME:  %[[ARG2:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias})
+//  CHECK-SAME: (%[[ARG0:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef},
+//  CHECK-SAME:  %[[ARG1:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef, llvm.readonly},
+//  CHECK-SAME:  %[[ARG2:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef})
 //  CHECK: %[[FADD:.+]] = llvm.fadd %{{.*}}, %{{.*}}  : f32
 //  CHECK: %[[ADDR:.+]] = llvm.getelementptr %[[ARG2]][%{{.*}}] : (!llvm.ptr, i64) -> !llvm.ptr, f32
 //  CHECK: llvm.store %[[FADD]], %[[ADDR]] : f32, !llvm.ptr
@@ -72,13 +72,13 @@ hal.executable @abs_dynamic {
   }
 }
 // CHECK-LABEL: llvm.func @abs_dynamic
-//  CHECK-SAME: (%[[ARG0:[a-zA-Z0-9]+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias},
-//  CHECK-SAME:  %[[ARG1:[a-zA-Z0-9]+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias},
-//  CHECK-SAME:  %[[ARG2:[a-zA-Z0-9]+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias},
-//  CHECK-SAME:  %[[ARG3:[a-zA-Z0-9]+]]: i32,
-//  CHECK-SAME:  %[[ARG4:[a-zA-Z0-9]+]]: i32,
-//  CHECK-SAME:  %[[ARG5:[a-zA-Z0-9]+]]: i32,
-//  CHECK-SAME:  %[[ARG6:[a-zA-Z0-9]+]]: i32)
+//  CHECK-SAME: (%[[ARG0:[a-zA-Z0-9]+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef},
+//  CHECK-SAME:  %[[ARG1:[a-zA-Z0-9]+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef},
+//  CHECK-SAME:  %[[ARG2:[a-zA-Z0-9]+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef},
+//  CHECK-SAME:  %[[ARG3:[a-zA-Z0-9]+]]: i32 {llvm.noundef},
+//  CHECK-SAME:  %[[ARG4:[a-zA-Z0-9]+]]: i32 {llvm.noundef},
+//  CHECK-SAME:  %[[ARG5:[a-zA-Z0-9]+]]: i32 {llvm.noundef},
+//  CHECK-SAME:  %[[ARG6:[a-zA-Z0-9]+]]: i32 {llvm.noundef})
 //   CHECK-DAG:   %[[OFFSET:.+]] = llvm.zext %[[ARG3]] : i32 to i64
 //   CHECK-DAG:   %[[D1:.+]] = llvm.zext %[[ARG5]] : i32 to i64
 //   CHECK-DAG:   %[[D2:.+]] = llvm.zext %[[ARG6]] : i32 to i64
@@ -126,8 +126,8 @@ hal.executable @dead_symbol {
   }
 }
 // CHECK-LABEL: llvm.func @dead_symbol
-//  CHECK-SAME: (%[[ARG0:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias},
-//  CHECK-SAME:  %[[ARG1:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias})
+//  CHECK-SAME: (%[[ARG0:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef},
+//  CHECK-SAME:  %[[ARG1:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef})
 //      CHECK:    llvm.fadd
 
 // -----
@@ -145,7 +145,7 @@ hal.executable @mixed_type {
       func.func @mixed_type() {
         %c0 = arith.constant 0 : index
         %c128 = arith.constant 128 : index
-        %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) offset(%c128) : memref<16xf32, strided<[1], offset: 4>>
+        %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) offset(%c128) : memref<16xf32, strided<[1], offset: ?>>
         %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) offset(%c0) : memref<16xi32>
         %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) : memref<16xf32>
         %3 = gpu.block_id x
@@ -153,7 +153,7 @@ hal.executable @mixed_type {
         %5 = gpu.thread_id x
         %6 = arith.muli %3, %4 : index
         %7 = arith.addi %6, %5 : index
-        %9 = memref.load %0[%7] : memref<16xf32, strided<[1], offset: 4>>
+        %9 = memref.load %0[%7] : memref<16xf32, strided<[1], offset: ?>>
         %10 = memref.load %1[%7] : memref<16xi32>
         %11 = arith.sitofp %10 : i32 to f32
         %12 = arith.addf %9, %11 : f32
@@ -165,10 +165,15 @@ hal.executable @mixed_type {
 }
 
 // CHECK-LABEL: llvm.func @mixed_type
-//  CHECK-SAME: (%[[ARG0:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias},
-//  CHECK-SAME:  %{{.*}}: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias})
+//  CHECK-SAME: (%[[ARG0:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef},
+//  CHECK-SAME:  %{{.*}}: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef})
+//       CHECK:   %[[BYTES_PER_BIT:.+]] = llvm.mlir.constant(8 : i64) : i64
+//       CHECK:   %[[BITS_PER_ELEM:.+]] = llvm.mlir.constant(32 : i64) : i64
+//       CHECK:   %[[BYTE_OFFSET:.+]] = llvm.mlir.constant(128 : index) : i64
+//       CHECK:   %[[OFFSET_BITS:.+]] = llvm.mul %[[BYTE_OFFSET]], %[[BYTES_PER_BIT]]
+//       CHECK:   %[[OFFSET_ELEMS:.+]] = llvm.udiv %[[OFFSET_BITS]], %[[BITS_PER_ELEM]]
 //       CHECK:   nvvm.read.ptx.sreg.tid.x
-//       CHECK:   llvm.getelementptr %[[ARG0]][4] : (!llvm.ptr) -> !llvm.ptr, f32
+//       CHECK:   llvm.getelementptr %[[ARG0]][%[[OFFSET_ELEMS]]] : (!llvm.ptr, i64) -> !llvm.ptr, f32
 //       CHECK:   llvm.fadd
 
 // -----
@@ -282,18 +287,18 @@ hal.executable @check_not_readonly {
         %c0 = arith.constant 0 : index
         %c128 = arith.constant 128 : index
         %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) : memref<16xi32>
-        %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) offset(%c128) flags(ReadOnly) : memref<16xf32, strided<[1], offset: 32>>
+        %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) offset(%c128) flags(ReadOnly) : memref<16xf32, strided<[1], offset: ?>>
         %b11 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) flags(ReadOnly) : memref<16xi32>
-        %b12 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) offset(%c128) : memref<16xf32, strided<[1], offset: 32>>
+        %b12 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) offset(%c128) : memref<16xf32, strided<[1], offset: ?>>
         %b21 = hal.interface.binding.subspan layout(#pipeline_layout) binding(2) flags(ReadOnly) : memref<16xi32>
-        %b22 = hal.interface.binding.subspan layout(#pipeline_layout) binding(2) offset(%c128) flags(ReadOnly) : memref<16xf32, strided<[1], offset: 32>>
+        %b22 = hal.interface.binding.subspan layout(#pipeline_layout) binding(2) offset(%c128) flags(ReadOnly) : memref<16xf32, strided<[1], offset: ?>>
         %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(3) : memref<16xf32>
         %3 = gpu.block_id x
         %4 = gpu.block_dim x
         %5 = gpu.thread_id x
         %6 = arith.muli %3, %4 : index
         %7 = arith.addi %6, %5 : index
-        %9 = memref.load %0[%7] : memref<16xf32, strided<[1], offset: 32>>
+        %9 = memref.load %0[%7] : memref<16xf32, strided<[1], offset: ?>>
         %10 = memref.load %1[%7] : memref<16xi32>
         %11 = arith.sitofp %10 : i32 to f32
         %12 = arith.addf %9, %11 : f32
@@ -304,7 +309,7 @@ hal.executable @check_not_readonly {
   }
 }
 // CHECK-LABEL: llvm.func @check_not_readonly
-//  CHECK-NOT: (%[[ARG0:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.readonly},
+//  CHECK-NOT: (%[[ARG0:.+]]: !llvm.ptr {llvm.align = 16 : i32, llvm.noalias, llvm.nonnull, llvm.noundef, llvm.readonly},
 
 // -----
 

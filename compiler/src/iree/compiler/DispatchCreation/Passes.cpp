@@ -20,12 +20,6 @@
 // Command Line Options
 //===----------------------------------------------------------------------===//
 
-static llvm::cl::opt<std::string> clDispatchTransformFileName(
-    "iree-dispatch-creation-dispatch-use-transform-dialect",
-    llvm::cl::desc("MLIR file containing a top-level module that specifies "
-                   "the transformations to apply to form dispatch regions."),
-    llvm::cl::init(""));
-
 static llvm::cl::opt<bool> clDetensoring(
     "iree-dispatch-creation-enable-detensoring",
     llvm::cl::desc(
@@ -143,6 +137,7 @@ void addDispatchRegionCreationPreprocessingPasses(OpPassManager &passManager) {
       // 2. Bubble up expand_shape ops (or sink collapse_shape ops) to get
       //    elementwise operation into higher dimensions for more fusion
       //    opportunities.
+      .addPass(DispatchCreation::createBubbleUpExtractSlicesPass)
       .addPass(DispatchCreation::createBubbleUpExpandShapesPass)
       .addPass(DispatchCreation::createBubbleUpExtractSlicesPass)
       .addPass(IREE::Flow::createCanonicalizerPass)
@@ -200,52 +195,63 @@ void addDispatchRegionCreationPreprocessingPasses(OpPassManager &passManager) {
       //        - help with dispatch region formation.
       //        - move reduction iterators to be innermost.
       .addPass(DispatchCreation::createTransposeGenericOpsPass);
+
+  // Run constant expression hoisting just before dispatch creation in case
+  // there are any new hoisting opportunities (e.g. transpose generics or
+  // horizontal fusion).
+  IREE::Util::ExprHoistingOptions options;
+  options.maxSizeIncreaseThreshold = 0;
+  options.registerDependentDialectsFn = [](DialectRegistry &registry) {
+    registry.insert<IREE::Flow::FlowDialect>();
+  };
+  passManager.addPass(IREE::Util::createHoistIntoGlobalsPass(options));
+  FunctionLikeNest(passManager)
+      .addPass(mlir::createCanonicalizerPass)
+      .addPass(mlir::createCSEPass);
 }
 
 // Pipeline to first create `flow.dispatch.region` ops and then lower to
 // `flow.dispatch.workgroup` ops.
+// Note that we should not hoist out small constants before the dispatch regions
+// are converted to workgroups. E.g., the `cseConstant` option needs to be false
+// in greedy pattern rewriting drivers.
 static void addDispatchRegionCreationPasses(OpPassManager &passManager) {
   FunctionLikeNest(passManager)
-      // Only want use the transform dialect for some dispatch regions and let
-      // the FormDispatchRegions handle the rest. This only moves the root
-      // compute op into the dispatch region, so that we can run additional
-      // transformations afterwards with a simple region and without bothering
-      // producers.
-      .addPredicatedPass(
-          !clDispatchTransformFileName.empty(),
-          [&]() {
-            DispatchWithTransformDialectPassOptions options;
-            options.transformSpecPath = clDispatchTransformFileName;
-            return createDispatchWithTransformDialectPass(options);
-          })
-      // Create dispatches for scalar operations as roots
+      // Create dispatches for scalar operations as roots.
       .addPass(DispatchCreation::createFormScalarDispatchesPass)
       // Create `flow.dispatch.region` centered around a root and fuse with
       // producers and consumers.
-      .addPass([&]() {
+      .addPass([] {
         return DispatchCreation::createFormDispatchRegionsPass(
             FormDispatchRegionsPassOptions{
                 clEnableAggressiveFusion,
                 clEnableFusePaddingIntoLinalgConsumerOps,
                 clEnableFusePaddingIntoLinalgProducerOps});
       })
-      // Clone all producers into the dispatch region to perpare for being
+      // Clone all producers into the dispatch region to prepare for being
       // isolated from above. This enables running additional transformations
       // afterwards that would need the full dispatch content but don't want to
       // handle explicit captures as materialized as dispatch workgroup operands
       // and block arguments.
-      .addPass(DispatchCreation::createCloneProducersIntoDispatchRegionsPass);
+      .addPass([] {
+        return DispatchCreation::createCloneProducersIntoDispatchRegionsPass(
+            CloneProducersIntoDispatchRegionsPassOptions{
+                clEnableAggressiveFusion});
+      })
+      // Collapse dimensions of linalg Ops.
+      .addPass(DispatchCreation::createCollapseDimensionsPass);
 
   // Experimental data tiling path. The intent of this path is to set encodings
   // after fusion decisions have already been made, so encodings can be
   // separated from compiler fusion decisions.
   if (clEnableDataTiling) {
-    SetEncodingPassOptions options{clPadFactor};
     FunctionLikeNest(passManager)
         // Set encodings on all eligible ops. All ops should be in compiler
         // formed dispatch regions, so encodings will be placed inside of the
         // dispatch regions with the data-tiled op.
-        .addPass([&]() { return createSetEncodingPass(options); })
+        .addPass([] {
+          return createSetEncodingPass(SetEncodingPassOptions{clPadFactor});
+        })
         // SetEncodingOps should not be in the same dispatch as the data-tiled
         // op, so hoist them out of their current dispatch regions. Also, bubble
         // SetEncodingOps through special operations like bit-extending ops and
@@ -256,9 +262,6 @@ static void addDispatchRegionCreationPasses(OpPassManager &passManager) {
         .addPass(
             DispatchCreation::createFuseEncodingOpsIntoDispatchRegionsPass);
   }
-  FunctionLikeNest(passManager)
-      // Collapse dimensions of linalg Ops.
-      .addPass(DispatchCreation::createCollapseDimensionsPass);
 }
 
 // Apply preprocessing and form dispatch regions
@@ -312,6 +315,7 @@ void buildDispatchCreationPassPipeline(
       // acts as a contiguous view of the tensor
       // - Apply tensor -> flow patterns
       .addPass(DispatchCreation::createConvertTensorToFlowPass)
+      .addPass(createCSEPass)
       .addPass(IREE::Flow::createCanonicalizerPass)
       /// Creates the workgroup count region where the materialized computation
       /// is derived as a program slice of the body of the dispatch. This method

@@ -4,7 +4,7 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-# Build/install the iree-compiler python package.
+# Build/install the iree-base-compiler python package.
 # Note that this includes a relatively large build of LLVM (~2400 C++ files)
 # and can take a considerable amount of time, especially with defaults.
 # To install:
@@ -21,10 +21,15 @@
 #
 # Select CMake options are available from environment variables:
 #   IREE_ENABLE_CPUINFO
+#
+# If building from a development tree and aiming to get an "editable" install,
+# use the environment option CMAKE_INSTALL_MODE=ABS_SYMLINK on your
+# `pip install -e .` invocation.
 
 from gettext import install
 import json
 from multiprocessing.spawn import prepare
+from pathlib import Path
 import os
 import platform
 import re
@@ -37,6 +42,7 @@ from distutils.command.build import build as _build
 from setuptools import find_namespace_packages, setup, Extension
 from setuptools.command.build_ext import build_ext as _build_ext
 from setuptools.command.build_py import build_py as _build_py
+from setuptools.command.egg_info import egg_info
 
 
 def check_pip_version():
@@ -106,11 +112,12 @@ else:
     )
 
 # Setup and get version information.
-VERSION_INFO_FILE = os.path.join(IREE_SOURCE_DIR, "version_info.json")
+VERSION_FILE = os.path.join(IREE_SOURCE_DIR, "compiler/version.json")
+VERSION_FILE_LOCAL = os.path.join(IREE_SOURCE_DIR, "compiler/version_local.json")
 
 
-def load_version_info():
-    with open(VERSION_INFO_FILE, "rt") as f:
+def load_version_info(version_file):
+    with open(version_file, "rt") as f:
         return json.load(f)
 
 
@@ -146,17 +153,19 @@ def find_git_submodule_revision(submodule_path):
         return ""
 
 
+is_dev_build = False
 try:
-    version_info = load_version_info()
+    version_info = load_version_info(VERSION_FILE_LOCAL)
 except FileNotFoundError:
-    print("version_info.json not found. Using defaults", file=sys.stderr)
-    version_info = {}
+    print("version_local.json not found. Using version.json defaults")
+    version_info = load_version_info(VERSION_FILE)
+    is_dev_build = True
 git_versions = find_git_versions()
 
 PACKAGE_SUFFIX = version_info.get("package-suffix") or ""
 PACKAGE_VERSION = version_info.get("package-version")
-if not PACKAGE_VERSION:
-    PACKAGE_VERSION = f"0.dev0+{git_versions.get('IREE') or '0'}"
+if is_dev_build:
+    PACKAGE_VERSION += f"+{git_versions.get('IREE') or '0'}"
 
 
 def get_cmake_version_info_args():
@@ -332,7 +341,7 @@ class CMakeBuildPy(_build_py):
         shutil.copytree(
             os.path.join(CMAKE_INSTALL_DIR_ABS, "python_packages", "iree_compiler"),
             target_dir,
-            symlinks=False,
+            symlinks=self.editable_mode,
         )
         print("Target populated.", file=sys.stderr)
 
@@ -356,6 +365,25 @@ class NoopBuildExtension(_build_ext):
 
     def build_extension(self, ext):
         pass
+
+
+# I don't know. Something about the CMake 'install' is producing a .egg-info/
+# folder, which then get picked up by the .whl. For release wheels all we need
+# is a .dist-info/ folder, so delete the .egg-info/ folder.
+#
+# * Notes: https://github.com/iree-org/iree/issues/19155
+# * Implementation inspirted by https://stackoverflow.com/a/70146326
+class CleanEggInfo(egg_info):
+    def run(self):
+        install_dir = os.path.join(
+            CMAKE_INSTALL_DIR_ABS, "python_packages", "iree_compiler"
+        )
+        print(f"CleanEggInfo checking install_dir '{install_dir}'")
+        for d in Path(install_dir).glob("*.egg-info"):
+            print(f"found egg-info path '{d}', deleting")
+            shutil.rmtree(d, ignore_errors=True)
+
+        egg_info.run(self)
 
 
 def generate_version_py():
@@ -411,16 +439,31 @@ packages = find_namespace_packages(
 )
 print(f"Found compiler packages: {packages}")
 
+with open(
+    os.path.join(
+        IREE_SOURCE_DIR,
+        "compiler",
+        "bindings",
+        "python",
+        "iree",
+        "compiler",
+        "README.md",
+    ),
+    "rt",
+) as f:
+    README = f.read()
+
 custom_package_suffix = os.getenv("IREE_COMPILER_CUSTOM_PACKAGE_SUFFIX", "")
 custom_package_prefix = os.getenv("IREE_COMPILER_CUSTOM_PACKAGE_PREFIX", "")
 
 setup(
-    name=f"{custom_package_prefix}iree-compiler{custom_package_suffix}{PACKAGE_SUFFIX}",
+    name=f"{custom_package_prefix}iree-base-compiler{custom_package_suffix}{PACKAGE_SUFFIX}",
     version=f"{PACKAGE_VERSION}",
     author="IREE Authors",
     author_email="iree-technical-discussion@lists.lfaidata.foundation",
-    description="IREE Compiler API",
-    long_description="",
+    description="IREE Python Compiler API",
+    long_description=README,
+    long_description_content_type="text/markdown",
     license="Apache-2.0",
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -432,6 +475,11 @@ setup(
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",
     ],
+    project_urls={
+        "homepage": "https://iree.dev/",
+        "repository": "https://github.com/iree-org/iree",
+        "documentation": "https://iree.dev/reference/bindings/python/",
+    },
     ext_modules=[
         CMakeExtension("iree.compiler._mlir_libs._mlir"),
         CMakeExtension("iree.compiler._mlir_libs._ireeDialects"),
@@ -446,6 +494,7 @@ setup(
         "build": CustomBuild,
         "built_ext": NoopBuildExtension,
         "build_py": CMakeBuildPy,
+        "egg_info": CleanEggInfo,
     },
     zip_safe=False,
     package_dir={

@@ -9,6 +9,7 @@
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Dialect/HAL/Utils/LLVMLinkerUtils.h"
 #include "iree/compiler/Utils/ToolUtils.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
@@ -21,6 +22,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/Transforms/IPO/Internalize.h"
+#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Support/FileUtilities.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -79,74 +81,26 @@ static LogicalResult linkWithBitcodeFiles(Location loc, llvm::Module *module,
 }
 
 static LogicalResult linkBitcodeFile(Location loc, llvm::Linker &linker,
-                                     unsigned linkerFlags, StringRef path,
+                                     unsigned linkerFlags, StringRef filename,
+                                     StringRef contents,
                                      llvm::TargetMachine &targetMachine,
                                      llvm::LLVMContext &context) {
-  auto bitcodeBufferRef = llvm::MemoryBuffer::getFile(path);
-  if (auto ec = bitcodeBufferRef.getError()) {
-    return mlir::emitError(loc) << "failed reading user bitcode file `" << path
-                                << "`: " << ec.message();
-  }
+  llvm::MemoryBufferRef bitcodeBufferRef(contents, filename);
   auto setAlwaysInline = [&](llvm::Module &module) {
-    if (targetMachine.getTargetCPU().contains("gfx10") ||
-        targetMachine.getTargetCPU().contains("gfx11")) {
-      // Some ROCM/HIP functions for gfx10 or gfx11 has accuracy issue if
-      // inlined.
-      return;
-    }
     for (auto &func : module.getFunctionList()) {
-      // Some ROCM/HIP builtin functions have Optnone and NoInline for default.
-      if (targetMachine.getTargetTriple().isAMDGCN()) {
-        if (func.hasFnAttribute(llvm::Attribute::OptimizeNone)) {
-          func.removeFnAttr(llvm::Attribute::OptimizeNone);
-        }
-        if (targetMachine.getTargetTriple().isAMDGCN() &&
-            func.hasFnAttribute(llvm::Attribute::NoInline)) {
-          func.removeFnAttr(llvm::Attribute::NoInline);
-        }
-      }
       func.addFnAttr(llvm::Attribute::AlwaysInline);
     }
   };
-  if (failed(linkBitcodeModule(
-          loc, linker, linkerFlags, targetMachine, path,
-          llvm::parseBitcodeFile(*bitcodeBufferRef->get(), context),
-          setAlwaysInline))) {
+  if (failed(
+          linkBitcodeModule(loc, linker, linkerFlags, targetMachine, filename,
+                            llvm::parseBitcodeFile(bitcodeBufferRef, context),
+                            setAlwaysInline))) {
     return mlir::emitError(loc) << "failed linking in user bitcode file `"
-                                << path << "` for target triple '"
+                                << filename << "` for target triple '"
                                 << targetMachine.getTargetTriple().str() << "'";
   }
 
   return success();
-}
-
-static std::vector<std::string> getUkernelPaths(StringRef enabledUkernelsStr,
-                                                StringRef targetChip,
-                                                StringRef bitcodePath) {
-  std::vector<std::string> selectedUkernelNames;
-  if (enabledUkernelsStr == "all") {
-    const char *allUkernelNames[] = {"argmax"};
-    size_t numUkernels = sizeof(allUkernelNames) / sizeof(allUkernelNames[0]);
-    for (int i = 0; i < numUkernels; i++) {
-      selectedUkernelNames.push_back(allUkernelNames[i]);
-    }
-  } else {
-    while (!enabledUkernelsStr.empty()) {
-      auto split = enabledUkernelsStr.split(',');
-      selectedUkernelNames.push_back(split.first.str());
-      enabledUkernelsStr = split.second;
-    }
-  }
-
-  // Construct full path to ROCDL bitcode libraries.
-  std::vector<std::string> result;
-  std::string app = "/";
-  for (auto &kernelName : selectedUkernelNames) {
-    std::string filename =
-        "rocm_" + kernelName + "_ukernel_" + targetChip.str();
-    result.push_back(bitcodePath.str() + app + filename + ".bc");
-  }
-  return result;
 }
 
 static void overridePlatformGlobal(llvm::Module *module, StringRef globalName,
@@ -163,24 +117,21 @@ static void overridePlatformGlobal(llvm::Module *module, StringRef globalName,
 }
 
 LogicalResult setHIPGlobals(Location loc, llvm::Module *module,
-                            StringRef targetChip) {
-  // TODO: This should be updated to use `amdgpu::Chipset`.
-  // Link target chip ISA version as global.
-  const int kLenOfChipPrefix = 3;
-  StringRef chipId = targetChip.substr(kLenOfChipPrefix);
-  int major = 0;
-  int minor = 0;
-  if (chipId.drop_back(2).getAsInteger(10, major))
-    return failure();
-  if (chipId.take_back(2).getAsInteger(16, minor))
-    return failure();
+                            const amdgpu::Chipset &chipset, bool isWave64) {
   // Oldest GFX arch supported is gfx60x.
-  if (major < 6)
-    return failure();
-  // Latest GFX arch supported is gfx115x.
-  if (major > 11 || (major == 11 && minor > 0x5f))
-    return failure();
-  int chipCode = major * 1000 + minor;
+  if (chipset.majorVersion < 6) {
+    return emitError(loc, "pre-gfx6 chipsets are not supported");
+  }
+  // Latest GFX arch supported is gfx120x.
+  if (chipset.majorVersion > 12 ||
+      (chipset.majorVersion == 12 && chipset.minorVersion > 0)) {
+    return emitError(loc)
+           << "a chipset with major version = " << chipset.majorVersion
+           << " and minor version = " << chipset.minorVersion
+           << " was not known to exist at the time this IREE was built";
+  }
+  int chipCode = chipset.majorVersion * 1000 + chipset.minorVersion * 16 +
+                 chipset.steppingVersion;
   auto *int32Type = llvm::Type::getInt32Ty(module->getContext());
   overridePlatformGlobal(module, "__oclc_ISA_version", chipCode, int32Type);
 
@@ -190,12 +141,12 @@ LogicalResult setHIPGlobals(Location loc, llvm::Module *module,
       {{"__oclc_finite_only_opt", false},
        {"__oclc_daz_opt", false},
        {"__oclc_correctly_rounded_sqrt32", true},
-       {"__oclc_unsafe_math_opt", false},
-       {"__oclc_wavefrontsize64", true}});
+       {"__oclc_unsafe_math_opt", false}});
   for (auto &globalParam : rocdlGlobalParams) {
     overridePlatformGlobal(module, globalParam.first, globalParam.second,
                            boolType);
   }
+  overridePlatformGlobal(module, "__oclc_wavefrontsize64", isWave64, boolType);
 
   return success();
 }
@@ -226,31 +177,6 @@ LogicalResult linkHIPBitcodeIfNeeded(Location loc, llvm::Module *module,
         (bitcodePath + llvm::sys::path::get_separator() + "ockl.bc").str());
   }
   return linkWithBitcodeFiles(loc, module, bitcodePaths);
-}
-
-// Links optimized Ukernel bitcode into the given module if the module needs it.
-LogicalResult linkUkernelBitcodeFiles(Location loc, llvm::Module *module,
-                                      StringRef enabledUkernelsStr,
-                                      StringRef targetChip,
-                                      StringRef bitcodePath,
-                                      unsigned linkerFlags,
-                                      llvm::TargetMachine &targetMachine) {
-  // Early exit if Ukernel not supported on target chip.
-  if (!iree_compiler::hasUkernelSupportedRocmArch(targetChip)) {
-    return mlir::emitError(loc)
-           << "ukernel '" << enabledUkernelsStr
-           << "' not supported on target chip: " << targetChip;
-  }
-  std::vector<std::string> ukernelPaths =
-      getUkernelPaths(enabledUkernelsStr, targetChip, bitcodePath);
-  llvm::Linker linker(*module);
-  for (auto &path : ukernelPaths) {
-    if (failed(linkBitcodeFile(loc, linker, linkerFlags, StringRef(path),
-                               targetMachine, module->getContext())))
-      return failure();
-  }
-
-  return success();
 }
 
 // Link object file using lld lnker to generate code object

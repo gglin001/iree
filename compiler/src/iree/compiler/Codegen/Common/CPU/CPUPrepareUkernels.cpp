@@ -46,7 +46,7 @@ static void tileBatchDimsForBatchMmt4dOp(RewriterBase &rewriter,
 
 static void tileNonPackedDimsFor3DPackOps(RewriterBase &rewriter,
                                           FunctionOpInterface funcOp) {
-  funcOp.walk([&](tensor::PackOp packOp) {
+  funcOp.walk([&](linalg::PackOp packOp) {
     if (packOp.getSourceRank() != 3 || packOp.getDestRank() != 5) {
       return;
     }
@@ -75,13 +75,13 @@ static void tileNonPackedDimsFor3DPackOps(RewriterBase &rewriter,
     FailureOr<scf::SCFTilingResult> tilingResult =
         scf::tileUsingSCF(rewriter, tilingInterfaceOp, options);
     assert(succeeded(tilingResult));
-    rewriter.replaceOp(packOp, tilingResult->replacements);
+    rewriter.replaceOp(packOp, tilingResult->mergeResult.replacements);
   });
 }
 
 static void tileNonPackedDimsFor5DPUnpackOps(RewriterBase &rewriter,
                                              FunctionOpInterface funcOp) {
-  funcOp.walk([&](tensor::UnPackOp unpackOp) {
+  funcOp.walk([&](linalg::UnPackOp unpackOp) {
     if (unpackOp.getSourceRank() != 5 || unpackOp.getDestRank() != 3) {
       return;
     }
@@ -110,7 +110,7 @@ static void tileNonPackedDimsFor5DPUnpackOps(RewriterBase &rewriter,
     FailureOr<scf::SCFTilingResult> tilingResult =
         scf::tileUsingSCF(rewriter, tilingInterfaceOp, options);
     assert(succeeded(tilingResult));
-    rewriter.replaceOp(unpackOp, tilingResult->replacements);
+    rewriter.replaceOp(unpackOp, tilingResult->mergeResult.replacements);
   });
 }
 
@@ -251,10 +251,10 @@ struct ConvertBatchMmt4DtoMmt4DPattern
   }
 };
 
-struct Convert3DPackto2DPackPattern : public OpRewritePattern<tensor::PackOp> {
-  using OpRewritePattern<tensor::PackOp>::OpRewritePattern;
+struct Convert3DPackto2DPackPattern : public OpRewritePattern<linalg::PackOp> {
+  using OpRewritePattern<linalg::PackOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(tensor::PackOp packOp,
+  LogicalResult matchAndRewrite(linalg::PackOp packOp,
                                 PatternRewriter &rewriter) const override {
     if (packOp.getSourceRank() != 3 || packOp.getDestRank() != 5) {
       return failure();
@@ -309,7 +309,7 @@ struct Convert3DPackto2DPackPattern : public OpRewritePattern<tensor::PackOp> {
     auto reducedDest = tensor::createCanonicalRankReducingExtractSliceOp(
         rewriter, loc, packOp.getDest(), reducedDestType);
 
-    auto newPackOp = rewriter.create<tensor::PackOp>(
+    auto newPackOp = rewriter.create<linalg::PackOp>(
         loc, reducedSrc, reducedDest, newInnerDimsPos, packOp.getMixedTiles(),
         packOp.getPaddingValue(), newOuterDimsPerm);
 
@@ -321,10 +321,10 @@ struct Convert3DPackto2DPackPattern : public OpRewritePattern<tensor::PackOp> {
 };
 
 struct Convert5DUnPackto4DUnPackPattern
-    : public OpRewritePattern<tensor::UnPackOp> {
-  using OpRewritePattern<tensor::UnPackOp>::OpRewritePattern;
+    : public OpRewritePattern<linalg::UnPackOp> {
+  using OpRewritePattern<linalg::UnPackOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(tensor::UnPackOp unpackOp,
+  LogicalResult matchAndRewrite(linalg::UnPackOp unpackOp,
                                 PatternRewriter &rewriter) const override {
     if (unpackOp.getSourceRank() != 5 || unpackOp.getDestRank() != 3) {
       return failure();
@@ -387,7 +387,7 @@ struct Convert5DUnPackto4DUnPackPattern
     auto reducedDest = tensor::createCanonicalRankReducingExtractSliceOp(
         rewriter, loc, unpackOp.getDest(), reducedDestType);
 
-    auto newUnpackOp = rewriter.create<tensor::UnPackOp>(
+    auto newUnpackOp = rewriter.create<linalg::UnPackOp>(
         loc, reducedSrc, reducedDest, newInnerDimsPos, unpackOp.getMixedTiles(),
         newOuterDimsPerm);
 
@@ -436,11 +436,11 @@ void CPUPrepareUkernelsPass::runOnOperation() {
   tensor::InsertSliceOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::ExtractSliceOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::EmptyOp::getCanonicalizationPatterns(patterns, ctx);
-  tensor::PackOp::getCanonicalizationPatterns(patterns, ctx);
-  tensor::UnPackOp::getCanonicalizationPatterns(patterns, ctx);
+  linalg::PackOp::getCanonicalizationPatterns(patterns, ctx);
+  linalg::UnPackOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::CastOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::populateFoldTensorEmptyPatterns(patterns);
-  if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
     return signalPassFailure();
   }
 }

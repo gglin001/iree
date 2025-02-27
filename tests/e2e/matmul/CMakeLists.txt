@@ -175,6 +175,33 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
+    e2e_matmul_cpu_dt_f64_f64
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f64"
+    "--acc_type=f64"
+    "--shapes=small"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "llvm-cpu"
+  DRIVERS
+    "local-task"
+  COMPILER_FLAGS
+    "--iree-opt-data-tiling"
+    "--iree-llvmcpu-enable-ukernels=none"
+    "--iree-input-demote-f64-to-f32=false"
+  LABELS
+
+  TARGET_CPU_FEATURES_VARIANTS
+    "generic"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
     e2e_matmul_cpu_dt_f16_f16
   TEST_TYPE
     matmul
@@ -348,6 +375,33 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
+    e2e_matmul_cpu_dt_uk_f64_f64
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f64"
+    "--acc_type=f64"
+    "--shapes=small"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "llvm-cpu"
+  DRIVERS
+    "local-task"
+  COMPILER_FLAGS
+    "--iree-opt-data-tiling"
+    "--iree-llvmcpu-enable-ukernels=all"
+    "--iree-input-demote-f64-to-f32=false"
+  LABELS
+
+  TARGET_CPU_FEATURES_VARIANTS
+    "generic"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
     e2e_matmul_cpu_dt_uk_f16_f16
   TEST_TYPE
     matmul
@@ -483,6 +537,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=none"
   LABELS
 
@@ -512,6 +567,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=none"
   LABELS
 
@@ -540,6 +596,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=none"
   LABELS
     "noriscv"
@@ -570,6 +627,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=none"
   LABELS
     "noriscv"
@@ -600,6 +658,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=none"
   LABELS
     "noriscv"
@@ -631,6 +690,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=none"
   LABELS
     "noriscv"
@@ -662,6 +722,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=all"
   LABELS
 
@@ -691,6 +752,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=all"
   LABELS
 
@@ -719,6 +781,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=all"
   LABELS
     "noriscv"
@@ -749,6 +812,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=all"
   LABELS
     "noriscv"
@@ -779,6 +843,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=all"
   LABELS
     "noriscv"
@@ -810,6 +875,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
     "--iree-llvmcpu-enable-ukernels=all"
   LABELS
     "noriscv"
@@ -842,6 +908,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
   LABELS
 
 )
@@ -866,6 +933,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
   LABELS
 
 )
@@ -890,6 +958,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
   LABELS
 
 )
@@ -914,6 +983,7 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-opt-data-tiling"
     "--iree-global-opt-enable-early-materialization=false"
+    "--iree-stream-experimental-specialize-encodings"
   LABELS
 
 )
@@ -960,32 +1030,6 @@ iree_generated_e2e_runner_test(
   COMPILER_FLAGS
     "--iree-vmvx-enable-microkernels"
     "--iree-opt-data-tiling"
-)
-
-iree_generated_e2e_runner_test(
-  NAME
-    e2e_matmul_cuda_f32_large_simt
-  TEST_TYPE
-    matmul
-  GENERATOR
-    "generate_e2e_matmul_tests.py"
-  GENERATOR_ARGS
-    "--lhs_rhs_type=f32"
-    "--acc_type=f32"
-    "--shapes=easy_large_static"
-    "--compilation_info=LLVMGPUMatmulSimt"
-  TEST_RUNNER
-    iree_tools_testing_e2e_iree-e2e-matmul-test
-  TARGET_BACKENDS
-    "cuda"
-  DRIVERS
-    "cuda"
-  LABELS
-    "noasan"
-    "nomsan"
-    "notsan"
-    "noubsan"
-    "requires-gpu-nvidia"
 )
 
 iree_generated_e2e_runner_test(
@@ -1328,34 +1372,6 @@ iree_generated_e2e_runner_test(
     "vulkan_uses_vk_khr_shader_float16_int8"
 )
 
-iree_generated_e2e_runner_test(
-  NAME
-    e2e_matmul_vulkan_f16_large_rdna3
-  TEST_TYPE
-    matmul
-  GENERATOR
-    "generate_e2e_matmul_tests.py"
-  GENERATOR_ARGS
-    "--lhs_rhs_type=f16"
-    "--acc_type=f32"
-    "--shapes=easy_large_static"
-    "--compilation_info=SPIRVCooperativeMatrixVectorize"
-  TEST_RUNNER
-    iree_tools_testing_e2e_iree-e2e-matmul-test
-  TARGET_BACKENDS
-    "vulkan-spirv"
-  DRIVERS
-    "vulkan"
-  COMPILER_FLAGS
-    "--iree-vulkan-target=rdna3"
-  RUNNER_ARGS
-    "--require_exact_results=false"
-  LABELS
-    "requires-gpu"
-    "requires-gpu-rdna3"
-    "vulkan_uses_vk_khr_shader_float16_int8"
-)
-
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###
 
 # To distinguish between CDNA(gfx9) and RDNA3(gfx11)
@@ -1602,6 +1618,36 @@ iree_generated_e2e_runner_test(
 
 iree_generated_e2e_runner_test(
   NAME
+    e2e_matmul_cdna3_dt_uk_i8
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=i8"
+    "--acc_type=i32"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-experimental-rocm-data-tiling"
+    "--iree-global-opt-enable-early-materialization=true"
+    "--iree-hip-enable-ukernels=multi_mma"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-cdna3"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
     e2e_matmul_cdna3_dt_f32
   TEST_TYPE
     matmul
@@ -1687,6 +1733,36 @@ iree_generated_e2e_runner_test(
     "requires-gpu-cdna3"
 )
 
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_cdna3_dt_f64
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f64"
+    "--acc_type=f64"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-experimental-rocm-data-tiling"
+    "--iree-global-opt-enable-early-materialization=true"
+    "--iree-input-demote-f64-to-f32=false"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-cdna3"
+)
+
 endif()
 
 elseif(IREE_HIP_TEST_TARGET_CHIP MATCHES "^gfx11")
@@ -1706,7 +1782,7 @@ iree_generated_e2e_runner_test(
   GENERATOR_ARGS
     "--lhs_rhs_type=f16"
     "--acc_type=f32"
-    "--compilation_info=LLVMGPUVectorDistributeWMMA"
+    "--compilation_info=LLVMGPUVectorDistributeWMMAR3"
     "--shapes=easy_large_static"
   TEST_RUNNER
     iree_tools_testing_e2e_iree-e2e-matmul-test
@@ -1738,7 +1814,7 @@ iree_generated_e2e_runner_test(
     "--lhs_rhs_type=f16"
     "--acc_type=f32"
     "--transpose_rhs"
-    "--compilation_info=LLVMGPUVectorDistributeWMMA"
+    "--compilation_info=LLVMGPUVectorDistributeWMMAR3"
     "--shapes=easy_large_static"
   TEST_RUNNER
     iree_tools_testing_e2e_iree-e2e-matmul-test
@@ -1770,7 +1846,7 @@ iree_generated_e2e_runner_test(
     "--lhs_rhs_type=i8"
     "--acc_type=i32"
     "--transpose_rhs"
-    "--compilation_info=LLVMGPUVectorDistributeWMMA"
+    "--compilation_info=LLVMGPUVectorDistributeWMMAR3"
     "--shapes=easy_large_static"
   TEST_RUNNER
     iree_tools_testing_e2e_iree-e2e-matmul-test
@@ -1780,6 +1856,67 @@ iree_generated_e2e_runner_test(
     "hip"
   COMPILER_FLAGS
     ${IREE_HIP_TEST_COMPILER_FLAGS}
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-rdna3"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_rdna3_dt_f16
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=f16"
+    "--acc_type=f32"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-experimental-rocm-data-tiling"
+    "--iree-global-opt-enable-early-materialization=true"
+  RUNNER_ARGS
+    "--require_exact_results=false"
+    "--acceptable_fp_delta=1e-04"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-rdna3"
+)
+
+iree_generated_e2e_runner_test(
+  NAME
+    e2e_matmul_rdna3_dt_i8
+  TEST_TYPE
+    matmul
+  GENERATOR
+    "generate_e2e_matmul_tests.py"
+  GENERATOR_ARGS
+    "--lhs_rhs_type=i8"
+    "--acc_type=i32"
+  TEST_RUNNER
+    iree_tools_testing_e2e_iree-e2e-matmul-test
+  TARGET_BACKENDS
+    "rocm"
+  DRIVERS
+    "hip"
+  COMPILER_FLAGS
+    ${IREE_HIP_TEST_COMPILER_FLAGS}
+    "--iree-opt-data-tiling"
+    "--iree-global-opt-experimental-rocm-data-tiling"
+    "--iree-global-opt-enable-early-materialization=true"
   LABELS
     "noasan"
     "nomsan"

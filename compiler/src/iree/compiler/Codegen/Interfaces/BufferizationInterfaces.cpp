@@ -89,18 +89,13 @@ findOrCreateSubspanBuffer(RewriterBase &rewriter,
   Value byteOffset = subspanOp.getByteOffset();
   MemRefLayoutAttrInterface layoutAttr = {};
   if (byteOffset && !matchPattern(byteOffset, m_Zero())) {
-    OpFoldResult elementOffset = convertByteOffsetToElementOffset(
-        rewriter, subspanOp->getLoc(), subspanOp.getByteOffset(),
-        shapedType.getBoundElementType());
-    std::optional<int64_t> elementOffsetInt =
-        getConstantIntValue(elementOffset);
-    if (!elementOffsetInt) {
-      elementOffsetInt = ShapedType::kDynamic;
-    }
+    // Using buffer resources on AMDGPU will require buffers to be relocated to
+    // offset 0, so any static offset we can compute here might change.
+    // Therefore, always use a ? for the offset field unless it's known to be 0.
     auto tensorType = llvm::cast<RankedTensorType>(shapedType.getBoundType());
     SmallVector<int64_t> strides = getStridesFromShape(tensorType.getShape());
     layoutAttr = StridedLayoutAttr::get(rewriter.getContext(),
-                                        elementOffsetInt.value(), strides);
+                                        ShapedType::kDynamic, strides);
   }
   auto memRefType =
       getMemrefTypeForTensor(shapedType, layoutAttr,
@@ -369,7 +364,7 @@ template <typename OpTy>
 static FailureOr<std::pair<Value, Value>>
 getSourceAndDestFromPackUnPackOp(RewriterBase &rewriter, OpTy op,
                                  const BufferizationOptions &options) {
-  static_assert(llvm::is_one_of<OpTy, tensor::PackOp, tensor::UnPackOp>::value);
+  static_assert(llvm::is_one_of<OpTy, linalg::PackOp, linalg::UnPackOp>::value);
   Value source;
   auto maybeBuffer = getBuffer(rewriter, op.getSource(), options);
   if (failed(maybeBuffer))
@@ -390,7 +385,7 @@ getSourceAndDestFromPackUnPackOp(RewriterBase &rewriter, OpTy op,
   return std::make_pair(source, dest);
 }
 
-static LogicalResult bufferizePackOp(RewriterBase &rewriter, tensor::PackOp op,
+static LogicalResult bufferizePackOp(RewriterBase &rewriter, linalg::PackOp op,
                                      const BufferizationOptions &options) {
   // Take a guard before anything else.
   OpBuilder::InsertionGuard g(rewriter);
@@ -415,7 +410,7 @@ static LogicalResult bufferizePackOp(RewriterBase &rewriter, tensor::PackOp op,
 }
 
 static LogicalResult bufferizeUnPackOp(RewriterBase &rewriter,
-                                       tensor::UnPackOp op,
+                                       linalg::UnPackOp op,
                                        const BufferizationOptions &options) {
   // Take a guard before anything else.
   OpBuilder::InsertionGuard g(rewriter);
@@ -494,9 +489,9 @@ struct PackUnPackOpInterface
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
                           const BufferizationOptions &options) const {
     return TypeSwitch<Operation *, LogicalResult>(op)
-        .template Case<tensor::PackOp>(
+        .template Case<linalg::PackOp>(
             [&](auto pack) { return bufferizePackOp(rewriter, pack, options); })
-        .template Case<tensor::UnPackOp>([&](auto unpack) {
+        .template Case<linalg::UnPackOp>([&](auto unpack) {
           return bufferizeUnPackOp(rewriter, unpack, options);
         })
         .Default([](auto) { return failure(); });
@@ -648,10 +643,11 @@ void registerBufferizationInterfaces(DialectRegistry &registry) {
     IREE::LinalgExt::AttentionOp::attachInterface<
         LinalgExtOpInterface<IREE::LinalgExt::AttentionOp>>(*ctx);
   });
-  registry.addExtension(+[](MLIRContext *ctx, tensor::TensorDialect *dialect) {
-    tensor::PackOp::attachInterface<PackUnPackOpInterface<tensor::PackOp>>(
+  registry.insert<linalg::LinalgDialect>();
+  registry.addExtension(+[](MLIRContext *ctx, linalg::LinalgDialect *dialect) {
+    linalg::PackOp::attachInterface<PackUnPackOpInterface<linalg::PackOp>>(
         *ctx);
-    tensor::UnPackOp::attachInterface<PackUnPackOpInterface<tensor::UnPackOp>>(
+    linalg::UnPackOp::attachInterface<PackUnPackOpInterface<linalg::UnPackOp>>(
         *ctx);
   });
 }

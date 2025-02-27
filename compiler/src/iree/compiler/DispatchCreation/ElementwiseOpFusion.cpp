@@ -13,6 +13,7 @@
 
 #include "iree/compiler/Dialect/Flow/Transforms/RegionOpUtils.h"
 #include "iree/compiler/Dialect/LinalgExt/Transforms/Transforms.h"
+#include "iree/compiler/Dialect/LinalgExt/Utils/Utils.h"
 #include "iree/compiler/DispatchCreation/FusionUtils.h"
 #include "iree/compiler/DispatchCreation/Passes.h"
 #include "llvm/Support/Debug.h"
@@ -35,12 +36,81 @@ struct ElementwiseOpFusionPass final
   void runOnOperation() override;
 };
 
+//===----------------------------------------------------------------------===//
+// GatherFusionPattern
+//===----------------------------------------------------------------------===//
+
+// Specific case. The linalg generic implementation of "gather"
+// cannot be fused because it there is no producer-consumer
+// relationship between the two generics. This is because the indexing
+// is not affine (index values come from a tensor).
+struct GatherFusionPattern final : public OpRewritePattern<tensor::ExtractOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(tensor::ExtractOp extractOp,
+                                PatternRewriter &rewriter) const override {
+    // Check if extractOp is inside a generic op
+    auto consumerOp =
+        dyn_cast_or_null<linalg::GenericOp>(extractOp->getParentOp());
+    if (!consumerOp) {
+      return rewriter.notifyMatchFailure(
+          extractOp, "expected extract op to be inside a generic op");
+    }
+
+    auto producerOp = extractOp.getTensor().getDefiningOp<linalg::GenericOp>();
+    if (!producerOp) {
+      return rewriter.notifyMatchFailure(
+          consumerOp, "expected extract operand to be a generic op");
+    }
+
+    // Check if the producerOp is fusible
+    if (producerOp.getNumResults() != 1 || !isElementwise(producerOp) ||
+        !IREE::LinalgExt::isBitExtendOp(producerOp)) {
+      return rewriter.notifyMatchFailure(producerOp,
+                                         "producer op is not fusible");
+    }
+
+    OpBuilder::InsertionGuard g(rewriter);
+    rewriter.setInsertionPoint(extractOp);
+
+    auto result = cast<OpResult>(extractOp.getTensor());
+    auto resultMap = producerOp.getIndexingMapMatchingResult(result);
+    SmallVector<Value> extractOps;
+    for (OpOperand &operand : producerOp->getOpOperands()) {
+      auto inputMap = producerOp.getMatchingIndexingMap(&operand);
+      auto composedMap = inputMap.compose(inversePermutation(resultMap));
+      auto perm = llvm::map_to_vector<4>(
+          composedMap.getResults(), [](AffineExpr expr) -> int64_t {
+            return cast<AffineDimExpr>(expr).getPosition();
+          });
+      SmallVector<Value, 4> indices = extractOp.getIndices();
+      indices = applyPermutation(indices, perm);
+      auto newExtract = rewriter.create<tensor::ExtractOp>(
+          extractOp.getLoc(), operand.get(), indices);
+      extractOps.push_back(newExtract);
+    }
+    rewriter.cloneRegionBefore(producerOp.getRegion(), consumerOp.getRegion(),
+                               consumerOp.getRegion().begin());
+    Block &clonedBlock = consumerOp.getRegion().front();
+    auto producerTermOp = clonedBlock.getTerminator();
+
+    rewriter.inlineBlockBefore(&clonedBlock, extractOp->getNextNode(),
+                               extractOps);
+
+    // Replace the the all references to the original extract result with the
+    // result from the inlined producerOp.
+    extractOp.getResult().replaceAllUsesWith(producerTermOp->getOperand(0));
+    rewriter.eraseOp(producerTermOp);
+    rewriter.eraseOp(extractOp);
+
+    return success();
+  }
+};
+
 } // namespace
 
 void ElementwiseOpFusionPass::runOnOperation() {
   MLIRContext *context = &getContext();
 
-  RewritePatternSet fusionPatterns(context);
   // Only fuse operations where all uses of the producer are generic
   // operations. If an operation is used in a named op, it will be computed
   // anyway, so the consumers can just use that value.
@@ -71,23 +141,35 @@ void ElementwiseOpFusionPass::runOnOperation() {
         return areFusableAsElementwiseOps(context, fusedOperand,
                                           fuseMultiReduction);
       };
-  linalg::populateElementwiseOpsFusionPatterns(fusionPatterns,
+
+  RewritePatternSet linalgFusionPatterns(context);
+  linalg::populateElementwiseOpsFusionPatterns(linalgFusionPatterns,
                                                fuseElementwiseOpsControlFn);
 
+  GreedyRewriteConfig rewriteConfig;
+  rewriteConfig.maxIterations = GreedyRewriteConfig::kNoLimit;
+  if (failed(applyPatternsGreedily(
+          getOperation(), std::move(linalgFusionPatterns), rewriteConfig))) {
+    getOperation()->emitOpError(
+        "Failed to fuse elementwise ops with upstream patterns.");
+    return signalPassFailure();
+  }
+
+  // Try fuse with linalgExt patterns.
   linalg::ControlFusionFn foldTransposeControlFn = [](OpOperand *fusedOperand) {
     Operation *producer = fusedOperand->get().getDefiningOp();
     Operation *consumer = fusedOperand->getOwner();
 
     return IREE::Flow::isNonNullAndOutsideDispatch({producer, consumer});
   };
+  RewritePatternSet linalgExtFusionPatterns(context);
   IREE::LinalgExt::populateFuseLinalgExtOpsWithTransposes(
-      fusionPatterns, foldTransposeControlFn);
-
-  GreedyRewriteConfig rewriteConfig;
-  rewriteConfig.maxIterations = GreedyRewriteConfig::kNoLimit;
-  if (failed(applyPatternsAndFoldGreedily(
-          getOperation(), std::move(fusionPatterns), rewriteConfig))) {
-    getOperation()->emitOpError("Failed to perform elementwise operations");
+      linalgExtFusionPatterns, foldTransposeControlFn);
+  linalgExtFusionPatterns.insert<GatherFusionPattern>(context);
+  if (failed(applyPatternsGreedily(
+          getOperation(), std::move(linalgExtFusionPatterns), rewriteConfig))) {
+    getOperation()->emitOpError(
+        "Failed to fuse elementwise ops with linalgExt patterns.");
     return signalPassFailure();
   }
 }

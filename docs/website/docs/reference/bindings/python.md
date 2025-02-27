@@ -8,21 +8,33 @@ icon: simple/python
 
 # Python bindings
 
-## Overview
+## :octicons-book-16: Overview
 
-IREE offers Python bindings split into several packages, covering different
-components:
+IREE offers several Python packages, including API bindings, utilities, and
+integrations with frameworks:
 
-| PIP package name             | Description                                                                 |
-|------------------------------|-----------------------------------------------------------------------------|
-| `iree-compiler`     | IREE's generic compiler tools and helpers                                   |
-| `iree-runtime`      | IREE's runtime, including CPU and GPU backends                              |
-| `iree-tools-tf`     | Tools for importing from [TensorFlow](https://www.tensorflow.org/)          |
-| `iree-tools-tflite` | Tools for importing from [TensorFlow Lite](https://www.tensorflow.org/lite) |
-| `iree-jax`          | Tools for importing from [JAX](https://github.com/google/jax)               |
+PIP package name | Description
+-- | --
+[`iree-base-compiler`](https://pypi.org/project/iree-base-compiler/) | IREE's generic compiler tools and helpers
+[`iree-base-runtime`](https://pypi.org/project/iree-base-runtime/) | IREE's runtime, including CPU and GPU backends
+[`iree-tools-tf`](https://pypi.org/project/iree-tools-tf/) | Tools for importing from [TensorFlow](https://www.tensorflow.org/)
+[`iree-tools-tflite`](https://pypi.org/project/iree-tools-tflite/) | Tools for importing from [TensorFlow Lite](https://www.tensorflow.org/lite)
+[`iree-turbine`](https://pypi.org/project/iree-turbine/) | IREE's frontend for [PyTorch](https://pytorch.org/)
 
 Collectively, these packages allow for importing from frontends, compiling
 towards various targets, and executing compiled code on IREE's backends.
+
+???+ Info "Note - deprecated package names"
+    The Python packages
+    [`iree-compiler`](https://pypi.org/project/iree-compiler/) and
+    [`iree-runtime`](https://pypi.org/project/iree-runtime/) are deprecated.
+    The packages were renamed to
+    [`iree-base-compiler`](https://pypi.org/project/iree-base-compiler/) and
+    [`iree-base-runtime`](https://pypi.org/project/iree-base-runtime/)
+    respectively.
+
+    To clean old installed packages, run
+    `pip uninstall iree-compiler iree-runtime`.
 
 ## :octicons-download-16: Prerequisites
 
@@ -61,31 +73,33 @@ To use IREE's Python bindings, you will first need to install
 
 ## Installing IREE packages
 
-### :octicons-package-16: Prebuilt packages
+### :octicons-download-16: Prebuilt packages
 
-=== "Stable releases"
+=== ":octicons-package-16: Stable releases"
 
-    Stable release packages are
-    [published to PyPI](https://pypi.org/user/google-iree-pypi-deploy/).
+    Stable release packages are [published to PyPI](https://pypi.org/).
 
     ``` shell
     python -m pip install \
-      iree-compiler \
-      iree-runtime
+      iree-base-compiler \
+      iree-base-runtime
     ```
 
-=== ":material-alert: Nightly releases"
+=== ":octicons-beaker-16: Nightly pre-releases"
 
-    Nightly releases are published on
+    Nightly pre-releases are published on
     [GitHub releases](https://github.com/iree-org/iree/releases).
 
-    ``` shell
+    ``` shell hl_lines="2-4"
     python -m pip install \
       --find-links https://iree.dev/pip-release-links.html \
+      --pre \
       --upgrade \
-      iree-compiler \
-      iree-runtime
+      iree-base-compiler \
+      iree-base-runtime
     ```
+
+--8<-- "docs/website/docs/snippets/_iree-dev-packages.md"
 
 ### :material-hammer-wrench: Building from source
 
@@ -94,13 +108,13 @@ page for instructions for building from source.
 
 ## Usage
 
-!!! info "Info - API reference pages"
+### :material-file-document-multiple: API reference pages
 
-    API reference pages for IREE's runtime and compiler Python APIs are hosted on
-    [readthedocs](https://iree-python-api.readthedocs.io/en/latest/).
-
-    Documentation for the MLIR compiler Python APIs can be found at
-    [https://mlir.llvm.org/docs/Bindings/Python/](https://mlir.llvm.org/docs/Bindings/Python/).
+Description | URL
+-- | --
+IREE Python APIs | <https://iree-python-api.readthedocs.io/>
+IREE Turbine APIs | <https://iree-turbine.readthedocs.io/>
+MLIR Python APIs | <https://mlir.llvm.org/docs/Bindings/Python/>
 
 ### Compile a program
 
@@ -164,7 +178,7 @@ like `iree-compile` and `iree-run-module`.  After installing a package from
 pip, these should be added to your path automatically:
 
 ```console
-$ python -m pip install iree-runtime
+$ python -m pip install iree-base-runtime
 $ which iree-run-module
 
 /projects/.venv/Scripts/iree-run-module
@@ -172,7 +186,7 @@ $ which iree-run-module
 
 ## :material-chart-line: Profiling
 
-The tools in the `iree-runtime` package support variants:
+The tools in the `iree-base-runtime` package support variants:
 
 | Variant name | Description |
 | ------------ | ----------- |

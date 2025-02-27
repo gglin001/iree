@@ -11,7 +11,6 @@
 #include "iree/compiler/Dialect/Util/IR/UtilDialect.h"
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilTraits.h"
-#include "iree/compiler/Dialect/Util/Transforms/PassDetail.h"
 #include "iree/compiler/Dialect/Util/Transforms/Passes.h"
 #include "iree/compiler/Utils/PassUtils.h"
 #include "llvm/ADT/SmallVector.h"
@@ -27,6 +26,10 @@
 #define DEBUG_TYPE "iree-util-ipo"
 
 namespace mlir::iree_compiler::IREE::Util {
+
+#define GEN_PASS_DEF_IPOPASS
+#include "iree/compiler/Dialect/Util/Transforms/Passes.h.inc"
+
 namespace {
 
 struct LocAttr {
@@ -607,10 +610,11 @@ static bool applyCallChanges(FuncAnalysis &analysis,
     return false;
 
   // Fully replace call op because we may have changed result count.
-  // TODO(benvanik): update tied operands.
+  // TODO(benvanik): update tied operands, arg_attrs, and res_attrs.
   auto newCallOp = OpBuilder(callOp).create<IREE::Util::CallOp>(
       callOp.getLoc(), newResultTypes, callOp.getCalleeAttr(), newOperands,
-      /*tied_operands=*/ArrayAttr{});
+      /*tied_operands=*/ArrayAttr{},
+      /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr);
   newCallOp->setDialectAttrs(callOp->getDialectAttrs());
 
   // Remap live old results -> new results.
@@ -641,13 +645,8 @@ static bool isFuncEmpty(FunctionOpInterface funcOp) {
   }
 }
 
-class IPOPass : public IPOBase<IPOPass> {
+class IPOPass : public impl::IPOPassBase<IPOPass> {
 public:
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<arith::ArithDialect>();
-    registry.insert<IREE::Util::UtilDialect>();
-  }
-
   void runOnOperation() override {
     auto moduleOp = getOperation();
 
@@ -704,11 +703,5 @@ public:
 };
 
 } // namespace
-
-std::unique_ptr<OperationPass<mlir::ModuleOp>> createIPOPass() {
-  return std::make_unique<IPOPass>();
-}
-
-static PassRegistration<IPOPass> pass;
 
 } // namespace mlir::iree_compiler::IREE::Util

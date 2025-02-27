@@ -8,6 +8,7 @@
 #define IREE_COMPILER_CODEGEN_UTILS_GPUUTILS_H_
 
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
+#include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
@@ -20,6 +21,7 @@ namespace mlir::iree_compiler {
 
 static constexpr int32_t kNumGPUDims = 3;
 static constexpr int32_t kWarpSize = 32;
+static constexpr char kGPUTargetAttrName[] = "iree.gpu.target";
 
 //===----------------------------------------------------------------------===//
 // GPU processor IDs and sizes
@@ -174,16 +176,6 @@ combiningKindToAllReduce(vector::CombiningKind kind);
 bool sharedMemTransposeFilter(AffineMap indexMap);
 
 //===----------------------------------------------------------------------===//
-// GPU UKernel Utils
-//===----------------------------------------------------------------------===//
-
-/// Checks if target Chip(StringRef) has UKernel support.
-bool hasUkernelSupportedRocmArch(StringRef targetChip);
-
-/// Checks if targetAttr's GPU target has UKernel support.
-bool hasUkernelSupportedGpuArch(IREE::HAL::ExecutableTargetAttr targetAttr);
-
-//===----------------------------------------------------------------------===//
 // GPU Target Information
 //===----------------------------------------------------------------------===//
 FailureOr<ArrayAttr> getSupportedMmaTypes(DictionaryAttr config);
@@ -191,20 +183,32 @@ FailureOr<ArrayAttr> getSupportedMmaTypes(DictionaryAttr config);
 FailureOr<ArrayAttr> getSupportedMmaTypes(mlir::FunctionOpInterface entryPoint);
 
 /// Returns the GPU target attribute from `iree-gpu-test-target` if provided.
-/// Returns null TargetAttr othersise.
+/// Returns null TargetAttr otherwise.
 IREE::GPU::TargetAttr getCLGPUTarget(MLIRContext *context);
 
-/// Returns the GPU target attribute from executable |target| if found.
-/// Returns null TargetAttr othersise.
-IREE::GPU::TargetAttr getGPUTargetAttr(IREE::HAL::ExecutableTargetAttr target);
+/// Returns the GPU target attribute from attribute `attr` if found. The `attr`
+/// can be either IREE::HAL::ExecutableTargetAttr or DictionaryAttr.
+/// Returns null TargetAttr otherwise.
+IREE::GPU::TargetAttr getGPUTargetAttr(Attribute attr);
 /// Returns the GPU target attribute from the executable target wrapping |op|
-/// if found. Returns null TargetAttr othersise.
+/// if found. Returns null TargetAttr otherwise.
 IREE::GPU::TargetAttr getGPUTargetAttr(Operation *op);
 
 /// Returns the GPU subgroup size chosen for the current CodeGen pipeline if
 /// exists; otherwise returns the subgroup size from the GPU target description.
 /// Returns std::nullopt if none found.
 std::optional<int> getGPUSubgroupSize(mlir::FunctionOpInterface func);
+
+/// Returns all `IREE::HAL::ExecutableVariantOp` operations from the
+/// given `mlir::ModuleOp`, ensuring they are returned in their original IR
+/// order.
+SmallVector<IREE::HAL::ExecutableVariantOp>
+getExecutableVariantOps(mlir::ModuleOp moduleOp);
+
+// Returns the MMA intrinsics associated with the given
+// `IREE::HAL::ExecutableVariantOp`.
+SmallVector<IREE::GPU::MMAIntrinsic>
+queryMMAIntrinsics(IREE::HAL::ExecutableVariantOp executableOp);
 
 } // namespace mlir::iree_compiler
 

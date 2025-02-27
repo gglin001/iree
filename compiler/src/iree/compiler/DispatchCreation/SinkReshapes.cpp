@@ -50,7 +50,7 @@ struct SinkReshapesPass final
 static bool isFusableUsingTileAndFuse(Operation *producer,
                                       Operation *consumer) {
   return llvm::isa_and_nonnull<IREE::LinalgExt::LinalgFusionOpInterface,
-                               linalg::LinalgOp, tensor::UnPackOp,
+                               linalg::LinalgOp, linalg::UnPackOp,
                                IREE::Encoding::UnsetEncodingOp>(producer);
 }
 
@@ -169,8 +169,8 @@ void SinkReshapesPass::runOnOperation() {
                                                      shouldSinkExpandShapeOp);
   // Add patterns to fold `tensor.empty` and reshape ops.
   tensor::populateFoldTensorEmptyPatterns(sinkReshapePatterns);
-  if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                          std::move(sinkReshapePatterns)))) {
+  if (failed(applyPatternsGreedily(getOperation(),
+                                   std::move(sinkReshapePatterns)))) {
     getOperation()->emitOpError("failed to sink reshape ops");
     return signalPassFailure();
   }

@@ -11,7 +11,6 @@
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
 #include "iree/compiler/Dialect/LinalgExt/Transforms/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -107,7 +106,7 @@ convertToIGEMMAndSetConfig(FunctionOpInterface funcOp,
     if (configFn.has_value()) {
       patterns.add<SetIGEMMConfiguration>(context, configFn.value());
     }
-    if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
       return failure();
     }
   }
@@ -150,8 +149,8 @@ convertToIGEMMAndSetConfig(FunctionOpInterface funcOp,
     tensor::ExpandShapeOp::getCanonicalizationPatterns(
         bubbleCollapseShapePatterns, context);
     populateReshapeToInterfaceTensorPatterns(bubbleCollapseShapePatterns);
-    if (failed(applyPatternsAndFoldGreedily(
-            funcOp, std::move(bubbleCollapseShapePatterns)))) {
+    if (failed(applyPatternsGreedily(funcOp,
+                                     std::move(bubbleCollapseShapePatterns)))) {
       return failure();
     }
   }

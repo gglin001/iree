@@ -31,24 +31,42 @@ constexpr StringLiteral kVectorLayoutFetcherStorageAttrName =
 constexpr StringLiteral kVectorLayoutRedistributeAttrName =
     "__vector_layout_redistribute";
 
-static void setOpSignature(Operation *op, VectorLayoutAnalysis &analysis) {
+/// Set signature for the operation based on the analysis. Returns failure if
+/// an operation contains vectors that cannot be distributed i.e. they have no
+/// layout.
+LogicalResult setOpSignature(Operation *op, VectorLayoutAnalysis &analysis,
+                             const VectorLayoutOptions &options) {
   SmallVector<Attribute> operands;
   SmallVector<Attribute> results;
 
   for (Value operand : op->getOperands()) {
     if (auto vectorOperand = dyn_cast<VectorValue>(operand)) {
-      operands.push_back(
-          analysis.getLayout<VectorLayoutInterface>(vectorOperand));
-      continue;
+      if (auto layout =
+              analysis.getLayout<VectorLayoutInterface>(vectorOperand)) {
+        operands.push_back(layout);
+        continue;
+      }
+      if (auto layout = options.getDefaultLayout(vectorOperand.getType())) {
+        operands.push_back(layout);
+        continue;
+      }
+      return failure();
     }
     operands.push_back(UnitAttr::get(op->getContext()));
   }
 
   for (Value result : op->getResults()) {
     if (auto vectorResult = dyn_cast<VectorValue>(result)) {
-      results.push_back(
-          analysis.getLayout<VectorLayoutInterface>(vectorResult));
-      continue;
+      if (auto layout =
+              analysis.getLayout<VectorLayoutInterface>(vectorResult)) {
+        results.push_back(layout);
+        continue;
+      }
+      if (auto layout = options.getDefaultLayout(vectorResult.getType())) {
+        results.push_back(layout);
+        continue;
+      }
+      return failure();
     }
     results.push_back(UnitAttr::get(op->getContext()));
   }
@@ -58,6 +76,7 @@ static void setOpSignature(Operation *op, VectorLayoutAnalysis &analysis) {
   Attribute signature[] = {operandsAttr, resultsAttr};
   op->setAttr(kVectorLayoutFetcherStorageAttrName,
               ArrayAttr::get(op->getContext(), signature));
+  return success();
 }
 
 static bool hasOpSignature(Operation *op) {
@@ -125,27 +144,31 @@ DistributionPattern::getDistributed(RewriterBase &rewriter, VectorValue value,
   return toSIMT.getResult();
 }
 
-void DistributionPattern::replaceOpWithDistributedValues(
+SmallVector<Value> DistributionPattern::getOpDistributedReplacements(
     RewriterBase &rewriter, Operation *op, ValueRange values) const {
-  // Replace all OpResults with the given values.
   SmallVector<Value> replacements;
   for (auto [opResult, replacement] :
        llvm::zip_equal(op->getOpResults(), values)) {
     // If this value is a vector type, it must be converted back to simd.
-    if (auto replacementType = dyn_cast<VectorType>(replacement.getType())) {
-      if (replacementType.getRank() != 0) {
-        auto oldResult = cast<VectorValue>(opResult);
-        // Create a toSIMD op to convert the value back to the simd.
-        rewriter.setInsertionPointAfterValue(oldResult);
-        Value toSIMD = rewriter.create<IREE::VectorExt::ToSIMDOp>(
-            oldResult.getLoc(), oldResult.getType(), replacement);
-        // Add to replacements.
-        replacement = toSIMD;
-      }
+    if (isa<VectorType>(replacement.getType())) {
+      auto oldResult = cast<VectorValue>(opResult);
+      // Create a toSIMD op to convert the value back to the simd.
+      rewriter.setInsertionPointAfterValue(oldResult);
+      Value toSIMD = rewriter.create<IREE::VectorExt::ToSIMDOp>(
+          oldResult.getLoc(), oldResult.getType(), replacement);
+      // Add to replacements.
+      replacement = toSIMD;
     }
     replacements.push_back(replacement);
   }
+  return replacements;
+}
 
+void DistributionPattern::replaceOpWithDistributedValues(
+    RewriterBase &rewriter, Operation *op, ValueRange values) const {
+  // Replace all OpResults with the given values.
+  SmallVector<Value> replacements =
+      getOpDistributedReplacements(rewriter, op, values);
   rewriter.replaceOp(op, replacements);
 }
 
@@ -167,6 +190,34 @@ void DistributionPattern::setSignatureForRedistribution(
                 ArrayAttr::get(rewriter.getContext(), signature));
     op->setAttr(kVectorLayoutRedistributeAttrName, unitAttr);
   });
+}
+
+LogicalResult
+DistributionPattern::replaceParentMask(PatternRewriter &rewriter,
+                                       vector::MaskOp maskOp) const {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(maskOp);
+  std::optional<DistributionSignature> signatureMask = getOpSignature(maskOp);
+  if (!signatureMask.has_value()) {
+    return rewriter.notifyMatchFailure(maskOp, "mask should have a signature.");
+  }
+  SmallVector<Value> returns = maskOp.getBody()->getTerminator()->getOperands();
+  for (auto [idx, ret] : llvm::enumerate(returns)) {
+    if (VectorValue vectorRet = dyn_cast<VectorValue>(ret)) {
+      VectorValue maskRet = cast<VectorValue>(maskOp.getResult(idx));
+      VectorLayoutInterface layout =
+          dyn_cast<NestedLayoutAttr>(signatureMask.value()[maskRet]);
+      if (!layout) {
+        return rewriter.notifyMatchFailure(maskOp,
+                                           "layout must be NestedLayoutAttr");
+      }
+      ret = getDistributed(rewriter, vectorRet, layout);
+    }
+  }
+  rewriter.eraseOp(maskOp.getBody()->getTerminator());
+  rewriter.inlineBlockBefore(maskOp.getBody(), maskOp);
+  replaceOpWithDistributedValues(rewriter, maskOp, returns);
+  return success();
 }
 
 static void
@@ -200,6 +251,7 @@ struct VectorDistributionListener : public RewriterBase::Listener {
   void notifyOperationModified(Operation *op) override {
     if (op->hasAttr(kVectorLayoutRedistributeAttrName) &&
         op->hasAttrOfType<ArrayAttr>(kVectorLayoutFetcherStorageAttrName)) {
+      op->removeAttr(kVectorLayoutRedistributeAttrName);
       toBeDistributed.push_back(op);
     }
   }
@@ -221,7 +273,12 @@ static void applyVectorDistribution(Operation *root,
   std::deque<Operation *> worklist;
   LLVM_DEBUG(llvm::dbgs() << "Collecting operations to be distributed\n");
   root->walk([&](Operation *op) {
-    if (hasOpSignature(op)) {
+    // The distribution of mask op is special.
+    // Although the signature set for visibility purposes
+    // but it will be distributed when the body is
+    // distributed. Therefore, we explicitly exclude
+    // the yield and the mask op.
+    if (hasOpSignature(op) && !isa<vector::MaskOp, vector::YieldOp>(op)) {
       worklist.push_back(op);
     }
   });
@@ -266,21 +323,6 @@ static void applyVectorDistribution(Operation *root,
   }
 }
 
-static bool canDistribute(Operation *op, VectorLayoutAnalysis &analysis) {
-  auto values = llvm::to_vector_of<Value>(op->getOperands());
-  llvm::append_range(values, op->getResults());
-
-  // First check if any of them are vector values.
-  if (llvm::none_of(values, llvm::IsaPred<VectorValue>))
-    return false;
-
-  // Check if all operands and results of this operation have a layout.
-  return llvm::all_of(values, [&analysis](Value value) {
-    auto vectorValue = dyn_cast<VectorValue>(value);
-    return !vectorValue || analysis.getLayout<Attribute>(vectorValue);
-  });
-}
-
 LogicalResult distributeVectorOps(Operation *root,
                                   RewritePatternSet &distributionPatterns,
                                   VectorLayoutOptions &options) {
@@ -296,8 +338,12 @@ LogicalResult distributeVectorOps(Operation *root,
   LLVM_DEBUG(
       llvm::dbgs() << "Setting distribution signatures for operations\n");
   root->walk([&](Operation *op) {
-    if (canDistribute(op, analysis)) {
-      setOpSignature(op, analysis);
+    if (failed(setOpSignature(op, analysis, options))) {
+      LLVM_DEBUG({
+        llvm::dbgs() << "Skipping operation because not all vector "
+                        "operands/results have a layout:\n";
+        op->print(llvm::dbgs());
+      });
     }
   });
   LLVM_DEBUG(llvm::dbgs() << "Distribution signatures set\n");
@@ -312,9 +358,14 @@ LogicalResult distributeVectorOps(Operation *root,
                                                          root->getContext());
   IREE::VectorExt::ToSIMTOp::getCanonicalizationPatterns(patterns,
                                                          root->getContext());
-  if (failed(applyPatternsAndFoldGreedily(root, std::move(patterns)))) {
+  if (failed(applyPatternsGreedily(root, std::move(patterns)))) {
     return failure();
   }
+
+  // Remove signature after distribution.
+  root->walk([](Operation *op) {
+    op->removeDiscardableAttr(kVectorLayoutFetcherStorageAttrName);
+  });
 
   if (options.verifyConversion()) {
     WalkResult hasConversionOp = root->walk([](Operation *op) {

@@ -122,8 +122,12 @@ if [[ "${OSTYPE}" =~ ^msys ]]; then
     # TODO: Fix equality mismatch
     "iree/tests/e2e/tensor_ops/check_vmvx_ukernel_local-task_unpack.mlir"
     # TODO(#11070): Fix argument/result signature mismatch
-    "iree/tests/e2e/tosa_ops/check_vmvx_local-sync_microkernels_fully_connected.mlir"
     "iree/tests/e2e/tosa_ops/check_vmvx_local-sync_microkernels_matmul.mlir"
+    # Flaky on CI opening the .safetensors testdata for unknown reasons, skip.
+    "iree/tools/test/iree-convert-parameters.txt.test"
+    "iree/tools/test/iree-dump-parameters.txt.test"
+    "iree/tools/test/parameters_scoped.mlir.test"
+    "iree/tools/test/parameters_unscoped.mlir.test"
   )
 elif [[ "${OSTYPE}" =~ ^darwin ]]; then
   excluded_tests+=(

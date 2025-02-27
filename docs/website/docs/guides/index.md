@@ -8,10 +8,11 @@
 
 Guides for specific frameworks:
 
+* [:simple-python: JAX](./ml-frameworks/jax.md)
+* [:simple-onnx: ONNX](./ml-frameworks/onnx.md)
+* [:simple-pytorch: PyTorch](./ml-frameworks/pytorch.md)
 * [:simple-tensorflow: TensorFlow](./ml-frameworks/tensorflow.md) and
   [:simple-tensorflow: TensorFlow Lite](./ml-frameworks/tflite.md)
-* [:simple-python: JAX](./ml-frameworks/jax.md)
-* [:simple-pytorch: PyTorch](./ml-frameworks/pytorch.md)
 
 ## Deployment configurations
 
@@ -27,10 +28,10 @@ Guides for specific configurations:
   with minimal platform dependencies
 * [:octicons-server-16: GPU - Vulkan](./deployment-configurations/gpu-vulkan.md)
   for cross-platform usage and interop with graphics applications
-* [:simple-nvidia: GPU - CUDA](./deployment-configurations/gpu-cuda.md)
-  for NVIDIA-specific solutions
 * [:simple-amd: GPU - ROCm](./deployment-configurations/gpu-rocm.md)
   for AMD-specific solutions
+* [:simple-nvidia: GPU - CUDA](./deployment-configurations/gpu-cuda.md)
+  for NVIDIA-specific solutions
 * [:simple-apple: GPU - Metal](./deployment-configurations/gpu-metal.md)
   for running on Apple hardware
 

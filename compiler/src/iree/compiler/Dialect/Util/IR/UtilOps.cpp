@@ -69,11 +69,8 @@ ArrayAttr deduplicateArrayElements(ArrayAttr arrayAttr) {
   return ArrayAttr::get(arrayAttr.getContext(), attrsSet.takeVector());
 }
 
-// Finds the operand index in |operands| that |tiedResult| references.
-// Returns TiedOpInterface::kUntiedIndex if no operand is found.
-static int64_t
-findTiedOperand(OpAsmParser::UnresolvedOperand tiedResult,
-                ArrayRef<OpAsmParser::UnresolvedOperand> operands) {
+int64_t findTiedOperand(OpAsmParser::UnresolvedOperand tiedResult,
+                        ArrayRef<OpAsmParser::UnresolvedOperand> operands) {
   int64_t operandIndex = IREE::Util::TiedOpInterface::kUntiedIndex;
   for (int64_t i = 0; i < operands.size(); ++i) {
     if (operands[i].name == tiedResult.name &&
@@ -1162,31 +1159,34 @@ AssumeIntOp::getOperandAssumptions(unsigned operandIndex) {
 std::pair<std::optional<uint64_t>, std::optional<uint64_t>>
 AssumeIntOp::getUnionedUnsignedRange(unsigned operandIndex) {
   auto assumptions = getOperandAssumptions(operandIndex);
-  uint64_t uminUnion = std::numeric_limits<uint64_t>::max();
+  std::optional<uint64_t> uminUnion;
   int uminCount = 0;
-  uint64_t umaxUnion = std::numeric_limits<uint64_t>::min();
+  std::optional<uint64_t> umaxUnion;
   int umaxCount = 0;
 
   for (auto assumption : assumptions) {
     auto umin = assumption.getUmin();
     auto umax = assumption.getUmax();
     if (umin) {
-      uminUnion = std::min(
-          *umin, uminUnion ? uminUnion : std::numeric_limits<uint64_t>::max());
+      uminUnion = uminUnion ? std::min(*umin, *uminUnion) : *umin;
       uminCount += 1;
     }
     if (umax) {
-      umaxUnion = std::max(
-          *umax, umaxUnion ? umaxUnion : std::numeric_limits<uint64_t>::min());
+      umaxUnion = umaxUnion ? std::max(*umax, *umaxUnion) : *umax;
       umaxCount += 1;
     }
   }
-  return std::make_pair(uminCount > 0 && uminCount == assumptions.size()
-                            ? std::optional<uint64_t>(uminUnion)
-                            : std::nullopt,
-                        umaxCount > 0 && umaxCount == assumptions.size()
-                            ? std::optional<uint64_t>(umaxUnion)
-                            : std::nullopt);
+  return std::make_pair(
+      uminCount == assumptions.size() ? uminUnion : std::nullopt,
+      umaxCount == assumptions.size() ? umaxUnion : std::nullopt);
+}
+
+static bool isConstantZero(IntAssumptionAttr assumption) {
+  std::optional<uint64_t> umin = assumption.getUmin();
+  std::optional<uint64_t> umax = assumption.getUmax();
+  if (!umin || !umax)
+    return false;
+  return *umin == 0 && *umax == 0;
 }
 
 std::optional<uint64_t>
@@ -1195,8 +1195,12 @@ AssumeIntOp::getUnionedUnsignedDivisor(unsigned operandIndex) {
   std::optional<uint64_t> divisorUnion;
   for (auto assumption : assumptions) {
     auto divisor = assumption.getUdiv();
-    if (!divisor)
+    if (!divisor) {
+      // Constant zero is divisible by anything
+      if (isConstantZero(assumption))
+        continue;
       return std::nullopt;
+    }
     if (divisorUnion)
       divisorUnion = std::gcd(*divisor, *divisorUnion);
     else
@@ -1217,11 +1221,14 @@ void AssumeIntOp::inferResultRanges(ArrayRef<ConstantIntRanges> argRanges,
     else
       continue;
     auto [umin, umax] = getUnionedUnsignedRange(index);
-    if (umin && umax) {
-      APInt uminAp(bitWidth, *umin);
-      APInt umaxAp(bitWidth, *umax);
-      setResultRange(result, ConstantIntRanges::fromUnsigned(uminAp, umaxAp));
-    }
+    auto uminAp = APInt::getMinValue(bitWidth);
+    auto umaxAp = APInt::getMaxValue(bitWidth);
+    if (umin)
+      uminAp = APInt(bitWidth, *umin);
+    if (umax)
+      umaxAp = APInt(bitWidth, *umax);
+
+    setResultRange(result, ConstantIntRanges::fromUnsigned(uminAp, umaxAp));
   }
 }
 
@@ -1617,7 +1624,7 @@ void FuncOp::build(OpBuilder &builder, OperationState &state, StringRef name,
   if (!argAttrs.empty() || !resAttrs.empty()) {
     assert(type.getNumInputs() == argAttrs.size());
     assert(type.getNumResults() == resAttrs.size());
-    function_interface_impl::addArgAndResultAttrs(
+    call_interface_impl::addArgAndResultAttrs(
         builder, state, argAttrs, resAttrs, builder.getStringAttr("arg_attrs"),
         builder.getStringAttr("res_attrs"));
   }
@@ -1709,7 +1716,7 @@ ParseResult FuncOp::parse(OpAsmParser &parser, OperationState &result) {
   result.attributes.append(parsedAttributes);
 
   assert(resultAttrs.size() == resultTypes.size());
-  function_interface_impl::addArgAndResultAttrs(
+  call_interface_impl::addArgAndResultAttrs(
       builder, result, arguments, resultAttrs,
       builder.getStringAttr("arg_attrs"), builder.getStringAttr("res_attrs"));
 
@@ -1906,7 +1913,8 @@ IREE::Util::CallOp IREE::Util::CallOp::cloneAndExpand(
 
   return builder.create<IREE::Util::CallOp>(
       getLoc(), newResultTypes, getCallee(), newOperands,
-      builder.getIndexArrayAttr(newTiedOperands));
+      builder.getIndexArrayAttr(newTiedOperands), getArgAttrsAttr(),
+      getResAttrsAttr());
 }
 
 //===----------------------------------------------------------------------===//

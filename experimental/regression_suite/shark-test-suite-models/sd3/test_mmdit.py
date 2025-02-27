@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from conftest import VmfbManager
 
-rocm_chip = os.getenv("ROCM_CHIP", default="gfx90a")
+rocm_chip = os.getenv("ROCM_CHIP", default="gfx942")
 vmfb_dir = os.getenv("TEST_OUTPUT_ARTIFACTS", default=Path.cwd())
 
 ###############################################################################
@@ -48,7 +48,7 @@ sd3_mmdit_real_weights = fetch_source_fixture(
 )
 
 sd3_mmdit_mlir = fetch_source_fixture(
-    "https://sharkpublic.blob.core.windows.net/sharkpublic/sai/sd3-mmdit/model.mlirbc",
+    "https://sharkpublic.blob.core.windows.net/sharkpublic/sai/sd3-mmdit/model.mlir",
     group="sd3_mmdit",
 )
 
@@ -85,7 +85,6 @@ ROCM_COMPILE_FLAGS = [
     f"--iree-hip-target={rocm_chip}",
     "--iree-opt-const-eval=false",
     "--iree-global-opt-propagate-transposes=true",
-    "--iree-dispatch-creation-enable-fuse-horizontal-contractions=true",
     "--iree-dispatch-creation-enable-aggressive-fusion=true",
     "--iree-opt-aggressively-propagate-transposes=true",
     "--iree-opt-outer-dim-concat=true",
@@ -134,10 +133,6 @@ def test_run_mmdit_cpu(SD3_MMDIT_COMMON_RUN_FLAGS, sd3_mmdit_real_weights):
 ###############################################################################
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Expected compilation to fail",
-)
 def test_compile_mmdit_rocm(sd3_mmdit_mlir):
     VmfbManager.sd3_mmdit_rocm_vmfb = iree_compile(
         sd3_mmdit_mlir,
@@ -148,6 +143,10 @@ def test_compile_mmdit_rocm(sd3_mmdit_mlir):
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="Expected run to fail",
+)
 @pytest.mark.depends(on=["test_compile_mmdit_rocm"])
 def test_run_mmdit_rocm(SD3_MMDIT_COMMON_RUN_FLAGS, sd3_mmdit_real_weights):
     return iree_run_module(

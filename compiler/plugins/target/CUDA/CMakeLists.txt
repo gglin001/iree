@@ -20,11 +20,8 @@ iree_compiler_register_plugin(
 iree_cc_library(
   NAME
     CUDA
-  HDRS
-    "SetBlockIdsRangePass.h"
   SRCS
     "CUDATarget.cpp"
-    "SetBlockIdsRangePass.cpp"
   DEPS
     LLVMAnalysis
     LLVMBitReader
@@ -52,6 +49,7 @@ iree_cc_library(
     MLIRTransformDialect
     iree::base::internal::flatcc::building
     iree::compiler::Codegen
+    iree::compiler::Codegen::Common
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Codegen::Dialect::GPU::TargetUtils::KnownTargets
     iree::compiler::Codegen::LLVMGPU

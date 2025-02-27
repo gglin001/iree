@@ -388,10 +388,10 @@ typedef enum {
     OPC(0x77, AbsI32) \
     OPC(0x78, AbsI64) \
     OPC(0x79, Block) \
-    OPC(0x7A, MinI64S) \
-    OPC(0x7B, MinI64U) \
-    OPC(0x7C, MaxI64S) \
-    OPC(0x7D, MaxI64U) \
+    OPC(0x7A, MinI32S) \
+    OPC(0x7B, MinI32U) \
+    OPC(0x7C, MaxI32S) \
+    OPC(0x7D, MaxI32U) \
     OPC(0x7E, MinI64S) \
     OPC(0x7F, MinI64U) \
     OPC(0x80, MaxI64S) \
@@ -584,8 +584,8 @@ typedef enum {
   IREE_VM_OP_EXT_F32_RoundF32Even = 0x39,
   IREE_VM_OP_EXT_F32_CastF32SI64 = 0x3A,
   IREE_VM_OP_EXT_F32_CastF32UI64 = 0x3B,
-  IREE_VM_OP_EXT_F32_RSV_0x3C,
-  IREE_VM_OP_EXT_F32_RSV_0x3D,
+  IREE_VM_OP_EXT_F32_CastSI64F32 = 0x3C,
+  IREE_VM_OP_EXT_F32_CastUI64F32 = 0x3D,
   IREE_VM_OP_EXT_F32_RSV_0x3E,
   IREE_VM_OP_EXT_F32_RSV_0x3F,
   IREE_VM_OP_EXT_F32_RSV_0x40,
@@ -843,8 +843,8 @@ typedef enum {
     OPC(0x39, RoundF32Even) \
     OPC(0x3A, CastF32SI64) \
     OPC(0x3B, CastF32UI64) \
-    RSV(0x3C) \
-    RSV(0x3D) \
+    OPC(0x3C, CastSI64F32) \
+    OPC(0x3D, CastUI64F32) \
     RSV(0x3E) \
     RSV(0x3F) \
     RSV(0x40) \

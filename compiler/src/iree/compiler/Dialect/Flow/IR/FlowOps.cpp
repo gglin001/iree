@@ -599,27 +599,41 @@ LogicalResult DispatchRegionOp::reifyResultShapes(
 
 /// Canonicalizes a DispatchRegionOp: Drop all unused results. Returns `true`
 /// if the IR was modified.
-bool dropUnusedDispatchRegionResults(RewriterBase &rewriter,
-                                     Flow::DispatchRegionOp regionOp) {
+bool dropUnusedAndRedundantDispatchRegionResults(
+    RewriterBase &rewriter, Flow::DispatchRegionOp regionOp) {
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(regionOp);
+  if (!llvm::hasSingleElement(regionOp.getBody())) {
+    // Bail on case where there are more than one blocks in the dispatch.
+    return false;
+  }
 
-  // Determine unused results and result types + dynamic dimensions of the new
-  // op.
-  llvm::DenseSet<unsigned> unusedResults;
+  // Determine unused/redunduant results and result types + dynamic dimensions
+  // of the new op. If the result is redundant, record which result number it is
+  // redundant with. If the result is dropped, record `std::nullopt` to indicate
+  // that.
+  llvm::DenseMap<Value, std::optional<unsigned>> droppedResultValues;
+  llvm::SetVector<Value> yieldedResultsSet;
   SmallVector<Type> resultTypes;
   SmallVector<Value> dynamicDims;
   unsigned dimOffset = 0;
-  for (const auto &it : llvm::enumerate(regionOp.getResults())) {
-    Type type = it.value().getType();
+
+  auto returnOp =
+      cast<Flow::ReturnOp>(regionOp.getBody().front().getTerminator());
+  for (const auto &[index, value] : llvm::enumerate(regionOp.getResults())) {
+    Type type = value.getType();
     auto shapedType = llvm::dyn_cast<ShapedType>(type);
-    if (it.value().use_empty()) {
-      unusedResults.insert(it.index());
+    OpOperand &yieldedVal = returnOp->getOpOperand(index);
+    if (value.use_empty()) {
+      droppedResultValues[value] = std::nullopt;
+    } else if (yieldedResultsSet.contains(yieldedVal.get())) {
+      droppedResultValues[value] = yieldedVal.getOperandNumber();
     } else {
       resultTypes.push_back(type);
       ValueRange dims = regionOp.getResultDims().slice(
           dimOffset, shapedType.getNumDynamicDims());
       dynamicDims.append(dims.begin(), dims.end());
+      yieldedResultsSet.insert(yieldedVal.get());
     }
     dimOffset += shapedType.getNumDynamicDims();
   }
@@ -627,7 +641,7 @@ bool dropUnusedDispatchRegionResults(RewriterBase &rewriter,
          "expected that all dynamic dims were processed");
 
   // Nothing to do if all results are used.
-  if (unusedResults.empty())
+  if (droppedResultValues.empty())
     return false;
 
   // Create new region and move over the body.
@@ -636,21 +650,27 @@ bool dropUnusedDispatchRegionResults(RewriterBase &rewriter,
   newRegionOp.getBody().takeBody(regionOp.getBody());
 
   // Update terminator.
-  auto returnOp =
-      cast<Flow::ReturnOp>(newRegionOp.getBody().front().getTerminator());
-  SmallVector<Value> yieldedValues;
-  for (const auto &it : llvm::enumerate(returnOp.getOperands()))
-    if (!unusedResults.contains(it.index()))
-      yieldedValues.push_back(it.value());
+  ValueRange yieldedVals = yieldedResultsSet.getArrayRef();
   rewriter.modifyOpInPlace(
-      returnOp, [&]() { returnOp.getOperandsMutable().assign(yieldedValues); });
+      returnOp, [&]() { returnOp.getOperandsMutable().assign(yieldedVals); });
 
   // Replace all uses of the old op.
   SmallVector<Value> replacements(regionOp->getNumResults(), nullptr);
   unsigned resultCounter = 0;
-  for (const auto &it : llvm::enumerate(regionOp.getResults()))
-    if (!unusedResults.contains(it.index()))
-      replacements[it.index()] = newRegionOp->getResult(resultCounter++);
+  llvm::SmallDenseMap<unsigned, unsigned> oldResultNumToNewResultNum;
+  for (const auto &[index, value] : llvm::enumerate(regionOp.getResults())) {
+    if (droppedResultValues.contains(value)) {
+      std::optional<unsigned> resultNumber = droppedResultValues.lookup(value);
+      if (resultNumber) {
+        replacements[index] = newRegionOp->getResult(
+            oldResultNumToNewResultNum[resultNumber.value()]);
+      }
+    } else {
+      oldResultNumToNewResultNum[index] = resultCounter;
+      replacements[index] = newRegionOp->getResult(resultCounter);
+      resultCounter++;
+    }
+  }
   rewriter.replaceOp(regionOp, replacements);
 
   return true;
@@ -662,7 +682,8 @@ struct DispatchRegionDropUnusedResults
 
   LogicalResult matchAndRewrite(DispatchRegionOp regionOp,
                                 PatternRewriter &rewriter) const final {
-    return success(dropUnusedDispatchRegionResults(rewriter, regionOp));
+    return success(
+        dropUnusedAndRedundantDispatchRegionResults(rewriter, regionOp));
   }
 };
 
@@ -1566,7 +1587,7 @@ void FuncOp::build(OpBuilder &builder, OperationState &state, StringRef name,
   if (!argAttrs.empty() || !resAttrs.empty()) {
     assert(type.getNumInputs() == argAttrs.size());
     assert(type.getNumResults() == resAttrs.size());
-    function_interface_impl::addArgAndResultAttrs(
+    call_interface_impl::addArgAndResultAttrs(
         builder, state, argAttrs, resAttrs, builder.getStringAttr("arg_attrs"),
         builder.getStringAttr("res_attrs"));
   }
@@ -1599,6 +1620,17 @@ void CallOp::build(OpBuilder &builder, OperationState &state,
                          static_cast<int32_t>(argumentDims.size()),
                          static_cast<int32_t>(resultDims.size()),
                      }));
+}
+
+void CallOp::build(OpBuilder &builder, OperationState &state,
+                   SymbolRefAttr callee, TypeRange resultTypes,
+                   ValueRange resultDims, ValueRange arguments,
+                   ArrayAttr tiedOperands,
+                   ArrayRef<NamedAttribute> attributes) {
+  build(
+      builder, state, callee, resultTypes, resultDims, arguments,
+      IREE::Util::buildDynamicDimsForValues(state.location, arguments, builder),
+      tiedOperands, attributes);
 }
 
 FunctionType CallOp::getCalleeType() {
@@ -1817,12 +1849,41 @@ LogicalResult TensorSplatOp::verify() {
 
 LogicalResult TensorCloneOp::verify() {
   if (failed(verifyOpDynamicDims(getOperation(), {getOperand()},
-                                 getArgumentDims())) ||
+                                 getOperandDims())) ||
       failed(verifyOpDynamicDims(getOperation(), {getResult()},
-                                 getArgumentDims()))) {
+                                 getOperandDims()))) {
     return failure();
   }
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// flow.tensor.barrier
+//===----------------------------------------------------------------------===//
+
+LogicalResult TensorBarrierOp::verify() {
+  if (failed(verifyOpDynamicDims(getOperation(), {getOperand()},
+                                 getOperandDims()))) {
+    return failure();
+  }
+  return success();
+}
+
+Value TensorBarrierOp::getTiedResult(unsigned resultIndex) {
+  return IREE::Util::TiedOpInterface::findTiedBaseValue(getOperand());
+}
+
+Value TensorBarrierOp::getTiedResultOperand(Value result) {
+  return getOperand();
+}
+
+::std::optional<unsigned>
+TensorBarrierOp::getTiedResultOperandIndex(unsigned resultIndex) {
+  return {0}; // operand
+}
+
+SmallVector<int64_t> TensorBarrierOp::getTiedResultOperandIndices() {
+  return {0}; // operand
 }
 
 //===----------------------------------------------------------------------===//
@@ -1831,9 +1892,9 @@ LogicalResult TensorCloneOp::verify() {
 
 LogicalResult TensorTransferOp::verify() {
   if (failed(verifyOpDynamicDims(getOperation(), {getOperand()},
-                                 getArgumentDims())) ||
+                                 getOperandDims())) ||
       failed(verifyOpDynamicDims(getOperation(), {getResult()},
-                                 getArgumentDims()))) {
+                                 getOperandDims()))) {
     return failure();
   }
   return success();
@@ -1958,7 +2019,7 @@ struct FoldTensorLoadWithExtractSlice
 };
 
 /// Pattern to fold `tensor.insert_slice` with `flow.dispatch.tensor.store`
-/// oeprations.
+/// operations.
 // TODO(ravishankarm): Eventually this should go in as a canonicalization at the
 // Flow level.
 struct FoldInsertSliceWithTensorStoreOp
@@ -1974,13 +2035,13 @@ struct FoldInsertSliceWithTensorStoreOp
       return failure();
 
     // Check that the `dest` of the `tensor.insert_slice` and target of the
-    // `flow.dispatch.tensor.store` are the same interface binding.
+    // `flow.dispatch.tensor.store` are the same interface binding, if these
+    // are still in a dispatch region.
     std::optional<BlockArgument> destBinding =
         getBindingArgument(insertSliceOp.getDest());
     std::optional<BlockArgument> targetBinding =
         getBindingArgument(dispatchTensorStoreOp.getTarget());
-    if (!destBinding || !targetBinding ||
-        destBinding.value() != targetBinding.value()) {
+    if (destBinding != targetBinding) {
       return failure();
     }
 

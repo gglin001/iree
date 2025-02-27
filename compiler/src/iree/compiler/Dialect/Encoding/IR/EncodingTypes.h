@@ -19,12 +19,17 @@
 
 // clang-format off
 #include "iree/compiler/Dialect/Encoding/IR/EncodingEnums.h.inc" // IWYU pragma: export
+#include "iree/compiler/Dialect/Encoding/IR/EncodingInterfaces.h.inc" // IWYU pragma: export
 #define GET_ATTRDEF_CLASSES
 #include "iree/compiler/Dialect/Encoding/IR/EncodingAttrs.h.inc" // IWYU pragma: export
 #undef GET_ATTRDEF_CLASSES
 #define GET_TYPEDEF_CLASSES
 #include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h.inc" // IWYU pragma: export
 #undef GET_TYPEDEF_CLASSES
+// The EncodingTypeInterfaces.h.inc needs to be included after
+// EncodingTypes.h.inc because an interface method could have EncodingAttr
+// types.
+#include "iree/compiler/Dialect/Encoding/IR/EncodingTypeInterfaces.h.inc" // IWYU pragma: export
 // clang-format on
 
 //===---------------------------------------------------------------------===//
@@ -33,9 +38,19 @@
 
 namespace mlir::iree_compiler::IREE::Encoding {
 
+static constexpr char kEncodingResolverAttrName[] = "iree.encoding.resolver";
+
+/// Returns the encoding attribute from the type if there is an encoding that
+/// implements SerializableEncodingAttrInterface. Otherwise, returns null.
+SerializableEncodingAttrInterface
+getSerializableEncodingAttrInterface(RankedTensorType type);
+
 /// Returns the encoding attribute from the type if there is an encoding.
 /// Otherwise, returns null.
 EncodingAttr getEncodingAttr(RankedTensorType type);
+
+/// Returns true if the type contains packed_storage attribute.
+bool hasPackedStorageAttr(RankedTensorType type);
 
 /// Returns the ContractionDimensions for the encoding user_indexing_maps.
 FailureOr<linalg::ContractionDimensions>
@@ -84,6 +99,13 @@ MatmulNarrowDim getMatmulNarrowDim(linalg::LinalgOp linalgOp,
 /// neither is a narrow dimension and this returns a default-constructed falsish
 /// value.
 MatmulNarrowDim getMatmulNarrowDim(EncodingAttr encoding);
+
+/// Returns true if `encoding` represents a narrow-N matmul RESULT, e.g. the
+/// result of a matvec.
+bool isNarrowNResult(EncodingAttr encoding);
+
+/// Returns the same RankedTensoType without the encoding.
+RankedTensorType dropEncoding(RankedTensorType type);
 
 } // namespace mlir::iree_compiler::IREE::Encoding
 
