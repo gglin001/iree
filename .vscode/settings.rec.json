@@ -6,12 +6,15 @@
     "terminal.integrated.env.osx": {
         "EXT_PATH": "${workspaceFolder}/build/tools",
         "EXT_PYTHONPATH": "${workspaceFolder}/build/runtime/bindings/python:${workspaceFolder}/build/compiler/bindings",
+        // "LLVM_SYMBOLIZER_PATH": "llvm-iree/llvm-project/build/bin/llvm-symbolizer",
     },
-    "cmake.useCMakePresets": "always",
+    "search.exclude": {
+        "**/third_party": true,
+    },
     // use abs path
-    // "mlir.server_path": "/Users/allen/repos/_COMPILER/iree/build/tools/iree-mlir-lsp-server",
-    // "mlir.tablegen_server_path": "/iree-llvm-project/build/bin/tblgen-lsp-server",
-    // "mlir.pdll_server_path": "/iree-llvm-project/build/bin/mlir-pdll-lsp-server",
+    // "mlir.server_path": "build/tools/iree-mlir-lsp-server",
+    // "mlir.tablegen_server_path": "tblgen-lsp-server",
+    // "mlir.pdll_server_path": "mlir-pdll-lsp-server",
     // "mlir.tablegen_compilation_databases": [],
     // "mlir.pdll_compilation_databases": []
 }
