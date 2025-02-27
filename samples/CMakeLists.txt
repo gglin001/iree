@@ -12,12 +12,6 @@
 # included:
 #   compiler_plugins
 
-if(IREE_BUILD_SAMPLES_RISCV)
-  add_subdirectory(static_library)
-  add_subdirectory(simple_embedding)
-  return()
-endif()
-
 add_subdirectory(custom_dispatch)
 add_subdirectory(custom_module)
 add_subdirectory(dynamic_shapes)
