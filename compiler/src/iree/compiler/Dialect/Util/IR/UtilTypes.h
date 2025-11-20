@@ -12,6 +12,7 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
 #include "mlir/IR/Attributes.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Location.h"
@@ -21,6 +22,7 @@
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include <numeric>
 
@@ -107,6 +109,13 @@ bool isValueUsableForOp(Value value, Operation *op);
 // Tries to reorder the producer of |value| above |consumerOp|.
 // Returns true if the move was successful.
 bool tryMoveProducerBefore(Value value, Operation *consumerOp);
+
+// Materializes a constant value as an operation.
+// Tries multiple approaches: arith::ConstantOp for compatible types,
+// then attribute dialect materialization, then type dialect materialization.
+// Returns nullptr if materialization fails.
+Operation *materializeConstant(OpBuilder &builder, Location loc,
+                               TypedAttr attr);
 
 // Returns true if the given callable op is public or external (no body).
 // Such callables cannot have their signature changed without (potentially)
@@ -253,6 +262,13 @@ using SetIntDivisibilityFn =
 // Walks the SSA use-def chain upwards to find the dynamic dimensions of the
 // value. Returns None if the shape cannot be found.
 std::optional<ValueRange> findDynamicDims(Value shapedValue);
+
+// Walks the SSA use-def chain upwards to find the requested dimension of the
+// value if the dimension is dynamic. Returns the static size if the dim is
+// static, and null if the walk fails.
+// NOTE: If querying more than one dimension prefer findDynamicDims instead
+// of calling this multiple times for the same |shapedValue|.
+OpFoldResult findDim(Value shapedValue, int64_t dim);
 
 // Walks the SSA use-def chain to find the dynamic dimensions of the value.
 // Returns None if the shape cannot be found or if it is defined after

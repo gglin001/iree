@@ -33,7 +33,7 @@ tryLookupGlobalAffinity(Operation *op,
 IREE::Stream::AffinityAttr
 tryLookupExecutionAffinity(Operation *op,
                            IREE::Stream::AffinityAnalysis *affinityAnalysis) {
-  assert(llvm::isa<IREE::Stream::AffinityOpInterface>(op) &&
+  assert(isa<IREE::Stream::AffinityOpInterface>(op) &&
          "must be an affinity op");
   return affinityAnalysis->lookupExecutionAffinity(op);
 }
@@ -64,11 +64,11 @@ ConvertedTensor transferTensorOperands(
   Value resource = convertedOperand[0];
   Value resourceSize = convertedOperand[1];
   auto affinityAttr = affinityAnalysis->lookupResourceAffinity(originalOperand);
-  bool isBarrier = resource.getDefiningOp() &&
-                   isa<IREE::Stream::AsyncBarrierOp>(resource.getDefiningOp());
+  bool isBarrier =
+      isa_and_nonnull<IREE::Stream::AsyncBarrierOp>(resource.getDefiningOp());
   if (affinityAttr != requiredAffinityAttr && !isBarrier) {
-    resource = builder.create<IREE::Stream::AsyncTransferOp>(
-        loc, resource.getType(), resource, resourceSize, resourceSize,
+    resource = IREE::Stream::AsyncTransferOp::create(
+        builder, loc, resource.getType(), resource, resourceSize, resourceSize,
         affinityAttr, requiredAffinityAttr);
   }
   return {requiredAffinityAttr, resource, resourceSize};

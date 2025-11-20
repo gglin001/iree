@@ -100,7 +100,8 @@ model file:
 ```shell
 $ ../iree-build/tools/iree-opt \
   --iree-transformation-pipeline \
-  --iree-hal-target-backends=vmvx \
+  --iree-hal-target-device=local \
+  --iree-hal-local-target-device-backends=vmvx \
   $PWD/tests/e2e/stablehlo_models/fullyconnected.mlir
 ```
 
@@ -113,12 +114,17 @@ For example, to translate `simple.mlir` to an IREE module:
 
 ```shell
 $ ../iree-build/tools/iree-compile \
-  --iree-hal-target-backends=vmvx \
+  --iree-hal-target-device=local \
+  --iree-hal-local-target-device-backends=vmvx \
   $PWD/samples/models/simple_abs.mlir \
   -o /tmp/simple_abs_vmvx.vmfb
 ```
 
 ### iree-run-module
+
+!!! tip
+
+    `iree-benchmark-module` and `iree-run-module` share many flags.
 
 The `iree-run-module` program takes an already translated IREE module as input
 and executes an exported function using the provided inputs.
@@ -139,7 +145,7 @@ $ ../iree-build/tools/iree-run-module \
 Input scalars are passed as `value` and input buffers are passed as
 `[shape]xtype=[value]`.
 
-* Input buffers may also be read from raw binary files or Numpy npy files.
+* Input buffers may also be [read from raw binary files or Numpy npy files](#read-inputs-from-a-file).
 
 MLIR type | Description | Input example
 -- | -- | --
@@ -197,7 +203,8 @@ runner for the IREE [check framework](./testing-guide.md#iree-core-end-to-end-e2
 ```shell
 $ ../iree-build/tools/iree-compile \
   --iree-input-type=stablehlo \
-  --iree-hal-target-backends=vmvx \
+  --iree-hal-target-device=local \
+  --iree-hal-local-target-device-backends=vmvx \
   $PWD/tests/e2e/stablehlo_ops/abs.mlir \
   -o /tmp/abs.vmfb
 ```
@@ -223,7 +230,8 @@ For example, to execute the contents of
 ```shell
 # iree-run-mlir <compiler flags> [input.mlir] <runtime flags>
 $ ../iree-build/tools/iree-run-mlir \
-  --iree-hal-target-backends=vmvx \
+  --iree-hal-target-device=local \
+  --iree-hal-local-target-device-backends=vmvx \
   $PWD/samples/models/simple_abs.mlir \
   --input=f32=-2
 ```
@@ -252,6 +260,19 @@ should be in the format `[shape]xtype=[value]`. For example:
 ``` text
 1x5xf32=1,-2,-3,4,-5
 1x5x3x1xf32=15,14,13,12,11,10,9,8,7,6,5,4,3,2,1
+```
+
+Read from a numpy file:
+
+``` text
+--input=@input.npy
+```
+
+Read from a binary file with passing the shape and dtype because raw binary
+files have no metadata:
+
+``` text
+--input=[shape]xdtype=@input.bin
 ```
 
 #### `--iree-flow-trace-dispatch-tensors`

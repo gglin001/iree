@@ -111,8 +111,7 @@ namespace {
 class SPIRVTileAndPromotePass final
     : public impl::SPIRVTileAndPromotePassBase<SPIRVTileAndPromotePass> {
 public:
-  using impl::SPIRVTileAndPromotePassBase<
-      SPIRVTileAndPromotePass>::SPIRVTileAndPromotePassBase;
+  using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<gpu::GPUDialect, IREE::GPU::IREEGPUDialect>();
@@ -130,7 +129,7 @@ private:
 
 void SPIRVTileAndPromotePass::runOnOperation() {
   MLIRContext *context = &getContext();
-  auto funcOp = getOperation();
+  mlir::FunctionOpInterface funcOp = getOperation();
 
   auto threadTileComputeFn = getSPIRVTileSizeComputeFn(funcOp, 1);
   if (failed(threadTileComputeFn))
@@ -299,7 +298,7 @@ LogicalResult SPIRVTileAndPromotePass::doPromoteCMatrix(
   auto genericOp = cast<linalg::GenericOp>(*linalgOps.back());
 
   auto matmulType =
-      llvm::cast<MemRefType>(matmulOp.getDpsInitOperand(0)->get().getType());
+      cast<MemRefType>(matmulOp.getDpsInitOperand(0)->get().getType());
   if (hasSharedMemoryAddressSpace(matmulType)) {
     // The matmul output is already in shared memory. This can happen when
     // bufferization decides an allocation is needed, e.g., matmul + arith.extf,

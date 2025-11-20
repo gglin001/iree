@@ -7,7 +7,7 @@
 #include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
-#include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -27,7 +27,8 @@ struct VerifyWorkgroupDistributionPass final
     FunctionOpInterface funcOp = getOperation();
 
     WalkResult hasForall = funcOp.walk([&](scf::ForallOp forallOp) {
-      if (forallOpHasMappingType<IREE::Codegen::WorkgroupMappingAttr>(
+      if (forallOpHasMappingType<IREE::Codegen::WorkgroupMappingAttr,
+                                 IREE::LinalgExt::SplitReductionMappingAttr>(
               forallOp)) {
         return WalkResult::interrupt();
       }
@@ -41,16 +42,14 @@ struct VerifyWorkgroupDistributionPass final
       return;
     }
 
-    auto globalAddressSpace = IREE::HAL::DescriptorTypeAttr::get(
-        &getContext(), IREE::HAL::DescriptorType::StorageBuffer);
-
     // Walk in PreOrder so that parent operations are visited before children,
     // thus allowing all operations contained within workgroup foralls to be
     // skipped.
     WalkResult res = funcOp.walk<WalkOrder::PreOrder>([&](Operation *op) {
       if (auto forallOp = dyn_cast<scf::ForallOp>(op)) {
         // Skip ops contained within forall ops with workgroup mappings.
-        if (forallOpHasMappingType<IREE::Codegen::WorkgroupMappingAttr>(
+        if (forallOpHasMappingType<IREE::Codegen::WorkgroupMappingAttr,
+                                   IREE::LinalgExt::SplitReductionMappingAttr>(
                 forallOp)) {
           return WalkResult::skip();
         }
@@ -63,8 +62,10 @@ struct VerifyWorkgroupDistributionPass final
             continue;
           }
 
-          // Writes to non-global memory are fine.
-          if (type.getMemorySpace() != globalAddressSpace) {
+          // Writes to non-global memory are fine. hasGlobalMemoryAddressSpace()
+          // treats the unspecified address space as global, but we don't have
+          // that assumption yet.
+          if (!type.getMemorySpace() || !hasGlobalMemoryAddressSpace(type)) {
             continue;
           }
 

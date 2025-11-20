@@ -10,6 +10,7 @@
 #include "iree/compiler/Codegen/LLVMGPU/ConvertToLLVM.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
+#include "llvm/Support/DebugLog.h"
 #include "mlir/Conversion/AMDGPUToROCDL/AMDGPUToROCDL.h"
 #include "mlir/Conversion/ArithToAMDGPU/ArithToAMDGPU.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -21,6 +22,7 @@
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
+#include "mlir/Conversion/MathToROCDL/MathToROCDL.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
@@ -37,8 +39,6 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #define DEBUG_TYPE "iree-convert-to-rocdl"
-#define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
-#define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace mlir::iree_compiler {
 
@@ -59,7 +59,7 @@ namespace {
 // operations as well.
 struct ReplaceGPUBarrierWithLDSBarrier
     : public OpRewritePattern<gpu::BarrierOp> {
-  using OpRewritePattern<gpu::BarrierOp>::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(gpu::BarrierOp op,
                                 PatternRewriter &rewriter) const override {
@@ -73,20 +73,102 @@ static void populateConvertGPUToAMDGPUPatterns(RewritePatternSet &patterns) {
   patterns.add<ReplaceGPUBarrierWithLDSBarrier>(patterns.getContext());
 }
 
+/// Hacky pattern to swap `s_setprio` operations with `amdgpu.mfma` ops.
+/// This is needed for ping-pong scheduling patterns to prevent off
+/// waves from interrupting the MFMA region of the high priority wave.
+/// The IR is rewritten as follows:
+///
+/// rocdl.s.setprio {iree_gpu.swap_mfma = n}
+/// amdgpu.mfma // 1
+/// ...
+/// amdgpu.mfma // n
+/// amdgpu.mfma // n + 1
+///
+/// to
+///
+/// amdgpu.mfma // 1
+/// ...
+/// amdgpu.mfma // n
+/// rocdl.s.setprio
+/// amdgpu.mfma // n + 1
+///
+/// This only looks at successor mfmas within the same block and is best
+/// effort.
+constexpr StringLiteral kSwapName = "iree_gpu.swap_mfma";
+struct SwapSetPrioWithMFMA : public OpRewritePattern<ROCDL::SetPrioOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(ROCDL::SetPrioOp setPrio,
+                                PatternRewriter &rewriter) const override {
+    if (!setPrio->hasAttr(kSwapName)) {
+      return failure();
+    }
+
+    auto count = setPrio->getAttrOfType<IntegerAttr>(kSwapName);
+    if (!count) {
+      return failure();
+    }
+
+    // Remove the swap attribute no matter what to avoid reapplying this
+    // pattern.
+    rewriter.startOpModification(setPrio);
+    setPrio->removeDiscardableAttr(kSwapName);
+
+    Operation *current = setPrio->getNextNode();
+    Operation *mfmaToSwap = nullptr;
+
+    for (int64_t remainingToSwap = count.getInt();
+         remainingToSwap > 0 && current; current = current->getNextNode()) {
+      if (isa<mlir::amdgpu::MFMAOp>(current)) {
+        --remainingToSwap;
+        mfmaToSwap = current;
+      }
+    }
+    if (mfmaToSwap) {
+      rewriter.moveOpAfter(setPrio, mfmaToSwap);
+    }
+    rewriter.finalizeOpModification(setPrio);
+    return success();
+  }
+};
+
+static void populateSwapSetPrioWithMFMAPatterns(RewritePatternSet &patterns) {
+  patterns.add<SwapSetPrioWithMFMA>(patterns.getContext());
+}
+
 } // namespace
 
+template <typename... Floats>
+static bool containsAPred(Type type) {
+  type = getElementTypeOrSelf(type);
+  return isa<Floats...>(type);
+}
+
 // Function to check valid data types on the ROCm backend.
-static LogicalResult validateDataTypes(Operation *op) {
-  auto operandTypes = llvm::to_vector(op->getOperandTypes());
-  auto resultTypes = llvm::to_vector(op->getResultTypes());
-  if (llvm::any_of(llvm::concat<Type>(operandTypes, resultTypes),
-                   llvm::IsaPred<Float8E4M3FNType, Float8E5M2Type>)) {
-    op->emitOpError()
-        << "F8E5M2 and F8E4M3FN types are not supported on "
-           "the ROCm backend; try F8E5M2FNUZ or F8E4M3FNUZ instead.";
-    return failure();
+// Note to readers: different chips take different FP8 formats but re-use the
+// same instruction and intrinsic names, so we must filter out the "wrong" FP8
+// here.
+static LogicalResult validateDataTypes(Operation *op,
+                                       const amdgpu::Chipset &chipset) {
+  constexpr amdgpu::Chipset kGfx942 = amdgpu::Chipset(9, 4, 2);
+  if (!amdgpu::hasOcpFp8(chipset)) {
+    auto pred = containsAPred<Float8E5M2Type, Float8E4M3FNType>;
+    if (llvm::any_of(op->getOperandTypes(), pred) ||
+        llvm::any_of(op->getResultTypes(), pred)) {
+      return op->emitOpError("F8E5M2 and F8E4M3FN types are not supported on "
+                             "gfx942 (MI-300) or older chipsets; try "
+                             "F8E5M2FNUZ or F8E4M3FNUZ instead.");
+    }
   }
 
+  if (chipset != kGfx942) {
+    auto pred = containsAPred<Float8E5M2FNUZType, Float8E4M3FNUZType>;
+    if (llvm::any_of(op->getOperandTypes(), pred) ||
+        llvm::any_of(op->getResultTypes(), pred)) {
+      return op->emitOpError(
+          "F8E5M2FNUZ and F8E4M3FNUZ types are not supported on non-gfx942 "
+          "(MI-300) chipsets; try F8E5M2 or F8E4M3FN instead.");
+    }
+  }
   return success();
 }
 
@@ -97,8 +179,7 @@ static LogicalResult validateDataTypes(Operation *op) {
 /// code.
 struct ConvertToROCDLPass final
     : impl::ConvertToROCDLPassBase<ConvertToROCDLPass> {
-  using impl::ConvertToROCDLPassBase<
-      ConvertToROCDLPass>::ConvertToROCDLPassBase;
+  using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<IREE::GPU::IREEGPUDialect, LLVM::LLVMDialect,
@@ -108,11 +189,6 @@ struct ConvertToROCDLPass final
   void runOnOperation() override {
     ModuleOp m = getOperation();
 
-    m.walk([&](Operation *op) {
-      if (failed(validateDataTypes(op)))
-        return signalPassFailure();
-    });
-
     if (clROCMIndexingBits != 32 && clROCMIndexingBits != 64) {
       m.emitOpError() << "unsupported: ROCm index bit widths must either be "
                          "64 or 32, got "
@@ -120,6 +196,14 @@ struct ConvertToROCDLPass final
       return signalPassFailure();
     }
     bool use32BitIndices = clROCMIndexingBits == 32;
+
+    StringRef targetArch = getGPUTargetAttr(m).getArch();
+    FailureOr<amdgpu::Chipset> maybeChipset =
+        amdgpu::Chipset::parse(targetArch);
+    if (failed(maybeChipset)) {
+      m.emitOpError() << "Invalid chipset name: " << targetArch;
+      return signalPassFailure();
+    }
 
     /// Customize the bitwidth used for the device side index computations.
     LowerToLLVMOptions options(m.getContext(), DataLayout(m));
@@ -144,31 +228,42 @@ struct ConvertToROCDLPass final
     // Run Vector -> Vector transformations ahead of conversion to LLVM.
     {
       RewritePatternSet patterns(&getContext());
+      auto options =
+          vector::VectorTransformsOptions().setVectorTransformsOptions(
+              vector::VectorContractLowering::OuterProduct);
       // These patterns only convert a subset of arith that target specific
       // rocdl intrinsics (e.g. fp8 conversions).
-      StringRef chipset = getGPUTargetAttr(m).getArch();
-      FailureOr<amdgpu::Chipset> maybeChipset = amdgpu::Chipset::parse(chipset);
-      if (failed(maybeChipset)) {
-        m.emitOpError() << "Invalid chipset name: " << chipset;
+      WalkResult allTypesValid = m.walk([&](Operation *op) {
+        if (failed(validateDataTypes(op, *maybeChipset))) {
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+      if (allTypesValid.wasInterrupted()) {
         return signalPassFailure();
       }
+      bool supportsScaledExtTrunc =
+          !getGPUTargetAttr(m).getWgp().getScaledMma().empty();
       arith::populateArithToAMDGPUConversionPatterns(
           patterns, /*convertFP8Arithmetic=*/true, /*saturateFP8Truncf=*/false,
-          /*allowPackedF16Rtz=*/false, /*chipset=*/*maybeChipset);
+          /*allowPackedF16Rtz=*/false, supportsScaledExtTrunc,
+          /*chipset=*/*maybeChipset);
       arith::populateCeilFloorDivExpandOpsPatterns(patterns);
+      populateSwapSetPrioWithMFMAPatterns(patterns);
       populateConvertGPUToAMDGPUPatterns(patterns);
       populateConvertSharedMemoryAllocOps(patterns);
       populateDropSharedMemoryDeallocOpPatterns(patterns);
-      populateScalarizeMathOps(patterns);
       vector::populateVectorToVectorCanonicalizationPatterns(patterns);
       vector::populateBubbleVectorBitCastOpPatterns(patterns);
       vector::populateVectorBroadcastLoweringPatterns(patterns);
       vector::populateVectorInterleaveLoweringPatterns(patterns);
       vector::populateVectorInterleaveToShufflePatterns(patterns);
       vector::populateVectorContractLoweringPatterns(
-          patterns,
-          vector::VectorTransformsOptions().setVectorTransformsOptions(
-              vector::VectorContractLowering::OuterProduct));
+          patterns, options.vectorContractLowering);
+
+      vector::populateVectorFromElementsUnrollPatterns(patterns);
+      vector::populateVectorToElementsUnrollPatterns(patterns);
+      vector::populateVectorGatherLoweringPatterns(patterns);
       vector::populateVectorMaskOpLoweringPatterns(patterns);
       // We currently always use 64 bit indices, thus ensure the bit width of
       // the mask compare is consistent.
@@ -178,25 +273,38 @@ struct ConvertToROCDLPass final
       // TODO: doubtful that the "default" does what one want here, it is likely
       // better to use something else.
       vector::populateVectorTransposeLoweringPatterns(
-          patterns, vector::VectorTransformsOptions());
+          patterns, options.vectorTransposeLowering);
       vector::populateVectorTransferLoweringPatterns(patterns);
       arith::populateExpandBFloat16Patterns(patterns);
       if (failed(applyPatternsGreedily(m, std::move(patterns)))) {
         return signalPassFailure();
       }
+
+      // TODO: remove this once ArithToAMDGPU learns to take a PatternBenefit.
+      RewritePatternSet fallbackSmallFloatPatterns(&getContext());
+      arith::populateExpandScalingExtTruncPatterns(fallbackSmallFloatPatterns);
+      arith::populateExpandF4E2M1Patterns(fallbackSmallFloatPatterns);
+      arith::populateExpandF8E8M0Patterns(fallbackSmallFloatPatterns);
+      if (failed(applyPatternsGreedily(
+              m, std::move(fallbackSmallFloatPatterns)))) {
+        LDBG() << "Small float patterns failed\n" << m;
+        return signalPassFailure();
+      }
     }
 
-    LDBG("After applying in-dialect conversions\n" << m);
+    LDBG() << "After applying in-dialect conversions\n" << m;
 
     {
       RewritePatternSet patterns(&getContext());
       populateGpuRewritePatterns(patterns);
+      populateGpuPromoteShuffleToAMDGPUPatterns(patterns, maybeChipset);
+      populateGpuSubgroupIdPatterns(patterns);
       if (failed(applyPatternsGreedily(m, std::move(patterns)))) {
         return signalPassFailure();
       }
     }
 
-    LDBG("After applying GPU rewrite patterns\n" << m);
+    LDBG() << "After applying GPU rewrite patterns\n" << m;
 
     {
       // Convert arith::maximumf/minimumf ops on AMD gpus since the lowering
@@ -210,7 +318,7 @@ struct ConvertToROCDLPass final
       }
     }
 
-    LDBG("After converting maximumf/minimumf ops\n" << m);
+    LDBG() << "After converting maximumf/minimumf ops\n" << m;
 
     {
       RewritePatternSet llvmPatterns(&getContext());
@@ -224,10 +332,8 @@ struct ConvertToROCDLPass final
       populateFuncToLLVMConversionPatterns(converter, llvmPatterns);
       cf::populateControlFlowToLLVMConversionPatterns(converter, llvmPatterns);
       arith::populateArithToLLVMConversionPatterns(converter, llvmPatterns);
-      StringRef chipset = getGPUTargetAttr(m).getArch();
-      FailureOr<amdgpu::Chipset> maybeChipset = amdgpu::Chipset::parse(chipset);
-      populateAMDGPUToROCDLConversionPatterns(
-          converter, llvmPatterns, maybeChipset.value_or(amdgpu::Chipset()));
+      populateAMDGPUToROCDLConversionPatterns(converter, llvmPatterns,
+                                              *maybeChipset);
       vector::populateVectorRankReducingFMAPattern(llvmPatterns);
       vector::populateVectorInsertExtractStridedSliceTransforms(llvmPatterns);
       vector::populateVectorStepLoweringPatterns(llvmPatterns);
@@ -235,21 +341,31 @@ struct ConvertToROCDLPass final
       populateVectorToLLVMConversionPatterns(converter, llvmPatterns);
       vector::populateVectorTransferLoweringPatterns(llvmPatterns,
                                                      /*maxTransferRank=*/1);
-      populateGpuToROCDLConversionPatterns(converter, llvmPatterns,
-                                           gpu::amd::Runtime::Unknown);
+      // We pass Runtime::HIP in order to enable gpu.printf for debugging.
+      // At time of writing, that flag has no other effect.
+      populateGpuToROCDLConversionPatterns(
+          converter, llvmPatterns, gpu::amd::Runtime::HIP, *maybeChipset);
       LLVMConversionTarget target(getContext());
       populateFuncToLLVMFuncOpConversionPattern(converter, llvmPatterns);
       configureGpuToROCDLConversionLegality(target);
+      populateMathToROCDLConversionPatterns(converter, llvmPatterns,
+                                            /*chipset=*/*maybeChipset);
       ub::populateUBToLLVMConversionPatterns(converter, llvmPatterns);
 
-      if (failed(applyPartialConversion(m, target, std::move(llvmPatterns))))
-        signalPassFailure();
+      if (failed(applyPartialConversion(m, target, std::move(llvmPatterns)))) {
+        return signalPassFailure();
+      }
     }
 
-    LDBG("After converting to rocdl\n" << m);
-    ConvertToDynamicSharedMemory(m);
+    LDBG() << "After converting to rocdl\n" << m;
 
-    LDBG("After converting to dynamic shared memory\n" << m);
+    // 16 is the maximum relevant alignment for all AMD GPUs. Unceremoniously
+    // set it to 16 as all of our allocations almost always have much greater
+    // alignment than this.
+    // TODO(qedawkins): Set this much earlier when we introduce the allocations.
+    setSharedMemoryAlignment(m, 16);
+
+    LDBG() << "After updating shared memory alignments\n" << m;
   }
 };
 } // namespace mlir::iree_compiler

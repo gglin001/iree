@@ -46,14 +46,14 @@ struct ConvertTensorConstantOp
       ConversionPatternRewriter &rewriter) const override {
     // Only handle tensor types - other arith.constant types (like i32) are
     // ignored.
-    if (!llvm::isa<TensorType>(constantOp.getType())) {
+    if (!isa<TensorType>(constantOp.getType())) {
       return failure();
     }
 
     auto constantType = rewriter.getType<IREE::Stream::ResourceType>(
         IREE::Stream::Lifetime::Constant);
-    auto newOp = rewriter.create<IREE::Stream::TensorConstantOp>(
-        constantOp.getLoc(), constantType,
+    auto newOp = IREE::Stream::TensorConstantOp::create(
+        rewriter, constantOp.getLoc(), constantType,
         convertAttributeToStream(constantOp.getValue()),
         TypeAttr::get(constantOp.getType()),
         /*result_encoding_dims=*/ValueRange{}, executionAffinityAttr);
@@ -61,9 +61,9 @@ struct ConvertTensorConstantOp
     auto unknownType = rewriter.getType<IREE::Stream::ResourceType>();
     auto constantSize = rewriter.createOrFold<IREE::Stream::ResourceSizeOp>(
         constantOp.getLoc(), rewriter.getIndexType(), newOp.getResult());
-    auto transferOp = rewriter.create<IREE::Stream::AsyncTransferOp>(
-        constantOp.getLoc(), unknownType, newOp.getResult(), constantSize,
-        constantSize,
+    auto transferOp = IREE::Stream::AsyncTransferOp::create(
+        rewriter, constantOp.getLoc(), unknownType, newOp.getResult(),
+        constantSize, constantSize,
         /*source_affinity=*/executionAffinityAttr,
         /*result_affinity=*/executionAffinityAttr);
     rewriter.replaceOpWithMultiple(constantOp,
@@ -130,18 +130,18 @@ struct SelectOpConversion
   matchAndRewrite(mlir::arith::SelectOp op, OneToNOpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // Only handle selects where the operands are tensors (resources).
-    if (!llvm::isa<TensorType>(op.getTrueValue().getType()))
+    if (!isa<TensorType>(op.getTrueValue().getType()))
       return failure();
     auto trueOperand = resolveTensorOperands(op.getLoc(), op.getTrueValue(),
                                              adaptor.getTrueValue(), rewriter);
     auto falseOperand = resolveTensorOperands(
         op.getLoc(), op.getFalseValue(), adaptor.getFalseValue(), rewriter);
-    auto resourceSelectOp = rewriter.create<mlir::arith::SelectOp>(
-        op.getLoc(), adaptor.getCondition().front(), trueOperand.resource,
-        falseOperand.resource);
-    auto sizeSelectOp = rewriter.create<mlir::arith::SelectOp>(
-        op.getLoc(), adaptor.getCondition().front(), trueOperand.resourceSize,
-        falseOperand.resourceSize);
+    auto resourceSelectOp = mlir::arith::SelectOp::create(
+        rewriter, op.getLoc(), adaptor.getCondition().front(),
+        trueOperand.resource, falseOperand.resource);
+    auto sizeSelectOp = mlir::arith::SelectOp::create(
+        rewriter, op.getLoc(), adaptor.getCondition().front(),
+        trueOperand.resourceSize, falseOperand.resourceSize);
     rewriter.replaceOpWithMultiple(op, {ValueRange{resourceSelectOp.getResult(),
                                                    sizeSelectOp.getResult()}});
     return success();
@@ -177,8 +177,8 @@ struct ScfIfOpConversion
     // Create a new call that takes the expanded input operands and returns the
     // expanded output results. We can't directly replace the original call as
     // the result counts differ.
-    auto ifOp = rewriter.create<mlir::scf::IfOp>(op.getLoc(), expandedTypes,
-                                                 op.getCondition());
+    auto ifOp = mlir::scf::IfOp::create(rewriter, op.getLoc(), expandedTypes,
+                                        op.getCondition());
 
     ifOp.getThenRegion().getBlocks().clear();
     rewriter.inlineRegionBefore(op.getThenRegion(), ifOp.getThenRegion(),
@@ -193,7 +193,7 @@ struct ScfIfOpConversion
     SmallVector<Value> results;
     SmallVector<Value> resultSizes;
     for (auto result : resultMap) {
-      if (llvm::isa<IREE::Stream::ResourceType>(result.newType)) {
+      if (isa<IREE::Stream::ResourceType>(result.newType)) {
         auto resource = ifOp.getResult(result.newIndex + 0);
         auto resourceSize = ifOp.getResult(result.newIndex + 1);
         results.push_back(resource);
@@ -251,8 +251,8 @@ struct ScfForOpConversion
     // Create a new loop that takes the expanded input operands and returns the
     // expanded output results. We can't directly replace the original loop as
     // the result counts differ.
-    auto forOp = rewriter.create<mlir::scf::ForOp>(
-        op.getLoc(), adaptor.getLowerBound().front(),
+    auto forOp = mlir::scf::ForOp::create(
+        rewriter, op.getLoc(), adaptor.getLowerBound().front(),
         adaptor.getUpperBound().front(), adaptor.getStep().front(),
         expandedOperands);
 
@@ -270,7 +270,7 @@ struct ScfForOpConversion
     SmallVector<Value> results;
     SmallVector<Value> resultSizes;
     for (auto result : resultMap) {
-      if (llvm::isa<IREE::Stream::ResourceType>(result.newType)) {
+      if (isa<IREE::Stream::ResourceType>(result.newType)) {
         auto resource = forOp.getResult(result.newIndex + 0);
         auto resourceSize = forOp.getResult(result.newIndex + 1);
         results.push_back(resource);
@@ -327,8 +327,8 @@ struct ScfWhileOpConversion
     // Create a new call that takes the expanded input operands and returns the
     // expanded output results. We can't directly replace the original call as
     // the result counts differ.
-    auto whileOp = rewriter.create<mlir::scf::WhileOp>(
-        op.getLoc(), expandedTypes, expandedOperands);
+    auto whileOp = mlir::scf::WhileOp::create(rewriter, op.getLoc(),
+                                              expandedTypes, expandedOperands);
 
     // Inline the `before` block and update the block arguments.
     whileOp.getBefore().getBlocks().clear();
@@ -353,7 +353,7 @@ struct ScfWhileOpConversion
     SmallVector<Value> results;
     SmallVector<Value> resultSizes;
     for (auto result : resultMap) {
-      if (llvm::isa<IREE::Stream::ResourceType>(result.newType)) {
+      if (isa<IREE::Stream::ResourceType>(result.newType)) {
         auto resource = whileOp.getResult(result.newIndex + 0);
         auto resourceSize = whileOp.getResult(result.newIndex + 1);
         results.push_back(resource);
@@ -425,9 +425,7 @@ void populateStandardToStreamConversionPatterns(
                                 tensor::RankOp>();
 
   conversionTarget.addDynamicallyLegalOp<arith::ConstantOp>(
-      [](arith::ConstantOp op) {
-        return !llvm::isa<TensorType>(op.getType());
-      });
+      [](arith::ConstantOp op) { return !isa<TensorType>(op.getType()); });
   patterns.insert<ConvertTensorConstantOp>(typeConverter, context,
                                            affinityAnalysis);
 

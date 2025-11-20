@@ -8,6 +8,7 @@
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
+#include "mlir/Dialect/AMDGPU/IR/AMDGPUDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -44,7 +45,7 @@ static Value allocateGlobalSharedMemory(Location loc, OpBuilder &builder,
   MemRefType memrefType;
   auto addressSpaceAttr = gpu::AddressSpaceAttr::get(
       builder.getContext(), gpu::GPUDialect::getWorkgroupAddressSpace());
-  if (auto vectorType = llvm::dyn_cast<VectorType>(type)) {
+  if (auto vectorType = dyn_cast<VectorType>(type)) {
     memrefType =
         MemRefType::get(vectorType.getShape(), vectorType.getElementType(),
                         MemRefLayoutAttrInterface{}, addressSpaceAttr);
@@ -52,7 +53,7 @@ static Value allocateGlobalSharedMemory(Location loc, OpBuilder &builder,
     memrefType = MemRefType::get({1}, type, MemRefLayoutAttrInterface{},
                                  addressSpaceAttr);
   }
-  return builder.create<memref::AllocOp>(loc, memrefType);
+  return memref::AllocOp::create(builder, loc, memrefType);
 }
 
 /// Returns true if the given op is a memref.load from a uniform buffer or
@@ -63,17 +64,26 @@ static bool isUniformLoad(Operation *op) {
   auto loadOp = dyn_cast<memref::LoadOp>(op);
   if (!loadOp)
     return false;
-  auto space = loadOp.getMemRefType().getMemorySpace();
-  auto attr = llvm::dyn_cast_if_present<DescriptorTypeAttr>(space);
-  if (!attr)
+  if (!hasGlobalMemoryAddressSpace(loadOp.getMemRefType()))
     return false;
-
-  if (attr.getValue() == DescriptorType::UniformBuffer)
+  auto space = loadOp.getMemRefType().getMemorySpace();
+  auto descTypeAttr = dyn_cast_if_present<DescriptorTypeAttr>(space);
+  if (descTypeAttr && descTypeAttr.getValue() == DescriptorType::UniformBuffer)
     return true;
 
   auto subspan = loadOp.getMemRef().getDefiningOp<InterfaceBindingSubspanOp>();
+  if (auto fatBufferCast =
+          loadOp.getMemRef().getDefiningOp<amdgpu::FatRawBufferCastOp>()) {
+    subspan =
+        fatBufferCast.getSource().getDefiningOp<InterfaceBindingSubspanOp>();
+  }
   if (!subspan)
     return false;
+
+  descTypeAttr = dyn_cast_if_present<DescriptorTypeAttr>(
+      cast<MemRefType>(subspan.getResult().getType()).getMemorySpace());
+  if (descTypeAttr && descTypeAttr.getValue() == DescriptorType::UniformBuffer)
+    return true;
   if (auto flags = subspan.getDescriptorFlags()) {
     if (bitEnumContainsAll(*flags, IREE::HAL::DescriptorFlags::ReadOnly))
       return true;
@@ -125,7 +135,7 @@ static void moveScalarAndBindingUniformCode(gpu::WarpExecuteOnLane0Op warpOp) {
   // operations from there.
   for (auto &op : body->without_terminator()) {
     bool hasVectorResult = llvm::any_of(op.getResults(), [](Value result) {
-      return llvm::isa<VectorType>(result.getType());
+      return isa<VectorType>(result.getType());
     });
     if ((!hasVectorResult || isUniformLoad(&op)) &&
         canBeHoisted(&op, isDefinedOutsideOfBody)) {
@@ -141,33 +151,33 @@ static void moveScalarAndBindingUniformCode(gpu::WarpExecuteOnLane0Op warpOp) {
 /// Pattern to convert single element vector.insert to broadcast, this is a
 /// workaround until MultiDimReduction distribution is supported.
 struct InsertToBroadcast final : OpRewritePattern<vector::InsertOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::InsertOp insertOp,
                                 PatternRewriter &rewriter) const override {
     if (insertOp.getDestVectorType().getNumElements() != 1)
       return failure();
     rewriter.replaceOpWithNewOp<vector::BroadcastOp>(
-        insertOp, insertOp.getDestVectorType(), insertOp.getSource());
+        insertOp, insertOp.getDestVectorType(), insertOp.getValueToStore());
     return success();
   }
 };
 
 /// Pattern to sink `gpu.barrier` ops out of a `warp_execute_on_lane_0` op.
 struct WarpOpBarrier final : OpRewritePattern<gpu::WarpExecuteOnLane0Op> {
-  using OpRewritePattern<gpu::WarpExecuteOnLane0Op>::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(gpu::WarpExecuteOnLane0Op warpOp,
                                 PatternRewriter &rewriter) const override {
     auto yield = cast<gpu::YieldOp>(
         warpOp.getBodyRegion().getBlocks().begin()->getTerminator());
     Operation *lastNode = yield->getPrevNode();
-    auto barrierOp = dyn_cast_or_null<gpu::BarrierOp>(lastNode);
+    auto barrierOp = dyn_cast_if_present<gpu::BarrierOp>(lastNode);
     if (!barrierOp)
       return failure();
 
     rewriter.setInsertionPointAfter(warpOp);
-    (void)rewriter.create<gpu::BarrierOp>(barrierOp.getLoc());
+    (void)gpu::BarrierOp::create(rewriter, barrierOp.getLoc());
     rewriter.eraseOp(barrierOp);
     return success();
   }
@@ -179,21 +189,18 @@ static Value simpleWarpShuffleFunction(Location loc, OpBuilder &builder,
   assert((val.getType().isF32() || val.getType().isInteger(32)) &&
          "unsupported shuffle type");
   Type i32Type = builder.getIntegerType(32);
-  Value srcIdxI32 = builder.create<arith::IndexCastOp>(loc, i32Type, srcIdx);
-  Value warpSzI32 = builder.create<arith::ConstantOp>(
-      loc, builder.getIntegerAttr(i32Type, warpSz));
-  Value result = builder
-                     .create<gpu::ShuffleOp>(loc, val, srcIdxI32, warpSzI32,
-                                             gpu::ShuffleMode::IDX)
+  Value srcIdxI32 = arith::IndexCastOp::create(builder, loc, i32Type, srcIdx);
+  Value warpSzI32 = arith::ConstantOp::create(
+      builder, loc, builder.getIntegerAttr(i32Type, warpSz));
+  Value result = gpu::ShuffleOp::create(builder, loc, val, srcIdxI32, warpSzI32,
+                                        gpu::ShuffleMode::IDX)
                      .getResult(0);
   return result;
 }
 
 struct VectorReductionToGPUPass final
     : impl::VectorReductionToGPUPassBase<VectorReductionToGPUPass> {
-  VectorReductionToGPUPass(bool expandSubgroupReduction)
-      : expandSubgroupReduction(expandSubgroupReduction) {}
-
+  using VectorReductionToGPUPassBase::VectorReductionToGPUPassBase;
   void runOnOperation() override {
     FunctionOpInterface funcOp = getOperation();
     MLIRContext *ctx = &getContext();
@@ -229,11 +236,11 @@ struct VectorReductionToGPUPass final
     const int groupSize = workgroupSize[0];
     Location loc = funcOp.getLoc();
     OpBuilder builder(funcOp);
-    auto threadX = builder.create<gpu::ThreadIdOp>(loc, builder.getIndexType(),
-                                                   gpu::Dimension::x);
-    auto cstGroupSize = builder.create<arith::ConstantIndexOp>(loc, groupSize);
-    auto warpOp = builder.create<gpu::WarpExecuteOnLane0Op>(
-        loc, TypeRange(), threadX.getResult(), groupSize);
+    auto threadX = gpu::ThreadIdOp::create(builder, loc, builder.getIndexType(),
+                                           gpu::Dimension::x);
+    auto cstGroupSize = arith::ConstantIndexOp::create(builder, loc, groupSize);
+    auto warpOp = gpu::WarpExecuteOnLane0Op::create(
+        builder, loc, TypeRange(), threadX.getResult(), groupSize);
     warpOp.getWarpRegion().takeBody(funcOp.getFunctionBody());
     Block &newBlock = funcOp.getFunctionBody().emplaceBlock();
     threadX->moveBefore(&newBlock, newBlock.end());
@@ -242,7 +249,7 @@ struct VectorReductionToGPUPass final
     warpOp.getWarpRegion().getBlocks().back().back().moveBefore(&newBlock,
                                                                 newBlock.end());
     builder.setInsertionPointToEnd(&warpOp.getWarpRegion().getBlocks().back());
-    builder.create<gpu::YieldOp>(loc);
+    gpu::YieldOp::create(builder, loc);
 
     debugPrint(funcOp, "after step #2: wrapping code with the warp execute op");
 
@@ -266,7 +273,7 @@ struct VectorReductionToGPUPass final
                                      *subgroupSize, expandSubgroupReduction);
       };
       auto distributionFn = [](Value val) {
-        auto vecType = llvm::dyn_cast<VectorType>(val.getType());
+        auto vecType = dyn_cast<VectorType>(val.getType());
         if (!vecType)
           return AffineMap::get(val.getContext());
         // Create an identity dim map of rank |vecRank|. This greedily divides
@@ -300,7 +307,7 @@ struct VectorReductionToGPUPass final
       options.warpAllocationFn = allocateGlobalSharedMemory;
       options.warpSyncronizationFn = [](Location loc, OpBuilder &builder,
                                         gpu::WarpExecuteOnLane0Op warpOp) {
-        builder.create<gpu::BarrierOp>(loc);
+        gpu::BarrierOp::create(builder, loc);
       };
       vector::populateWarpExecuteOnLane0OpToScfForPattern(patterns, options);
       (void)applyPatternsGreedily(getOperation(), std::move(patterns));
@@ -308,16 +315,7 @@ struct VectorReductionToGPUPass final
 
     debugPrint(funcOp, "after step #5: lowering remaining ops");
   }
-
-private:
-  bool expandSubgroupReduction;
 };
 
 } // namespace
-
-std::unique_ptr<InterfacePass<mlir::FunctionOpInterface>>
-createConvertVectorReductionToGPUPass(bool expandSubgroupReduction) {
-  return std::make_unique<VectorReductionToGPUPass>(expandSubgroupReduction);
-}
-
 } // namespace mlir::iree_compiler

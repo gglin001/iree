@@ -29,7 +29,7 @@ namespace mlir::iree_compiler::IREE::Flow {
 static SmallVector<Value> filterNonTensorValues(ValueRange &&range) {
   SmallVector<Value> result;
   for (auto value : range) {
-    if (llvm::isa<TensorType>(value.getType()))
+    if (isa<TensorType>(value.getType()))
       result.push_back(value);
   }
   return result;
@@ -60,15 +60,15 @@ static void traceOpWithName(IREE::Flow::DispatchOp dispatchOp,
                             std::string name) {
   OpBuilder builder(dispatchOp);
   // Input tensors:
-  builder.create<IREE::Flow::TensorTraceOp>(
-      dispatchOp.getLoc(), builder.getStringAttr(name + " inputs"),
+  IREE::Flow::TensorTraceOp::create(
+      builder, dispatchOp.getLoc(), builder.getStringAttr(name + " inputs"),
       filterNonTensorValues(dispatchOp.getArguments()));
 
   // Output tensors:
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointAfter(dispatchOp);
-  builder.create<IREE::Flow::TensorTraceOp>(
-      dispatchOp.getLoc(), builder.getStringAttr(name + " outputs"),
+  IREE::Flow::TensorTraceOp::create(
+      builder, dispatchOp.getLoc(), builder.getStringAttr(name + " outputs"),
       filterNonTensorValues(dispatchOp.getResults()));
 }
 
@@ -100,10 +100,11 @@ static LogicalResult replaceReturnWithOpResults(mlir::ModuleOp moduleOp,
   SmallVector<Value> exports;
   SmallVector<Type> newTypes;
   for (auto retVal : op->getResults()) {
-    if (llvm::isa<TensorType>(retVal.getType())) {
+    if (isa<TensorType>(retVal.getType())) {
       auto type = IREE::HAL::BufferViewType::get(context);
-      auto exportOp = builder.create<IREE::HAL::TensorExportOp>(
-          loc, type, retVal, TypeAttr::get(retVal.getType()), /*name=*/nullptr,
+      auto exportOp = IREE::HAL::TensorExportOp::create(
+          builder, loc, type, retVal, TypeAttr::get(retVal.getType()),
+          /*name=*/nullptr,
           /*affinity=*/nullptr);
       exports.push_back(exportOp.getResult());
       newTypes.push_back(type);
@@ -149,7 +150,7 @@ struct InsertDebugTargetAtOrdinalPass
       Operation *operation = op;
 
       // Only look for dispatches in util func ops.
-      auto funcOp = llvm::dyn_cast<IREE::Util::FuncOp>(operation);
+      auto funcOp = dyn_cast<IREE::Util::FuncOp>(operation);
       if (!funcOp)
         continue;
 

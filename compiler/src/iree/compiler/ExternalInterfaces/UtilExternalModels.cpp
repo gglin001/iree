@@ -6,10 +6,10 @@
 
 #include "iree/compiler/ExternalInterfaces/UtilExternalModels.h"
 
-#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
-#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUOps.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingDialect.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingOps.h"
+#include "iree/compiler/Dialect/Flow/IR/FlowDialect.h"
+#include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
 #include "iree/compiler/Dialect/LinalgExt/Utils/Utils.h"
@@ -54,7 +54,7 @@ struct ArithConstantInferIntDivisibilityOpInterface
       Operation *op, ArrayRef<IREE::Util::IntegerDivisibility> argDivs,
       IREE::Util::SetIntDivisibilityFn setResultDivs) const {
     auto constOp = cast<arith::ConstantOp>(op);
-    auto constAttr = llvm::dyn_cast_or_null<IntegerAttr>(constOp.getValue());
+    auto constAttr = dyn_cast_if_present<IntegerAttr>(constOp.getValue());
     if (constAttr) {
       const APInt &value = constAttr.getValue();
       uint64_t udiv = value.getZExtValue();
@@ -124,11 +124,29 @@ struct UtilAssumeIntValueBoundsOpInterface
     auto [min, max] =
         assumeOp.getUnionedUnsignedRange(result.getResultNumber());
 
+    std::optional<int64_t> udiv =
+        assumeOp.getUnionedUnsignedDivisor(result.getResultNumber());
+
     if (min) {
       cstr.bound(result) >= *min;
     }
     if (max) {
       cstr.bound(result) <= *max;
+    }
+    if (udiv) {
+      // To represent the divisibility guarantee, emit a bound clamping the
+      // value to the udiv value. i.e.
+      //
+      // v == floordiv(v, udiv) * udiv
+      //
+      // Mod/divide folders can cleanup such terms with the appropriate bounds
+      // query.
+      AffineExpr expr =
+          cstr.getExpr(assumeOp.getOperand(result.getResultNumber()));
+      AffineExpr udivCst =
+          getAffineConstantExpr(udiv.value(), op->getContext());
+      AffineExpr clampExpr = expr.floorDiv(udivCst) * udivCst;
+      cstr.bound(result) == clampExpr;
     }
   }
 };
@@ -172,15 +190,14 @@ struct GlobalOpInterfaceExternalModel
     auto globalOp = cast<ml_program::GlobalOp>(op);
     if (globalOp.getIsMutable()) {
       return cast<IREE::Util::GlobalLoadOpInterface>(
-          builder
-              .create<ml_program::GlobalLoadOp>(
-                  loc, globalOp.getType(), FlatSymbolRefAttr::get(globalOp))
+          ml_program::GlobalLoadOp::create(builder, loc, globalOp.getType(),
+                                           FlatSymbolRefAttr::get(globalOp))
               .getOperation());
     } else {
       return cast<IREE::Util::GlobalLoadOpInterface>(
-          builder
-              .create<ml_program::GlobalLoadConstOp>(
-                  loc, globalOp.getType(), FlatSymbolRefAttr::get(globalOp))
+          ml_program::GlobalLoadConstOp::create(
+              builder, loc, globalOp.getType(),
+              FlatSymbolRefAttr::get(globalOp))
               .getOperation());
     }
   }
@@ -190,9 +207,8 @@ struct GlobalOpInterfaceExternalModel
                                                    OpBuilder &builder) const {
     auto globalOp = cast<ml_program::GlobalOp>(op);
     return cast<IREE::Util::GlobalStoreOpInterface>(
-        builder
-            .create<ml_program::GlobalStoreOp>(
-                loc, FlatSymbolRefAttr::get(globalOp), value)
+        ml_program::GlobalStoreOp ::create(
+            builder, loc, FlatSymbolRefAttr::get(globalOp), value)
             .getOperation());
   }
 };
@@ -281,27 +297,6 @@ struct LinalgOpTiedOpInterfaceHelper {
   }
 };
 
-// TODO(Max191): Remove this interface once GPU data tiling stops using early
-// materialization. This only exists for handling multi_mma ops before dispatch
-// workgroups are created, which only happens with early materialization.
-struct MultiMmaOpTiedOpInterface
-    : public IREE::Util::TiedOpInterface::ExternalModel<
-          MultiMmaOpTiedOpInterface, IREE::GPU::MultiMmaOp> {
-  Value getTiedResult(Operation *op, unsigned resultIndex) const {
-    auto linalgOp = cast<IREE::GPU::MultiMmaOp>(op);
-    return IREE::Util::TiedOpInterface::findTiedBaseValue(linalgOp.getAcc());
-  }
-
-  ::std::optional<unsigned>
-  getTiedResultOperandIndex(Operation *op, unsigned resultIndex) const {
-    return {2}; // acc
-  }
-
-  SmallVector<int64_t> getTiedResultOperandIndices(Operation *op) const {
-    return {2}; // acc
-  }
-};
-
 //===----------------------------------------------------------------------===//
 // HoistableOpInterface
 //===----------------------------------------------------------------------===//
@@ -346,18 +341,15 @@ struct HoistableLinalgOpInterface
 
     // Hoist all non-generic linalg ops except for fill ops which should be
     // fused with their consumers.
-    auto genericOp = llvm::dyn_cast<linalg::GenericOp>(op);
+    auto genericOp = dyn_cast<linalg::GenericOp>(op);
     if (!genericOp) {
       return !isa<linalg::FillOp>(op);
     }
 
-    // Don't hoist ops with no inputs, their result is defined by `linalg.index`
-    // ops and should be fused with their consumers.
-    if (genericOp.getNumDpsInputs() == 0) {
-      return false;
-    }
-
-    if (linalg::isaFillOpInterface(genericOp).has_value()) {
+    // Don't hoist ops with no tensor inputs. They are likely to be fill-like
+    // or sequences (from `linalg.index`) which can be fused with their
+    // consumers.
+    if (IREE::LinalgExt::hasOnlyScalarInputs(genericOp)) {
       return false;
     }
 
@@ -442,11 +434,6 @@ void registerUtilExternalModels(DialectRegistry &registry) {
             *context);
       });
 
-  registry.addExtension(+[](MLIRContext *context,
-                            IREE::GPU::IREEGPUDialect *dialect) {
-    IREE::GPU::MultiMmaOp::attachInterface<MultiMmaOpTiedOpInterface>(*context);
-  });
-
   registry.addExtension(
       +[](MLIRContext *context, linalg::LinalgDialect *dialect) {
         // Register all Linalg structured ops. `LinalgOp` is an interface and it
@@ -459,44 +446,34 @@ void registerUtilExternalModels(DialectRegistry &registry) {
             >::registerOpInterface(context);
       });
 
-  // TODO(matthias-springer): Use a helper instead of listing all ops. This is
-  // tricky because LinalgExtOps.td includes YieldOp.
   registry.addExtension(+[](MLIRContext *context,
                             IREE::LinalgExt::IREELinalgExtDialect *dialect) {
-    IREE::LinalgExt::ScatterOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::ScatterOp>>(*context);
-    IREE::LinalgExt::SortOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::SortOp>>(*context);
-    IREE::LinalgExt::FftOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::FftOp>>(*context);
-    IREE::LinalgExt::ScanOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::ScanOp>>(*context);
-    IREE::LinalgExt::TopkOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::TopkOp>>(*context);
-    IREE::LinalgExt::WinogradInputTransformOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::WinogradInputTransformOp>>(
-        *context);
-    IREE::LinalgExt::WinogradFilterTransformOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::WinogradFilterTransformOp>>(
-        *context);
-    IREE::LinalgExt::WinogradOutputTransformOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::WinogradOutputTransformOp>>(
-        *context);
-    IREE::LinalgExt::Im2colOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::Im2colOp>>(*context);
-    IREE::LinalgExt::AttentionOp::attachInterface<
-        LinalgOpTiedOpInterface<IREE::LinalgExt::AttentionOp>>(*context);
+    LinalgOpTiedOpInterfaceHelper<
+#define GET_OP_LIST
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.cpp.inc"
+        >::registerOpInterface(context);
   });
 
   // Hoistable Op Interface registration.
 
-  // Register hoistable type interfaces for LinalgExt ops.
+  // Register hoistable op interfaces for Encoding ops.
   registry.addExtension(
       +[](MLIRContext *context, IREE::Encoding::IREEEncodingDialect *dialect) {
         UnhoistableOpInterfaceHelper<
             IREE::Encoding::SetEncodingOp>::registerOpInterface(context);
       });
-  // Register hoistable type interfaces for linalg ops.
+
+  // Register hoistable op interfaces for Flow ops.
+  registry.addExtension(
+      +[](MLIRContext *context, IREE::Flow::FlowDialect *dialect) {
+        UnhoistableOpInterfaceHelper<
+            IREE::Flow::DispatchWorkgroupCountOp>::registerOpInterface(context);
+
+        AlwaysHoistableOpInterfaceHelper<
+            IREE::Flow::TensorEncodeOp>::registerOpInterface(context);
+      });
+
+  // Register hoistable op interfaces for linalg ops.
   // We have a specific allow-list for Linalg ops because we want to consider
   // new additions carefully.
   registry.addExtension(
@@ -521,7 +498,7 @@ void registerUtilExternalModels(DialectRegistry &registry) {
         AlwaysHoistableOpInterfaceHelper<
             linalg::PackOp, linalg::UnPackOp>::registerOpInterface(context);
       });
-  // Register hoistable type interfaces for tensor ops.
+  // Register hoistable op interfaces for tensor ops.
   registry.addExtension(
       +[](MLIRContext *context, tensor::TensorDialect *dialect) {
         // Never hoist empty and other pure metadata ops as a leaf. It's fine to

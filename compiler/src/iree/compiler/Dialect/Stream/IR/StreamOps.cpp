@@ -6,6 +6,7 @@
 
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
 
+#include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h"
 #include "iree/compiler/Dialect/Util/IR/ClosureOpUtils.h"
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
@@ -32,18 +33,6 @@ namespace mlir::iree_compiler::IREE::Stream {
 //===----------------------------------------------------------------------===//
 // Op utilities used within the stream dialect
 //===----------------------------------------------------------------------===//
-
-// TODO(hanchung): Have a better fix. This is a fix for
-// https://reviews.llvm.org/D124649
-static void createArgs(ArrayRef<OpAsmParser::UnresolvedOperand> operands,
-                       ArrayRef<Type> types,
-                       SmallVector<OpAsmParser::Argument> &args) {
-  for (auto [operand, type] : llvm::zip_equal(operands, types)) {
-    auto &arg = args.emplace_back();
-    arg.ssaName = operand;
-    arg.type = type;
-  }
-}
 
 // Verifies that a dispatch |op|'s |workload| matches that of the |exportOp|.
 static LogicalResult
@@ -113,7 +102,7 @@ static LogicalResult verifyOpDynamicDims(Operation *op, TypeRange types,
                                          ValueRange dynamicDims) {
   unsigned requiredCount = 0;
   for (auto type : types) {
-    if (auto shapedType = llvm::dyn_cast_if_present<ShapedType>(type)) {
+    if (auto shapedType = dyn_cast_if_present<ShapedType>(type)) {
       requiredCount += shapedType.getNumDynamicDims();
     }
   }
@@ -134,7 +123,7 @@ static LogicalResult verifyOpDynamicDimsRange(Operation *op,
   unsigned requiredCount = 0;
   for (auto attr : typesAttr) {
     if (auto typeAttr = dyn_cast_if_present<TypeAttr>(attr)) {
-      if (auto shapedType = llvm::dyn_cast<ShapedType>(typeAttr.getValue())) {
+      if (auto shapedType = dyn_cast<ShapedType>(typeAttr.getValue())) {
         requiredCount += shapedType.getNumDynamicDims();
       }
     }
@@ -154,7 +143,7 @@ static LogicalResult verifyOpValueSizes(Operation *op, ValueRange values,
                                         ValueRange sizes) {
   unsigned requiredCount = 0;
   for (auto value : values) {
-    if (llvm::isa<IREE::Util::SizeAwareTypeInterface>(value.getType())) {
+    if (isa<IREE::Util::SizeAwareTypeInterface>(value.getType())) {
       ++requiredCount;
     }
   }
@@ -180,7 +169,7 @@ static LogicalResult verifyAllResourcesCaptured(Region &region) {
     for (auto operand : op.getOperands()) {
       if (!operand)
         continue;
-      if (!llvm::isa<IREE::Stream::ResourceType>(operand.getType()))
+      if (!isa<IREE::Stream::ResourceType>(operand.getType()))
         continue;
       if (!availableResources.contains(operand)) {
         return op.emitOpError() << "used resource not listed in explicit "
@@ -1077,7 +1066,7 @@ static ParseResult parseResourceRegion(
     SmallVectorImpl<Type> &resultTypes,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &resultSizes,
     ArrayAttr &tiedOperands, Region &body) {
-  SmallVector<OpAsmParser::UnresolvedOperand, 16> regionArgs;
+  SmallVector<OpAsmParser::Argument, 16> regionArgs;
   if (failed(parser.parseLParen())) {
     return failure();
   }
@@ -1090,8 +1079,7 @@ static ParseResult parseResourceRegion(
       regionArgs.emplace_back();
       if (failed(parser.parseOperand(operands.back())) ||
           failed(parser.parseKeyword("as")) ||
-          failed(parser.parseOperand(regionArgs.back(),
-                                     /*allowResultNumber=*/false)) ||
+          failed(parser.parseArgument(regionArgs.back())) ||
           failed(parser.parseColon()) ||
           failed(parseSizeAwareType(parser, operandTypes.back(),
                                     operandSizes.back()))) {
@@ -1122,9 +1110,10 @@ static ParseResult parseResourceRegion(
     }
   }
 
-  SmallVector<OpAsmParser::Argument> args;
-  createArgs(regionArgs, operandTypes, args);
-  return parser.parseRegion(body, args);
+  for (auto [iterArg, type] : llvm::zip_equal(regionArgs, operandTypes)) {
+    iterArg.type = type;
+  }
+  return parser.parseRegion(body, regionArgs);
 }
 
 static void printResourceRegion(OpAsmPrinter &p, Operation *op,
@@ -1142,7 +1131,7 @@ static void printResourceRegion(OpAsmPrinter &p, Operation *op,
         p << arg;
         p << ": ";
         p << arg.getType();
-        if (llvm::isa<IREE::Util::SizeAwareTypeInterface>(arg.getType())) {
+        if (isa<IREE::Util::SizeAwareTypeInterface>(arg.getType())) {
           p << "{" << operandSizes.front() << "}";
           operandSizes = operandSizes.drop_front(1);
         }
@@ -1173,7 +1162,7 @@ static ParseResult parseExplicitResourceRegion(
     SmallVectorImpl<Type> &operandTypes,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &operandSizes,
     Region &body) {
-  SmallVector<OpAsmParser::UnresolvedOperand, 16> regionArgs;
+  SmallVector<OpAsmParser::Argument, 16> regionArgs;
   if (failed(parser.parseLParen())) {
     return failure();
   }
@@ -1186,8 +1175,7 @@ static ParseResult parseExplicitResourceRegion(
       regionArgs.emplace_back();
       if (failed(parser.parseOperand(operands.back())) ||
           failed(parser.parseKeyword("as")) ||
-          failed(parser.parseOperand(regionArgs.back(),
-                                     /*allowResultNumber=*/false)) ||
+          failed(parser.parseArgument(regionArgs.back())) ||
           failed(parser.parseColon()) ||
           failed(parseSizeAwareType(parser, operandTypes.back(),
                                     operandSizes.back()))) {
@@ -1198,9 +1186,10 @@ static ParseResult parseExplicitResourceRegion(
       return failure();
     }
   }
-  SmallVector<OpAsmParser::Argument> args;
-  createArgs(regionArgs, operandTypes, args);
-  if (failed(parser.parseRegion(body, args))) {
+  for (auto [iterArg, type] : llvm::zip_equal(regionArgs, operandTypes)) {
+    iterArg.type = type;
+  }
+  if (failed(parser.parseRegion(body, regionArgs))) {
     return failure();
   }
   // HACK: I can't figure out how to make this work with the default parsing -
@@ -1225,7 +1214,7 @@ static void printExplicitResourceRegion(OpAsmPrinter &p, Operation *op,
         p << arg;
         p << ": ";
         p << arg.getType();
-        if (llvm::isa<IREE::Util::SizeAwareTypeInterface>(arg.getType())) {
+        if (isa<IREE::Util::SizeAwareTypeInterface>(arg.getType())) {
           p << "{" << operandSizes.front() << "}";
           operandSizes = operandSizes.drop_front(1);
         }
@@ -1419,9 +1408,9 @@ ResourceAllocOp::createSuballocations(
   if (locs.empty())
     return {};
   if (locs.size() == 1) {
-    auto allocOp = builder.create<IREE::Stream::ResourceAllocOp>(
-        locs.front(), resourceType, storageSizes.front(), uninitialized,
-        affinityAttr);
+    auto allocOp = IREE::Stream::ResourceAllocOp::create(
+        builder, locs.front(), resourceType, storageSizes.front(),
+        uninitialized, affinityAttr);
     return {allocOp, {allocOp.getResult()}};
   }
   auto fusedLoc = builder.getFusedLoc(locs);
@@ -1441,13 +1430,13 @@ ResourceAllocOp::createSuballocations(
   // pack op.
   auto indexType = builder.getIndexType();
   SmallVector<Type> packedOffsetTypes(sliceCount, indexType);
-  auto packOp = builder.create<IREE::Stream::ResourcePackOp>(
-      fusedLoc, indexType, packedOffsetTypes, /*offset=*/nullptr,
+  auto packOp = IREE::Stream::ResourcePackOp::create(
+      builder, fusedLoc, indexType, packedOffsetTypes, /*offset=*/nullptr,
       builder.getIndexArrayAttr(lifetimeIntervals), storageSizes, affinityAttr);
 
   // Create the new alloca based on the total required size.
-  auto allocOp = builder.create<IREE::Stream::ResourceAllocOp>(
-      fusedLoc, resourceType, packOp.getTotalLength(), uninitialized,
+  auto allocOp = IREE::Stream::ResourceAllocOp::create(
+      builder, fusedLoc, resourceType, packOp.getTotalLength(), uninitialized,
       affinityAttr);
   auto slab = allocOp.getResult();
   auto slabSize = packOp.getTotalLength();
@@ -1456,10 +1445,10 @@ ResourceAllocOp::createSuballocations(
   SmallVector<Value> results;
   for (auto [loc, subviewOffset, subviewLength] :
        llvm::zip_equal(locs, packOp.getPackedOffsets(), storageSizes)) {
-    results.push_back(builder
-                          .create<IREE::Stream::ResourceSubviewOp>(
-                              loc, slab, slabSize, subviewOffset, subviewLength)
-                          .getResult());
+    results.push_back(
+        IREE::Stream::ResourceSubviewOp::create(builder, loc, slab, slabSize,
+                                                subviewOffset, subviewLength)
+            .getResult());
   }
   return {allocOp, results};
 }
@@ -1481,9 +1470,10 @@ ResourceAllocaOp::createSuballocations(Type timepointType, Type resourceType,
   if (locs.empty())
     return {};
   if (locs.size() == 1) {
-    auto allocaOp = builder.create<IREE::Stream::ResourceAllocaOp>(
-        locs.front(), resourceType, timepointType, storageSizes.front(),
-        awaitTimepoint, affinityAttr);
+    auto allocaOp = IREE::Stream::ResourceAllocaOp::create(
+        builder, locs.front(), resourceType, timepointType,
+        storageSizes.front(),
+        /*indeterminate_lifetime=*/UnitAttr{}, awaitTimepoint, affinityAttr);
     return {allocaOp, {allocaOp.getResult()}};
   }
   auto fusedLoc = builder.getFusedLoc(locs);
@@ -1506,14 +1496,14 @@ ResourceAllocaOp::createSuballocations(Type timepointType, Type resourceType,
   // pack op.
   auto indexType = builder.getIndexType();
   SmallVector<Type> packedOffsetTypes(sliceCount, indexType);
-  auto packOp = builder.create<IREE::Stream::ResourcePackOp>(
-      fusedLoc, indexType, packedOffsetTypes, /*offset=*/nullptr,
+  auto packOp = IREE::Stream::ResourcePackOp::create(
+      builder, fusedLoc, indexType, packedOffsetTypes, /*offset=*/nullptr,
       builder.getIndexArrayAttr(lifetimeIntervals), storageSizes, affinityAttr);
 
   // Create the new alloca based on the total required size.
-  auto allocaOp = builder.create<IREE::Stream::ResourceAllocaOp>(
-      fusedLoc, resourceType, timepointType, packOp.getTotalLength(),
-      awaitTimepoint, affinityAttr);
+  auto allocaOp = IREE::Stream::ResourceAllocaOp::create(
+      builder, fusedLoc, resourceType, timepointType, packOp.getTotalLength(),
+      /*indeterminate_lifetime=*/UnitAttr{}, awaitTimepoint, affinityAttr);
   auto slab = allocaOp.getResult();
   auto slabSize = packOp.getTotalLength();
 
@@ -1521,12 +1511,34 @@ ResourceAllocaOp::createSuballocations(Type timepointType, Type resourceType,
   SmallVector<Value> results;
   for (auto [loc, subviewOffset, subviewLength] :
        llvm::zip_equal(locs, packOp.getPackedOffsets(), storageSizes)) {
-    results.push_back(builder
-                          .create<IREE::Stream::ResourceSubviewOp>(
-                              loc, slab, slabSize, subviewOffset, subviewLength)
-                          .getResult());
+    results.push_back(
+        IREE::Stream::ResourceSubviewOp::create(builder, loc, slab, slabSize,
+                                                subviewOffset, subviewLength)
+            .getResult());
   }
   return {allocaOp, results};
+}
+
+//===----------------------------------------------------------------------===//
+// stream.resource.retain
+//===----------------------------------------------------------------------===//
+
+//===----------------------------------------------------------------------===//
+// stream.resource.release
+//===----------------------------------------------------------------------===//
+
+void ResourceReleaseOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "is_terminal");
+}
+
+//===----------------------------------------------------------------------===//
+// stream.resource.is_terminal
+//===----------------------------------------------------------------------===//
+
+void ResourceIsTerminalOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "is_terminal");
 }
 
 //===----------------------------------------------------------------------===//
@@ -1600,8 +1612,8 @@ SmallVector<ResourcePackOp::Slice> ResourcePackOp::getSlices() {
   auto offsets = getPackedOffsets();
   SmallVector<ResourcePackOp::Slice> slices(offsets.size());
   for (size_t i = 0; i < offsets.size(); ++i) {
-    int64_t start = llvm::cast<IntegerAttr>(intervalPairs[i * 2 + 0]).getInt();
-    int64_t end = llvm::cast<IntegerAttr>(intervalPairs[i * 2 + 1]).getInt();
+    int64_t start = cast<IntegerAttr>(intervalPairs[i * 2 + 0]).getInt();
+    int64_t end = cast<IntegerAttr>(intervalPairs[i * 2 + 1]).getInt();
     slices[i] = {start, end, sizes[i], offsets[i]};
   }
   return slices;
@@ -1679,82 +1691,58 @@ IREE::Stream::ResourceSubviewOp ResourceSubviewOp::findSubviewOp(Value value) {
 }
 
 //===----------------------------------------------------------------------===//
-// stream.parameter.load
+// stream.resource.transients
 //===----------------------------------------------------------------------===//
 
-LogicalResult ParameterLoadOp::verify() {
-  ParameterLoadOp op = *this;
-  size_t expectedCount = op.getSourceKeys().size();
-  if (op.getSourceOffsets().size() != expectedCount ||
-      op.getResultSizes().size() != expectedCount) {
-    return op.emitOpError() << "requires that the source keys, source offsets, "
-                               "and result sizes are all 1:1";
-  }
-  return success();
+bool ResourceTransientsOp::pinsValueAffinity() {
+  return getAffinity().has_value();
 }
 
-//===----------------------------------------------------------------------===//
-// stream.parameter.read
-//===----------------------------------------------------------------------===//
-
-LogicalResult ParameterReadOp::verify() {
-  ParameterReadOp op = *this;
-  if (failed(verifyOpValueSizes(op, op.getTarget(), op.getTargetSize()))) {
-    return failure();
+Value ResourceTransientsOp::getTiedResult(unsigned resultIndex) {
+  if (resultIndex == 0) {
+    return IREE::Util::TiedOpInterface::findTiedBaseValue(getResource());
   }
-  return success();
+  return {}; // timepoint result is not tied
 }
 
-//===----------------------------------------------------------------------===//
-// stream.parameter.write
-//===----------------------------------------------------------------------===//
-
-LogicalResult ParameterWriteOp::verify() {
-  ParameterWriteOp op = *this;
-  if (failed(verifyOpValueSizes(op, op.getSource(), op.getSourceSize()))) {
-    return failure();
+::std::optional<unsigned>
+ResourceTransientsOp::getTiedResultOperandIndex(unsigned resultIndex) {
+  if (resultIndex == 0) {
+    return {0}; // resource
   }
-  return success();
+  return std::nullopt; // timepoint result is not tied
 }
 
-//===----------------------------------------------------------------------===//
-// stream.parameter.gather
-//===----------------------------------------------------------------------===//
-
-LogicalResult ParameterGatherOp::verify() {
-  ParameterGatherOp op = *this;
-  size_t expectedCount = op.getSourceKeys().size();
-  if (op.getSourceOffsets().size() != expectedCount ||
-      op.getTargetOffsets().size() != expectedCount ||
-      op.getTargetLengths().size() != expectedCount) {
-    return op.emitOpError()
-           << "requires that the source keys, source offsets, target offsets, "
-              "and target lengths are all 1:1";
-  }
-  if (failed(verifyOpValueSizes(op, op.getTarget(), op.getTargetSize()))) {
-    return failure();
-  }
-  return success();
+SmallVector<int64_t> ResourceTransientsOp::getTiedResultOperandIndices() {
+  return {0, -1}; // resource is tied, timepoint is not
 }
 
-//===----------------------------------------------------------------------===//
-// stream.parameter.scatter
-//===----------------------------------------------------------------------===//
+namespace {
 
-LogicalResult ParameterScatterOp::verify() {
-  ParameterScatterOp op = *this;
-  size_t expectedCount = op.getTargetKeys().size();
-  if (op.getSourceOffsets().size() != expectedCount ||
-      op.getSourceLengths().size() != expectedCount ||
-      op.getTargetOffsets().size() != expectedCount) {
-    return op.emitOpError()
-           << "requires that the source offsets, source lengths, target keys, "
-              "and target offsets are all 1:1";
+struct FoldConsecutiveResourceTransientsOps
+    : public OpRewritePattern<ResourceTransientsOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(ResourceTransientsOp op,
+                                PatternRewriter &rewriter) const override {
+    auto resourceOp = op.getResource().getDefiningOp<ResourceTransientsOp>();
+    if (!resourceOp) {
+      return failure();
+    }
+    // Replace the resource and dims with those from the source transients op.
+    // The outer storage wins (most recent specification).
+    rewriter.modifyOpInPlace(op, [&]() {
+      op.getResourceMutable().assign(resourceOp.getResource());
+      op.getResourceSizeMutable().assign(resourceOp.getResourceSize());
+    });
+    return success();
   }
-  if (failed(verifyOpValueSizes(op, op.getSource(), op.getSourceSize()))) {
-    return failure();
-  }
-  return success();
+};
+
+} // namespace
+
+void ResourceTransientsOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.insert<FoldConsecutiveResourceTransientsOps>(context);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1823,7 +1811,7 @@ LogicalResult TensorImportOp::verify() {
   return success();
 }
 
-bool TensorImportOp::pinsValueAffinity() { return true; }
+bool TensorImportOp::pinsValueAffinity() { return getAffinity().has_value(); }
 
 Value TensorImportOp::getTiedResult(unsigned resultIndex) {
   return IREE::Util::TiedOpInterface::findTiedBaseValue(getSource());
@@ -1852,7 +1840,7 @@ LogicalResult TensorExportOp::verify() {
   return success();
 }
 
-bool TensorExportOp::pinsValueAffinity() { return true; }
+bool TensorExportOp::pinsValueAffinity() { return getAffinity().has_value(); }
 
 Value TensorExportOp::getTiedResult(unsigned resultIndex) {
   return IREE::Util::TiedOpInterface::findTiedBaseValue(getSource());
@@ -1941,13 +1929,33 @@ LogicalResult TensorCloneOp::verify() {
   TensorCloneOp op = *this;
   // Clones can't change encodings but they can change shape and element type
   // information.
-  auto sourceEncoding = llvm::cast<RankedTensorType>(op.getSourceEncoding());
-  auto resultEncoding = llvm::cast<RankedTensorType>(op.getResultEncoding());
-  if (sourceEncoding.getEncoding() != resultEncoding.getEncoding()) {
+  auto sourceEncoding = cast<RankedTensorType>(op.getSourceEncoding());
+  auto resultEncoding = cast<RankedTensorType>(op.getResultEncoding());
+  if (!IREE::Encoding::SerializableAttr::areCompatible(
+          sourceEncoding.getEncoding(), resultEncoding.getEncoding())) {
     return op.emitOpError() << "clones changing tensor encoding from "
                             << sourceEncoding.getEncoding() << " to "
                             << resultEncoding.getEncoding() << "; not allowed";
   }
+  if (failed(verifyOpDynamicDims(op, op.getSourceEncoding(),
+                                 op.getSourceEncodingDims())) ||
+      failed(verifyOpDynamicDims(op, op.getResultEncoding(),
+                                 op.getResultEncodingDims())) ||
+      failed(verifyOpValueSizes(op, op.getSource(), op.getSourceSize())) ||
+      failed(verifyOpValueSizes(op, op.getResult(), op.getResultSize()))) {
+    return failure();
+  }
+  return success();
+}
+
+bool TensorCloneOp::preferCloneToConsumers() { return true; }
+
+//===----------------------------------------------------------------------===//
+// stream.tensor.encode
+//===----------------------------------------------------------------------===//
+
+LogicalResult TensorEncodeOp::verify() {
+  TensorEncodeOp op = *this;
   if (failed(verifyOpDynamicDims(op, op.getSourceEncoding(),
                                  op.getSourceEncodingDims())) ||
       failed(verifyOpDynamicDims(op, op.getResultEncoding(),
@@ -1973,7 +1981,7 @@ LogicalResult TensorSliceOp::verify() {
       failed(verifyOpValueSizes(op, op.getResult(), op.getResultSize()))) {
     return failure();
   }
-  auto sourceType = llvm::cast<ShapedType>(op.getSourceEncoding());
+  auto sourceType = cast<ShapedType>(op.getSourceEncoding());
   if (op.getStartIndices().size() != sourceType.getRank() ||
       op.getLengths().size() != sourceType.getRank()) {
     return op.emitOpError() << "start_indices/lengths rank mismatch";
@@ -2049,7 +2057,7 @@ LogicalResult TensorLoadOp::verify() {
       failed(verifyOpValueSizes(op, op.getSource(), op.getSourceSize()))) {
     return failure();
   }
-  auto sourceType = llvm::cast<ShapedType>(op.getSourceEncoding());
+  auto sourceType = cast<ShapedType>(op.getSourceEncoding());
   if (op.getIndices().size() != sourceType.getRank()) {
     return op.emitOpError() << "indices rank mismatch";
   }
@@ -2067,7 +2075,7 @@ LogicalResult TensorStoreOp::verify() {
       failed(verifyOpValueSizes(op, op.getTarget(), op.getTargetSize()))) {
     return failure();
   }
-  auto targetType = llvm::cast<ShapedType>(op.getTargetEncoding());
+  auto targetType = cast<ShapedType>(op.getTargetEncoding());
   if (op.getIndices().size() != targetType.getRank()) {
     return op.emitOpError() << "indices rank mismatch";
   }
@@ -2412,7 +2420,7 @@ void AsyncCopyOp::getAsyncAccessRanges(
 //===----------------------------------------------------------------------===//
 
 static const char *getCollectiveParamKeyword(Attribute opAttr) {
-  auto attr = llvm::cast<IREE::Stream::CollectiveAttr>(opAttr);
+  auto attr = cast<IREE::Stream::CollectiveAttr>(opAttr);
   switch (attr.getKind()) {
   case IREE::Stream::CollectiveKind::Broadcast:
     return "source";
@@ -2555,7 +2563,7 @@ IREE::Stream::AffinityAttr AsyncTransferOp::getAffinityAttr() {
     // If result is staging then the op should execute on the producer.
     return getSourceAffinityAttr();
   } else {
-    // Default to result affinity.
+    // Default to source affinity (today we transfer from sources).
     return getSourceAffinityAttr();
   }
 }
@@ -2574,9 +2582,9 @@ void AsyncTransferOp::setAffinityAttr(IREE::Stream::AffinityAttr value) {
   } else if (sourceType.getLifetime() == IREE::Stream::Lifetime::Staging) {
     // If source is staging then the op should execute on the consumer.
     if (value) {
-      setResultAffinityAttr(value);
+      setTargetAffinityAttr(value);
     } else {
-      removeResultAffinityAttr();
+      removeTargetAffinityAttr();
     }
   } else if (resultType.getLifetime() == IREE::Stream::Lifetime::Staging) {
     // If result is staging then the op should execute on the producer.
@@ -2588,11 +2596,15 @@ void AsyncTransferOp::setAffinityAttr(IREE::Stream::AffinityAttr value) {
   } else {
     // Default to result affinity.
     if (value) {
-      setResultAffinityAttr(value);
+      setTargetAffinityAttr(value);
     } else {
-      removeResultAffinityAttr();
+      removeTargetAffinityAttr();
     }
   }
+}
+
+IREE::Stream::AffinityAttr AsyncTransferOp::getResultAffinityAttr() {
+  return getTargetAffinityAttr();
 }
 
 void AsyncTransferOp::getAsyncAccessRanges(
@@ -2644,6 +2656,27 @@ SmallVector<int64_t> AsyncStoreOp::getTiedResultOperandIndices() {
 // stream.async.dispatch
 //===----------------------------------------------------------------------===//
 
+void AsyncDispatchOp::build(OpBuilder &builder, OperationState &state,
+                            ExecutableExportOp exportOp, ValueRange workload,
+                            TypeRange resultTypes, ValueRange operands,
+                            ValueRange operandSizes, ValueRange operandOffsets,
+                            ValueRange operandEnds, ValueRange operandLengths,
+                            ValueRange resultSizes,
+                            ArrayRef<int64_t> tiedOperands,
+                            AffinityAttr affinityAttr) {
+  StringRef executableOpSymName =
+      exportOp->getParentOp()
+          ->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
+          .getValue();
+  auto entryPoint =
+      SymbolRefAttr::get(builder.getContext(), executableOpSymName,
+                         {SymbolRefAttr::get(exportOp)});
+  build(builder, state, resultTypes, workload,
+        builder.getArrayAttr({entryPoint}), operands, operandSizes,
+        operandOffsets, operandEnds, operandLengths, resultSizes,
+        cast<ArrayAttr>(builder.getIndexArrayAttr(tiedOperands)), affinityAttr);
+}
+
 static ParseResult parseDispatchOperands(
     OpAsmParser &parser,
     SmallVectorImpl<OpAsmParser::UnresolvedOperand> &resourceOperands,
@@ -2689,7 +2722,7 @@ static void printDispatchOperands(OpAsmPrinter &p, Operation *op,
   unsigned resourceIndex = 0;
   llvm::interleaveComma(resourceOperands, p, [&](Value operand) {
     p.printOperand(operand);
-    if (llvm::isa<IREE::Stream::ResourceType>(operand.getType())) {
+    if (isa<IREE::Stream::ResourceType>(operand.getType())) {
       p << "[";
       p.printOperand(resourceOffsets[resourceIndex]);
       p << " to ";
@@ -2712,7 +2745,7 @@ LogicalResult AsyncDispatchOp::verify() {
   }
   unsigned requiredRangeCount = 0;
   for (auto value : op.getResourceOperands()) {
-    if (llvm::isa<IREE::Stream::ResourceType>(value.getType())) {
+    if (isa<IREE::Stream::ResourceType>(value.getType())) {
       ++requiredRangeCount;
     }
   }
@@ -2745,7 +2778,7 @@ void AsyncDispatchOp::getAsyncAccessRanges(
   unsigned rangeIndex = 0;
   unsigned tiedOperandBase = getTiedOperandsIndexAndLength().first;
   for (auto [operandIndex, operand] : llvm::enumerate(getResourceOperands())) {
-    if (!llvm::isa<IREE::Stream::ResourceType>(operand.getType()))
+    if (!isa<IREE::Stream::ResourceType>(operand.getType()))
       continue;
     ResourceAccessBitfield access = ResourceAccessBitfield::Read;
     auto tiedResults = getOperandTiedResults(tiedOperandBase + operandIndex);
@@ -2771,6 +2804,16 @@ void AsyncDispatchOp::getAsyncAccessRanges(
     ranges.push_back({ResourceAccessBitfield::Write, result, Value{},
                       resultSize, resultSize});
   }
+}
+
+bool AsyncDispatchOp::preferCloneToConsumers() {
+  // If the dispatch does not consume any resources then it is effectively a
+  // slow splat and should be treated like one.
+  const bool consumesAny = llvm::any_of(
+      getResourceOperands(), +[](Value operand) {
+        return isa<IREE::Stream::AffinityTypeInterface>(operand.getType());
+      });
+  return !consumesAny;
 }
 
 //===----------------------------------------------------------------------===//
@@ -2818,7 +2861,7 @@ bool AsyncFuncOp::isResultTied(int resultIndex) {
   auto tiedOperandsAttr = getTiedOperandsAttr();
   if (!tiedOperandsAttr)
     return false;
-  auto indexAttr = llvm::dyn_cast_if_present<IntegerAttr>(
+  auto indexAttr = dyn_cast_if_present<IntegerAttr>(
       tiedOperandsAttr.getValue()[resultIndex]);
   if (!indexAttr)
     return false;
@@ -2840,7 +2883,7 @@ LogicalResult AsyncCallOp::verify() {
 
   unsigned requiredRangeCount = 0;
   for (auto value : op.getResourceOperands()) {
-    if (llvm::isa<IREE::Stream::ResourceType>(value.getType())) {
+    if (isa<IREE::Stream::ResourceType>(value.getType())) {
       ++requiredRangeCount;
     }
   }
@@ -2862,7 +2905,7 @@ LogicalResult AsyncCallOp::verify() {
   // to be able to return non-resource types as well and adjust partitioning
   // to set them up as return values. For now we just avoid this.
   for (auto resultType : op.getResultTypes()) {
-    if (!llvm::isa<IREE::Stream::ResourceType>(resultType)) {
+    if (!isa<IREE::Stream::ResourceType>(resultType)) {
       return op->emitOpError() << "non-resource return values are not yet "
                                   "supported on async calls";
     }
@@ -2893,8 +2936,8 @@ AsyncCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto typesCompatible = [](Type callee, Type call) {
     if (callee == call)
       return true;
-    auto calleeResource = llvm::dyn_cast<IREE::Stream::ResourceType>(callee);
-    auto callResource = llvm::dyn_cast<IREE::Stream::ResourceType>(call);
+    auto calleeResource = dyn_cast<IREE::Stream::ResourceType>(callee);
+    auto callResource = dyn_cast<IREE::Stream::ResourceType>(call);
     if (calleeResource && callResource) {
       if (calleeResource.getLifetime() == IREE::Stream::Lifetime::Unknown) {
         // Allow anything to match with an unknown lifetime on the async.func.
@@ -2938,7 +2981,7 @@ void AsyncCallOp::getAsyncAccessRanges(
   unsigned rangeIndex = 0;
   unsigned tiedOperandBase = getTiedOperandsIndexAndLength().first;
   for (auto [operandIndex, operand] : llvm::enumerate(getResourceOperands())) {
-    if (!llvm::isa<IREE::Stream::ResourceType>(operand.getType()))
+    if (!isa<IREE::Stream::ResourceType>(operand.getType()))
       continue;
     ResourceAccessBitfield access = ResourceAccessBitfield::Read;
     auto tiedResults = getOperandTiedResults(tiedOperandBase + operandIndex);
@@ -3018,8 +3061,8 @@ std::pair<unsigned, unsigned> AsyncExecuteOp::getTiedResultsIndexAndLength() {
 }
 
 OperandRange
-AsyncExecuteOp::getEntrySuccessorOperands(RegionBranchPoint point) {
-  assert(point.getRegionOrNull() == &getBody() && "invalid region index");
+AsyncExecuteOp::getEntrySuccessorOperands(RegionSuccessor successor) {
+  assert(successor.getSuccessor() == &getBody() && "invalid region index");
   return getResourceOperands();
 }
 
@@ -3029,7 +3072,7 @@ void AsyncExecuteOp::getSuccessorRegions(
   // return the correct RegionSuccessor purely based on the index being None or
   // 0.
   if (!point.isParent()) {
-    regions.push_back(RegionSuccessor(getResults()));
+    regions.push_back(RegionSuccessor(getOperation(), getResults()));
   } else {
     regions.push_back(RegionSuccessor(&getBody(), getBody().getArguments()));
   }
@@ -3045,7 +3088,7 @@ getExecutionAsyncAccessRanges(Op op,
   for (auto [i, operand, operandSize] : llvm::zip_equal(
            llvm::seq<unsigned>(0, op.getResourceOperands().size()),
            op.getResourceOperands(), op.getResourceOperandSizes())) {
-    if (!llvm::isa<IREE::Stream::ResourceType>(operand.getType()))
+    if (!isa<IREE::Stream::ResourceType>(operand.getType()))
       continue;
     ResourceAccessBitfield access = ResourceAccessBitfield::Read;
     auto tiedResults = op.getOperandTiedResults(tiedOperandBase + i);
@@ -3114,8 +3157,8 @@ AsyncExecuteOp::cloneReplacementExcludingOperandsAndResults(
   assert(getTiedOperandsIndexAndLength().first == 0 &&
          "operands must be the first ODS group");
 
-  auto newOp = rewriter.create<AsyncExecuteOp>(
-      getLoc(), newResultTypes, newResultSizes, getAwaitTimepoint(),
+  auto newOp = AsyncExecuteOp::create(
+      rewriter, getLoc(), newResultTypes, newResultSizes, getAwaitTimepoint(),
       newOperandsValues, newOperandSizes, newTiedOperandIndices,
       getOperation()->getAttrs());
   auto &newBody = newOp.getClosureBodyRegion();
@@ -3173,8 +3216,8 @@ LogicalResult AsyncConcurrentOp::verify() {
 }
 
 OperandRange
-AsyncConcurrentOp::getEntrySuccessorOperands(RegionBranchPoint point) {
-  assert(point == &getBody() && "invalid region index");
+AsyncConcurrentOp::getEntrySuccessorOperands(RegionSuccessor successor) {
+  assert(successor.getSuccessor() == &getBody() && "invalid region index");
   return getResourceOperands();
 }
 
@@ -3184,7 +3227,7 @@ void AsyncConcurrentOp::getSuccessorRegions(
   // return the correct RegionSuccessor purely based on the index being None or
   // 0.
   if (!point.isParent()) {
-    regions.push_back(RegionSuccessor(getResults()));
+    regions.push_back(RegionSuccessor(getOperation(), getResults()));
   } else {
     regions.push_back(RegionSuccessor(&getBody(), getBody().getArguments()));
   }
@@ -3235,8 +3278,8 @@ AsyncConcurrentOp::cloneReplacementExcludingOperandsAndResults(
   assert(getTiedOperandsIndexAndLength().first == 0 &&
          "operands must be the first ODS group");
 
-  auto newOp = rewriter.create<AsyncConcurrentOp>(
-      getLoc(), newResultTypes, newResultSizes, newOperandsValues,
+  auto newOp = AsyncConcurrentOp::create(
+      rewriter, getLoc(), newResultTypes, newResultSizes, newOperandsValues,
       newOperandSizes, newTiedOperandIndices, getOperation()->getAttrs());
   auto &newBody = newOp.getClosureBodyRegion();
   newBody.takeBody(getClosureBodyRegion());
@@ -3351,7 +3394,7 @@ LogicalResult CmdCollectiveOp::verify() {
            << " provided";
   }
   for (size_t i = 0; i < requiredCount; ++i) {
-    auto declaredAccess = llvm::cast<IREE::Stream::ResourceAccessBitfieldAttr>(
+    auto declaredAccess = cast<IREE::Stream::ResourceAccessBitfieldAttr>(
                               op.getResourceAccesses()[i])
                               .getValue();
     if (!bitEnumContainsAll(declaredAccess, requiredAccess[i])) {
@@ -3507,9 +3550,9 @@ printDispatchResources(OpAsmPrinter &p, Operation *op, ValueRange resources,
     auto resourceSize = resourceSizes[i];
     auto resourceOffset = resourceOffsets[i];
     auto resourceLength = resourceLengths[i];
-    auto resourceAccess = llvm::cast<IREE::Stream::ResourceAccessBitfieldAttr>(
-                              resourceAccesses[i])
-                              .getValue();
+    auto resourceAccess =
+        cast<IREE::Stream::ResourceAccessBitfieldAttr>(resourceAccesses[i])
+            .getValue();
     p.printNewline();
     p << "  ";
     if (bitEnumContainsAll(resourceAccess,
@@ -3544,14 +3587,14 @@ SmallVector<unsigned>
 CmdDispatchOp::makeOperandToArgMap(mlir::FunctionOpInterface funcOp) {
   unsigned operandCount =
       llvm::count_if(funcOp.getArgumentTypes(), [](Type type) {
-        return !llvm::isa<IREE::Stream::BindingType>(type);
+        return !isa<IREE::Stream::BindingType>(type);
       });
   SmallVector<unsigned> map(operandCount);
   unsigned operandIdx = 0;
   for (auto it : llvm::enumerate(funcOp.getArgumentTypes())) {
     unsigned argIdx = it.index();
     auto argType = it.value();
-    if (!llvm::isa<IREE::Stream::BindingType>(argType)) {
+    if (!isa<IREE::Stream::BindingType>(argType)) {
       map[operandIdx++] = argIdx;
     }
   }
@@ -3690,7 +3733,7 @@ static void printDispatchFunctionResultList(OpAsmPrinter &p, Operation *op,
     p.printType(resultType);
     if (resultAttrs) {
       auto attrs =
-          llvm::dyn_cast_if_present<DictionaryAttr>(resultAttrs.getValue()[i]);
+          dyn_cast_if_present<DictionaryAttr>(resultAttrs.getValue()[i]);
       if (attrs && !attrs.empty()) {
         p.printOptionalAttrDict(attrs.getValue());
       }
@@ -3738,7 +3781,7 @@ ParseResult parseDispatchFunctionSignature(OpAsmParser &parser,
 void printDispatchFunctionSignature(OpAsmPrinter &p, Operation *op,
                                     TypeAttr functionTypeAttr,
                                     ArrayAttr argAttrs, ArrayAttr resultAttrs) {
-  auto functionType = llvm::cast<FunctionType>(functionTypeAttr.getValue());
+  auto functionType = cast<FunctionType>(functionTypeAttr.getValue());
   p << "(";
   for (size_t argIndex = 0; argIndex < functionType.getNumInputs();) {
     if (argIndex)
@@ -3747,7 +3790,7 @@ void printDispatchFunctionSignature(OpAsmPrinter &p, Operation *op,
     auto type = functionType.getInput(baseArgIndex);
     p << "%arg";
     p << (baseArgIndex + 0);
-    if (llvm::isa<IREE::Stream::ResourceType>(type)) {
+    if (isa<IREE::Stream::ResourceType>(type)) {
       p << "[%arg" << (baseArgIndex + 1) << " for %arg" << (baseArgIndex + 2)
         << "]";
       argIndex += 3; // <resource, offset, length>
@@ -3757,7 +3800,7 @@ void printDispatchFunctionSignature(OpAsmPrinter &p, Operation *op,
     p << ": ";
     p.printType(type);
     if (argAttrs) {
-      auto attrs = llvm::dyn_cast_if_present<DictionaryAttr>(
+      auto attrs = dyn_cast_if_present<DictionaryAttr>(
           argAttrs.getValue()[baseArgIndex]);
       if (attrs && !attrs.empty()) {
         p.printOptionalAttrDict(attrs.getValue());
@@ -3791,7 +3834,7 @@ LogicalResult CmdCallOp::verify() {
 
   unsigned resourceCount = 0;
   for (auto value : op.getResourceOperands()) {
-    if (llvm::isa<IREE::Stream::ResourceType>(value.getType())) {
+    if (isa<IREE::Stream::ResourceType>(value.getType())) {
       ++resourceCount;
     }
   }
@@ -3891,14 +3934,13 @@ static void printCmdCallOperands(OpAsmPrinter &p, Operation *op,
   size_t resourceIndex = 0;
   for (size_t i = 0; i < resourceOperands.size(); ++i) {
     auto operand = resourceOperands[i];
-    if (llvm::isa<IREE::Stream::ResourceType>(operand.getType())) {
+    if (isa<IREE::Stream::ResourceType>(operand.getType())) {
       // Resource type.
       auto resourceOffset = resourceOffsets[resourceIndex];
       auto resourceLength = resourceLengths[resourceIndex];
-      auto resourceAccess =
-          llvm::cast<IREE::Stream::ResourceAccessBitfieldAttr>(
-              resourceAccesses[resourceIndex])
-              .getValue();
+      auto resourceAccess = cast<IREE::Stream::ResourceAccessBitfieldAttr>(
+                                resourceAccesses[resourceIndex])
+                                .getValue();
       if (bitEnumContainsAll(resourceAccess,
                              IREE::Stream::ResourceAccessBitfield::Read |
                                  IREE::Stream::ResourceAccessBitfield::Write)) {
@@ -3982,8 +4024,9 @@ LogicalResult CmdExecuteOp::verify() {
   return success();
 }
 
-OperandRange CmdExecuteOp::getEntrySuccessorOperands(RegionBranchPoint point) {
-  assert(point == &getBody() && "invalid region index");
+OperandRange
+CmdExecuteOp::getEntrySuccessorOperands(RegionSuccessor successor) {
+  assert(successor.getSuccessor() == &getBody() && "invalid region index");
   return getResourceOperands();
 }
 
@@ -3993,7 +4036,8 @@ void CmdExecuteOp::getSuccessorRegions(
   // return the correct RegionSuccessor purely based on the index being None or
   // 0.
   if (!point.isParent()) {
-    regions.push_back(RegionSuccessor({}));
+    regions.push_back(
+        RegionSuccessor(getOperation(), Operation::result_range(nullptr, 0)));
   } else {
     regions.push_back(RegionSuccessor(&getBody(), getBody().getArguments()));
   }
@@ -4030,9 +4074,9 @@ CmdExecuteOp::cloneReplacementExcludingOperandsAndResults(
       newOperandsValues, newOperandSizes, excludedOperandIndices,
       newResultTypes, newResultSizes, excludedResultIndices);
 
-  auto newOp = rewriter.create<CmdExecuteOp>(getLoc(), getAwaitTimepoint(),
-                                             newOperandsValues, newOperandSizes,
-                                             getOperation()->getAttrs());
+  auto newOp = CmdExecuteOp::create(rewriter, getLoc(), getAwaitTimepoint(),
+                                    newOperandsValues, newOperandSizes,
+                                    getOperation()->getAttrs());
   newOp.setOnce(getOnce());
   auto &newBody = newOp.getClosureBodyRegion();
   newBody.takeBody(getClosureBodyRegion());
@@ -4063,7 +4107,8 @@ void CmdSerialOp::getSuccessorRegions(
   // return the correct RegionSuccessor purely based on the index being None or
   // 0.
   if (!point.isParent()) {
-    regions.push_back(RegionSuccessor({}));
+    regions.push_back(
+        RegionSuccessor(getOperation(), Operation::result_range(nullptr, 0)));
   } else {
     regions.push_back(RegionSuccessor(&getBody(), {}));
   }
@@ -4088,10 +4133,90 @@ void CmdConcurrentOp::getSuccessorRegions(
   // return the correct RegionSuccessor purely based on the index being None or
   // 0.
   if (!point.isParent()) {
-    regions.push_back(RegionSuccessor({}));
+    regions.push_back(
+        RegionSuccessor(getOperation(), Operation::result_range(nullptr, 0)));
   } else {
     regions.push_back(RegionSuccessor(&getBody(), {}));
   }
+}
+
+//===----------------------------------------------------------------------===//
+// stream.cmd.parameter.load
+//===----------------------------------------------------------------------===//
+
+LogicalResult CmdParameterLoadOp::verify() {
+  CmdParameterLoadOp op = *this;
+  size_t expectedCount = op.getSourceKeys().size();
+  if (op.getSourceOffsets().size() != expectedCount ||
+      op.getResultSizes().size() != expectedCount) {
+    return op.emitOpError() << "requires that the source keys, source offsets, "
+                               "and result sizes are all 1:1";
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// stream.cmd.parameter.read
+//===----------------------------------------------------------------------===//
+
+LogicalResult CmdParameterReadOp::verify() {
+  CmdParameterReadOp op = *this;
+  if (failed(verifyOpValueSizes(op, op.getTarget(), op.getTargetSize()))) {
+    return failure();
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// stream.cmd.parameter.write
+//===----------------------------------------------------------------------===//
+
+LogicalResult CmdParameterWriteOp::verify() {
+  CmdParameterWriteOp op = *this;
+  if (failed(verifyOpValueSizes(op, op.getSource(), op.getSourceSize()))) {
+    return failure();
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// stream.cmd.parameter.gather
+//===----------------------------------------------------------------------===//
+
+LogicalResult CmdParameterGatherOp::verify() {
+  CmdParameterGatherOp op = *this;
+  size_t expectedCount = op.getSourceKeys().size();
+  if (op.getSourceOffsets().size() != expectedCount ||
+      op.getTargetOffsets().size() != expectedCount ||
+      op.getTargetLengths().size() != expectedCount) {
+    return op.emitOpError()
+           << "requires that the source keys, source offsets, target offsets, "
+              "and target lengths are all 1:1";
+  }
+  if (failed(verifyOpValueSizes(op, op.getTarget(), op.getTargetSize()))) {
+    return failure();
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// stream.cmd.parameter.scatter
+//===----------------------------------------------------------------------===//
+
+LogicalResult CmdParameterScatterOp::verify() {
+  CmdParameterScatterOp op = *this;
+  size_t expectedCount = op.getTargetKeys().size();
+  if (op.getSourceOffsets().size() != expectedCount ||
+      op.getSourceLengths().size() != expectedCount ||
+      op.getTargetOffsets().size() != expectedCount) {
+    return op.emitOpError()
+           << "requires that the source offsets, source lengths, target keys, "
+              "and target offsets are all 1:1";
+  }
+  if (failed(verifyOpValueSizes(op, op.getSource(), op.getSourceSize()))) {
+    return failure();
+  }
+  return success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -4111,8 +4236,8 @@ Value TimepointJoinOp::join(Location loc, ValueRange timepoints,
   assert(!timepoints.empty() && "must have at least one timepoint");
   if (timepoints.size() == 1)
     return timepoints.front();
-  return builder.create<IREE::Stream::TimepointJoinOp>(
-      loc, builder.getType<IREE::Stream::TimepointType>(), timepoints);
+  return IREE::Stream::TimepointJoinOp::create(
+      builder, loc, builder.getType<IREE::Stream::TimepointType>(), timepoints);
 }
 
 // static
@@ -4292,7 +4417,7 @@ mlir::FunctionOpInterface ExecutableExportOp::lookupFunctionRef() {
 
 LogicalResult BindingSubspanOp::verify() {
   BindingSubspanOp op = *this;
-  if (auto shapedType = llvm::dyn_cast<ShapedType>(op.getType())) {
+  if (auto shapedType = dyn_cast<ShapedType>(op.getType())) {
     if (failed(verifyOpDynamicDims(op, shapedType, op.getDynamicDims()))) {
       return failure();
     }
@@ -4359,7 +4484,7 @@ LogicalResult DispatchWorkgroupSizeOp::verify() {
 //===----------------------------------------------------------------------===//
 
 MutableOperandRange
-YieldOp::getMutableSuccessorOperands(RegionBranchPoint point) {
+YieldOp::getMutableSuccessorOperands(RegionSuccessor successor) {
   return getResourceOperandsMutable();
 }
 

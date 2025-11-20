@@ -156,14 +156,16 @@ With the requirements out of the way, we can now compile a model and run it.
 
 --8<-- "docs/website/docs/guides/deployment-configurations/snippets/_iree-import-onnx-mobilenet.md"
 
-Then run the following command to compile with the `vulkan-spirv` target:
+Then run the following command to compile with the `vulkan` target device:
 
 ``` shell hl_lines="2 3"
 iree-compile \
-    --iree-hal-target-backends=vulkan-spirv \
+    --iree-hal-target-device=vulkan \
     --iree-vulkan-target=<...> \
     mobilenetv2.mlir -o mobilenet_vulkan.vmfb
 ```
+
+--8<-- "docs/website/docs/guides/deployment-configurations/snippets/_iree-optimization-options.md"
 
 #### Choosing Vulkan targets
 
@@ -180,18 +182,21 @@ Here are a few examples showing how you can target various recent common GPUs:
 
 | GPU                 | Product Name   | Target Architecture | Architecture Code Name |
 | ------------------- | -------------- | ------------------- | ---------------------- |
-| AMD RX7900XTX       | `rx7900xtx`    | `gfx1100`           | `rdna3`                |
-| AMD RX7900XT        | `rx7900xt`     | `gfx1100`           | `rdna3`                |
-| AMD RX7800XT        | `rx7800xt`     | `gfx1101`           | `rdna3`                |
-| AMD RX7700XT        | `rx7700xt`     | `gfx1101`           | `rdna3`                |
-| AMD RX6000 series   |                |                     | `rdna2`                |
-| AMD RX5000 series   |                |                     | `rdna1`                |
-| ARM Mali G715       | `mali-g715`    |                     | `valhall4`             |
-| ARM Mali G510       | `mali-g510`    |                     | `valhall3`             |
+| AMD RX 5000 series  |                |                     | `rdna1`                |
+| AMD RX 6000 series  |                |                     | `rdna2`                |
+| AMD RX 7700XT       | `rx7700xt`     | `gfx1101`           | `rdna3`                |
+| AMD RX 7800XT       | `rx7800xt`     | `gfx1101`           | `rdna3`                |
+| AMD RX 7900XT       | `rx7900xt`     | `gfx1100`           | `rdna3`                |
+| AMD RX 7900XTX      | `rx7900xtx`    | `gfx1100`           | `rdna3`                |
+| AMD RX 9060XT       | `rx9060xt`     | `gfx1200`           | `rdna4`                |
+| AMD RX 9070         | `rx9070`       | `gfx1201`           | `rdna4`                |
+| AMD RX 9070XT       | `rx9070xt`     | `gfx1201`           | `rdna4`                |
 | ARM GPUs            |                |                     | `valhall`              |
-| NVIDIA RTX40 series | `rtx4090`      | `sm_89`             | `ada`                  |
-| NVIDIA RTX30 series | `rtx3080ti`    | `sm_86`             | `ampere`               |
+| ARM Mali G510       | `mali-g510`    |                     | `valhall3`             |
+| ARM Mali G715       | `mali-g715`    |                     | `valhall4`             |
 | NVIDIA RTX20 series | `rtx2070super` | `sm_75`             | `turing`               |
+| NVIDIA RTX30 series | `rtx3080ti`    | `sm_86`             | `ampere`               |
+| NVIDIA RTX40 series | `rtx4090`      | `sm_89`             | `ada`                  |
 | Qualcomm GPUs       |                |                     | `adreno`               |
 
 If no target is specified, then a safe but more limited default will be used.

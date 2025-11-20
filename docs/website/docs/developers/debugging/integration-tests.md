@@ -5,7 +5,8 @@ icon: octicons/bug-16
 # Integration test debugging
 
 This document includes tips for triaging integration test correctness issues.
-Feel free to reach out to @hanhanW or ask questions on Discord for more help.
+Feel free to reach out to @hanhanW or @newling, or ask questions on Discord
+for more help.
 
 ## General tips
 
@@ -14,7 +15,9 @@ Feel free to reach out to @hanhanW or ask questions on Discord for more help.
 * Models themselves can be large, and IREE breaks models into dispatches/kernels
 and then launches those individually. Program outputs could diverge starting
 from any individual launch. To get a smaller reproducer, you can use
-[--iree-flow-trace-dispatch-tensors](../general/developer-overview.md#-iree-flow-trace-dispatch-tensors).
+[--iree-flow-trace-dispatch-tensors](../general/developer-overview.md#-iree-flow-trace-dispatch-tensors),
+especially powerful when combined with debug sink callbacks, as described
+[here](https://github.com/iree-org/iree/blob/main/samples/sink_callback/README.md).
 * You can compare the logs between builds/backends to get an idea about which
 dispatch results in wrong outputs. The dumped inputs can be reused in a
 flagfile.
@@ -22,8 +25,9 @@ flagfile.
 Once a suspicious dispatch is identified, we can create a test case based on
 the dispatch function. The dispatch function can be derived after the
 `OutlineDispatchRegions` pass. The function signatures have to be modified
-manually. You'll have to put `flow.dispatch.tensor.load` variables to function
-arguments, and replace `flow.dispatch.tensor.store` with `return` op.
+manually. You'll have to put `iree_tensor_ext.dispatch.tensor.load` variables to
+function arguments, and replace `iree_tensor_ext.dispatch.tensor.store` with
+`return` op.
 
 Note: This only works when dispatch formation logics are identical between runs.
 
@@ -120,7 +124,8 @@ All steps here assume starting from the IREE root directory.
 
     ```bash
     iree-compile \
-      --iree-hal-target-backends=llvm-cpu \
+      --iree-hal-target-device=local \
+      --iree-hal-local-target-device-backends=llvm-cpu \
       --iree-input-type=stablehlo \
       iree_input.mlir
     ```

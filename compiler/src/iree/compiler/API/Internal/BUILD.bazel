@@ -34,13 +34,16 @@ iree_compiler_cc_library(
         "//compiler/src/iree/compiler/Tools:init_passes_and_dialects",
         "//compiler/src/iree/compiler/Tools:version",
         "//compiler/src/iree/compiler/Utils",
+        "@llvm-project//llvm:Remarks",
         "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:TargetParser",
         "@llvm-project//mlir:BuiltinToLLVMIRTranslation",
         "@llvm-project//mlir:BytecodeWriter",
         "@llvm-project//mlir:CAPIIR",
         "@llvm-project//mlir:Debug",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:RemarkStreamer",
         "@llvm-project//mlir:Support",
     ],
 )
@@ -112,6 +115,25 @@ iree_compiler_cc_library(
 )
 
 iree_compiler_cc_library(
+    name = "IREELinkToolEntryPoint",
+    srcs = [
+        "IREELinkToolEntryPoint.cpp",
+    ],
+    deps = [
+        "//compiler/bindings/c:headers",
+        "//compiler/src/iree/compiler/Dialect/Util/Transforms",
+        "//compiler/src/iree/compiler/Tools:init_passes_and_dialects",
+        "//compiler/src/iree/compiler/Utils",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:BytecodeWriter",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
+iree_compiler_cc_library(
     name = "IREEReduceToolEntryPoint",
     srcs = [
         "IREEReduceToolEntryPoint.cpp",
@@ -138,9 +160,14 @@ iree_compiler_cc_library(
         "//compiler/bindings/c:headers",
         "//compiler/src/iree/compiler/Codegen/Dialect/Codegen/IR:IREECodegenDialect",
         "//compiler/src/iree/compiler/Codegen/Utils",
+        "//compiler/src/iree/compiler/Dialect/LinalgExt/IR",
+        "//compiler/src/iree/compiler/Dialect/LinalgExt/Utils",
         "@llvm-project//mlir:CAPIIR",
         "@llvm-project//mlir:CAPIIRHeaders",
+        "@llvm-project//mlir:DialectUtils",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LinalgDialect",
+        "@llvm-project//mlir:Support",
     ],
 )
 
@@ -152,6 +179,7 @@ iree_compiler_cc_library(
     deps = [
         "//compiler/bindings/c:headers",
         "//compiler/src/iree/compiler/Codegen/Dialect/GPU/IR:IREEGPUDialect",
+        "//compiler/src/iree/compiler/Codegen/Utils",
         "@llvm-project//mlir:CAPIIR",
         "@llvm-project//mlir:CAPIIRHeaders",
         "@llvm-project//mlir:IR",

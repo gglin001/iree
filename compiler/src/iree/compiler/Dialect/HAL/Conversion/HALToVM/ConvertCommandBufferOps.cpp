@@ -4,6 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "iree/compiler/Dialect/HAL/Conversion/HALToVM/Patterns.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
 #include "iree/compiler/Dialect/VM/Conversion/ImportUtils.h"
@@ -23,20 +24,20 @@ static std::tuple<Value, Value>
 splitBufferSlot(Location loc, Value bufferOrSlot, OpBuilder &builder) {
   if (!bufferOrSlot) {
     return std::make_tuple(
-        builder.create<IREE::VM::ConstI32ZeroOp>(loc),
-        builder.create<IREE::VM::ConstRefZeroOp>(
-            loc,
+        IREE::VM::ConstI32ZeroOp::create(builder, loc),
+        IREE::VM::ConstRefZeroOp::create(
+            builder, loc,
             IREE::VM::RefType::get(builder.getType<IREE::HAL::BufferType>())));
   } else if (isa<IREE::VM::RefType>(bufferOrSlot.getType())) {
     // Direct buffer binding; pass 0 for table slot.
-    return std::make_tuple(builder.create<IREE::VM::ConstI32ZeroOp>(loc),
+    return std::make_tuple(IREE::VM::ConstI32ZeroOp::create(builder, loc),
                            bufferOrSlot);
   } else {
     // Indirect binding table reference; pass null for the buffer.
     return std::make_tuple(
         castToImportType(bufferOrSlot, builder.getI32Type(), builder),
-        builder.create<IREE::VM::ConstRefZeroOp>(
-            loc,
+        IREE::VM::ConstRefZeroOp::create(
+            builder, loc,
             IREE::VM::RefType::get(builder.getType<IREE::HAL::BufferType>())));
   }
 }
@@ -82,7 +83,7 @@ public:
                                               rewriter.getI32Type(), rewriter));
     } else {
       callOperands.push_back(
-          rewriter.create<IREE::VM::ConstI32ZeroOp>(op.getLoc()));
+          IREE::VM::ConstI32ZeroOp::create(rewriter, op.getLoc()));
     }
 
     auto callOp = rewriter.replaceOpWithNewOp<IREE::VM::CallOp>(
@@ -137,12 +138,15 @@ public:
     auto patternLengthConst = rewriter.createOrFold<mlir::arith::ConstantIntOp>(
         op.getLoc(), patternLengthBytes, 32);
     Value pattern = op.getPattern();
-    if (patternBitWidth < 32) {
+    if (patternBitWidth < 64) {
       pattern = rewriter.createOrFold<arith::ExtUIOp>(
-          op.getLoc(), rewriter.getIntegerType(32), pattern);
+          op.getLoc(), rewriter.getIntegerType(64), pattern);
     }
     callOperands.push_back(pattern);
     callOperands.push_back(patternLengthConst);
+
+    callOperands.push_back(
+        getFlagsI64(op.getLoc(), adaptor.getFlagsAttr(), rewriter));
 
     auto callOp = rewriter.replaceOpWithNewOp<IREE::VM::CallOp>(
         op, SymbolRefAttr::get(importOp), importType.getResults(),
@@ -183,7 +187,9 @@ public:
         castToImportType(adaptor.getTargetOffset(), rewriter.getI64Type(),
                          rewriter),
         castToImportType(adaptor.getLength(), rewriter.getI64Type(), rewriter),
-        targetBufferSlot};
+        targetBufferSlot,
+        getFlagsI64(op.getLoc(), adaptor.getFlagsAttr(), rewriter),
+    };
     auto callOp = rewriter.replaceOpWithNewOp<IREE::VM::CallOp>(
         op, SymbolRefAttr::get(importOp), importType.getResults(),
         callOperands);
@@ -226,6 +232,7 @@ public:
         castToImportType(adaptor.getTargetOffset(), rewriter.getI64Type(),
                          rewriter),
         castToImportType(adaptor.getLength(), rewriter.getI64Type(), rewriter),
+        getFlagsI64(op.getLoc(), adaptor.getFlagsAttr(), rewriter),
     };
     auto callOp = rewriter.replaceOpWithNewOp<IREE::VM::CallOp>(
         op, SymbolRefAttr::get(importOp), importType.getResults(),
@@ -258,7 +265,7 @@ public:
     Value zeroI64;
     auto getZeroI64 = [&]() {
       if (!zeroI64) {
-        zeroI64 = rewriter.create<IREE::VM::ConstI64ZeroOp>(op.getLoc());
+        zeroI64 = IREE::VM::ConstI64ZeroOp::create(rewriter, op.getLoc());
       }
       return zeroI64;
     };
@@ -279,13 +286,13 @@ public:
     SmallVector<Value> callOperands;
     callOperands.push_back(adaptor.getCommandBuffer());
     callOperands.push_back(adaptor.getChannel());
-    callOperands.push_back(rewriter.create<IREE::VM::ConstI32Op>(
-        op.getLoc(), adaptor.getOp().getEncodedValue()));
+    callOperands.push_back(IREE::VM::ConstI32Op::create(
+        rewriter, op.getLoc(), adaptor.getOp().getEncodedValue()));
     if (auto paramValue = adaptor.getParam()) {
       callOperands.push_back(paramValue);
     } else {
       callOperands.push_back(
-          rewriter.create<IREE::VM::ConstI32ZeroOp>(op.getLoc()));
+          IREE::VM::ConstI32ZeroOp::create(rewriter, op.getLoc()));
     }
 
     auto [sendBufferSlot, sendBuffer] =
@@ -339,15 +346,8 @@ public:
 
     auto i32Type = rewriter.getI32Type();
     auto i64Type = rewriter.getI64Type();
-    Value zeroI32 = rewriter.create<IREE::VM::ConstI32ZeroOp>(op.getLoc());
+    Value zeroI32 = IREE::VM::ConstI32ZeroOp::create(rewriter, op.getLoc());
 
-    auto flags = adaptor.getFlagsAttr()
-                     ? rewriter
-                           .create<IREE::VM::ConstI64Op>(
-                               op.getLoc(), adaptor.getFlagsAttr().getInt())
-                           .getResult()
-                     : rewriter.create<IREE::VM::ConstI64ZeroOp>(op.getLoc())
-                           .getResult();
     SmallVector<Value, 8> callOperands = {
         adaptor.getCommandBuffer(),
         adaptor.getExecutable(),
@@ -355,7 +355,7 @@ public:
         castToImportType(adaptor.getWorkgroupX(), i32Type, rewriter),
         castToImportType(adaptor.getWorkgroupY(), i32Type, rewriter),
         castToImportType(adaptor.getWorkgroupZ(), i32Type, rewriter),
-        flags,
+        getFlagsI64(op.getLoc(), adaptor.getFlagsAttr(), rewriter),
     };
     SmallVector<int16_t, 5> segmentSizes = {
         /*command_buffer=*/-1,
@@ -417,17 +417,10 @@ public:
 
     auto i32Type = rewriter.getI32Type();
     auto i64Type = rewriter.getI64Type();
-    Value zeroI32 = rewriter.create<IREE::VM::ConstI32ZeroOp>(op.getLoc());
+    Value zeroI32 = IREE::VM::ConstI32ZeroOp::create(rewriter, op.getLoc());
 
     auto [workgroupsBufferSlot, workgroupsBuffer] =
         splitBufferSlot(op.getLoc(), adaptor.getWorkgroupsBuffer(), rewriter);
-    auto flags = adaptor.getFlagsAttr()
-                     ? rewriter
-                           .create<IREE::VM::ConstI64Op>(
-                               op.getLoc(), adaptor.getFlagsAttr().getInt())
-                           .getResult()
-                     : rewriter.create<IREE::VM::ConstI64ZeroOp>(op.getLoc())
-                           .getResult();
     SmallVector<Value, 8> callOperands = {
         adaptor.getCommandBuffer(),
         adaptor.getExecutable(),
@@ -435,7 +428,7 @@ public:
         workgroupsBufferSlot,
         workgroupsBuffer,
         castToImportType(adaptor.getWorkgroupsOffset(), i64Type, rewriter),
-        flags,
+        getFlagsI64(op.getLoc(), adaptor.getFlagsAttr(), rewriter),
     };
     SmallVector<int16_t, 5> segmentSizes = {
         /*command_buffer=*/-1,

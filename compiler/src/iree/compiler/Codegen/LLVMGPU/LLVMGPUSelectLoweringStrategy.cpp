@@ -25,8 +25,7 @@ class LLVMGPUSelectLoweringStrategyPass final
     : public impl::LLVMGPUSelectLoweringStrategyPassBase<
           LLVMGPUSelectLoweringStrategyPass> {
 public:
-  using impl::LLVMGPUSelectLoweringStrategyPassBase<
-      LLVMGPUSelectLoweringStrategyPass>::LLVMGPUSelectLoweringStrategyPassBase;
+  using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
@@ -39,18 +38,21 @@ public:
 
 /// Verify that valid configuration is set for all ops within the compiled
 /// module.
-template <typename F>
-static LogicalResult
-verifyLoweringConfiguration(FunctionOpInterface funcOp,
-                            IREE::Codegen::TranslationInfoAttr translationInfo,
-                            ArrayRef<int64_t> workgroupSize, F verificationFn) {
+static LogicalResult verifyLoweringConfiguration(
+    FunctionOpInterface funcOp,
+    IREE::Codegen::TranslationInfoAttr translationInfo) {
   auto walkResult = funcOp.walk([&](Operation *op) -> WalkResult {
-    auto loweringConfig =
-        getLoweringConfig<IREE::Codegen::LoweringConfigAttr>(op);
+    auto loweringConfig = getLoweringConfig<IREE::GPU::LoweringConfigAttr>(op);
     if (!loweringConfig)
-      return WalkResult::advance();
-    return verificationFn(op, loweringConfig, translationInfo, workgroupSize);
+      return success();
+
+    if (translationInfo.getDispatchLoweringPassPipeline() ==
+        IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUVectorDistribute) {
+      return verifyLLVMGPUVectorDistributePipeline(op, loweringConfig);
+    }
+    return success();
   });
+
   return failure(walkResult.wasInterrupted());
 }
 
@@ -63,13 +65,16 @@ verifyEntryPoint(FunctionOpInterface funcOp,
         "failed to get workgroup size needed for verification");
   }
 
-  return verifyLoweringConfiguration(
-      funcOp, translationInfo, workgroupSize.value(), verifyGPUMatmulPipeline);
+  // Verify GPU-specific configuration
+  if (failed(verifyLoweringConfiguration(funcOp, translationInfo))) {
+    return failure();
+  }
+
   return success();
 }
 
 void LLVMGPUSelectLoweringStrategyPass::runOnOperation() {
-  auto moduleOp = getOperation();
+  mlir::ModuleOp moduleOp = getOperation();
   for (auto funcOp : moduleOp.getOps<FunctionOpInterface>()) {
     if (failed(initGPULaunchConfig(funcOp))) {
       return signalPassFailure();

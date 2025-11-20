@@ -86,7 +86,7 @@ class BindSymbolicShapesPass final
     auto operand = bindOp.getOperand();
     // Torch programs are single block and use structured control flow, so
     // presume this is an entrypoint.
-    if (llvm::isa<BlockArgument>(operand))
+    if (isa<BlockArgument>(operand))
       return true;
 
     // Mutable tensors can exist at the boundary and must be "copied" to a
@@ -134,7 +134,7 @@ class BindSymbolicShapesPass final
       OpBuilder::InsertionGuard guard(builder);
       builder.setInsertionPointAfterValue(producer);
       Value dimValue =
-          builder.create<tensor::DimOp>(producer.getLoc(), producer, position);
+          tensor::DimOp::create(builder, producer.getLoc(), producer, position);
       return dimValue;
     }
 
@@ -197,11 +197,11 @@ class BindSymbolicShapesPass final
         // is already guaranteed to be topologically legal) stays so.
         OpBuilder::InsertionGuard guard(builder);
         builder.setInsertionPointAfterValue(annotatesValue);
-        builtinConversion = builder.create<TorchConversion::ToBuiltinTensorOp>(
-            bindOp->getLoc(), builtinTensorType, annotatesValue);
+        builtinConversion = TorchConversion::ToBuiltinTensorOp::create(
+            builder, bindOp->getLoc(), builtinTensorType, annotatesValue);
       }
-      rewrittenTorchOp = builder.create<TorchConversion::FromBuiltinTensorOp>(
-          bindOp->getLoc(), torchType, builtinConversion.getResult());
+      rewrittenTorchOp = TorchConversion::FromBuiltinTensorOp::create(
+          builder, bindOp->getLoc(), torchType, builtinConversion.getResult());
       annotatesValue.replaceAllUsesExcept(rewrittenTorchOp.getResult(),
                                           builtinConversion);
       annotatesValue = builtinConversion.getResult();
@@ -252,7 +252,7 @@ class BindSymbolicShapesPass final
       for (auto [index, expr] : llvm::enumerate(shapeMap.getResults())) {
         if (expr.getKind() != AffineExprKind::SymbolId)
           continue;
-        auto symbolPos = llvm::cast<AffineSymbolExpr>(expr).getPosition();
+        auto symbolPos = cast<AffineSymbolExpr>(expr).getPosition();
         Value symbol = symbols[symbolPos];
         auto symbolInfoIt = symbolInfos.find(symbol);
         assert(symbolInfoIt != symbolInfos.end() &&
@@ -265,7 +265,7 @@ class BindSymbolicShapesPass final
     Value materializeDimExpr(Location loc, OpBuilder &builder,
                              AffineExpr genericExpr,
                              llvm::DenseMap<Value, SymbolInfo> &symbolInfos) {
-      if (auto binaryExpr = llvm::dyn_cast<AffineBinaryOpExpr>(genericExpr)) {
+      if (auto binaryExpr = dyn_cast<AffineBinaryOpExpr>(genericExpr)) {
         auto lhs =
             materializeDimExpr(loc, builder, binaryExpr.getLHS(), symbolInfos);
         if (!lhs)
@@ -277,15 +277,15 @@ class BindSymbolicShapesPass final
 
         switch (binaryExpr.getKind()) {
         case AffineExprKind::Add:
-          return builder.create<arith::AddIOp>(loc, lhs, rhs);
+          return arith::AddIOp::create(builder, loc, lhs, rhs);
         case AffineExprKind::Mul:
-          return builder.create<arith::MulIOp>(loc, lhs, rhs);
+          return arith::MulIOp::create(builder, loc, lhs, rhs);
         case AffineExprKind::Mod:
-          return builder.create<arith::RemSIOp>(loc, lhs, rhs);
+          return arith::RemSIOp::create(builder, loc, lhs, rhs);
         case AffineExprKind::FloorDiv:
-          return builder.create<arith::DivSIOp>(loc, lhs, rhs);
+          return arith::DivSIOp::create(builder, loc, lhs, rhs);
         case AffineExprKind::CeilDiv:
-          return builder.create<arith::CeilDivSIOp>(loc, lhs, rhs);
+          return arith::CeilDivSIOp::create(builder, loc, lhs, rhs);
         default:
           break;
         }
@@ -293,14 +293,15 @@ class BindSymbolicShapesPass final
 
       switch (genericExpr.getKind()) {
       case AffineExprKind::Constant:
-        return builder.create<arith::ConstantOp>(
-            loc, builder.getIndexAttr(
-                     llvm::cast<AffineConstantExpr>(genericExpr).getValue()));
+        return arith::ConstantOp::create(
+            builder, loc,
+            builder.getIndexAttr(
+                cast<AffineConstantExpr>(genericExpr).getValue()));
       case AffineExprKind::DimId:
         // Unsupported.
         break;
       case AffineExprKind::SymbolId: {
-        auto symExpr = llvm::cast<AffineSymbolExpr>(genericExpr);
+        auto symExpr = cast<AffineSymbolExpr>(genericExpr);
         auto pos = symExpr.getPosition();
         if (pos >= symbols.size())
           break;
@@ -335,8 +336,8 @@ class BindSymbolicShapesPass final
           // Certain classes of symbolic expressions may not terminate on
           // distinct dimensions (i.e. `s0 * 4` with no symbol that corresponds)
           // to `s0`. In this case, we just do runtime resolution of the symbol.
-          dimValue = builder.create<tensor::DimOp>(bindOp->getLoc(),
-                                                   annotatesValue, index);
+          dimValue = tensor::DimOp::create(builder, bindOp->getLoc(),
+                                           annotatesValue, index);
         }
 
         // Add optimization assumptions if the divisor or bounds are known.
@@ -357,9 +358,8 @@ class BindSymbolicShapesPass final
               /*umin=*/optionalUmin,
               /*umax=*/optionalUmax,
               /*divisor=*/optionalDivisor);
-          dimValue = builder
-                         .create<IREE::Util::AssumeIntOp>(bindOp->getLoc(),
-                                                          dimValue, assumption)
+          dimValue = IREE::Util::AssumeIntOp::create(builder, bindOp->getLoc(),
+                                                     dimValue, assumption)
                          .getResult(0);
         }
 
@@ -386,8 +386,9 @@ class BindSymbolicShapesPass final
       }
 
       OpBuilder builder(anchorOp);
-      Value tieShape = builder.create<IREE::Flow::TensorTieShapeOp>(
-          bindOp->getLoc(), builtinTensorType, annotatesValue, dynamicDims);
+      Value tieShape = IREE::Flow::TensorTieShapeOp::create(
+          builder, bindOp->getLoc(), builtinTensorType, annotatesValue,
+          dynamicDims);
       rewrittenTorchOp.setOperand(tieShape);
     }
   };
@@ -405,18 +406,17 @@ class BindSymbolicShapesPass final
 
     // Walk the ops we care about and stash for analysis.
     getOperation()->walk([&](Operation *childOp) {
-      if (auto symbolOp = llvm::dyn_cast<Torch::SymbolicIntOp>(childOp)) {
+      if (auto symbolOp = dyn_cast<Torch::SymbolicIntOp>(childOp)) {
         cleanupOpList.push_back(symbolOp);
         symbolInfos.insert_or_assign(symbolOp.getResult(),
                                      SymbolInfo(symbolOp));
-      } else if (auto bindOp =
-                     llvm::dyn_cast<Torch::BindSymbolicShapeOp>(childOp)) {
+      } else if (auto bindOp = dyn_cast<Torch::BindSymbolicShapeOp>(childOp)) {
         cleanupOpList.push_back(bindOp);
         if (!isEligibleBinding(bindOp))
           return;
         auto torchType =
-            llvm::cast<Torch::ValueTensorType>(bindOp.getOperand().getType());
-        auto builtinType = llvm::dyn_cast_or_null<RankedTensorType>(
+            cast<Torch::ValueTensorType>(bindOp.getOperand().getType());
+        auto builtinType = dyn_cast_if_present<RankedTensorType>(
             typeConverter.convertType(torchType));
         if (!builtinType) {
           emitError(childOp->getLoc())

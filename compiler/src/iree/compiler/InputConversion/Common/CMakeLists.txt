@@ -47,9 +47,9 @@ iree_cc_library(
   DEPS
     ::PassHeaders
     ::PassesIncGen
-    IREEInputDialect
     LLVMSupport
     MLIRArithDialect
+    MLIRControlFlowTransforms
     MLIRFuncDialect
     MLIRFunctionInterfaces
     MLIRIR
@@ -69,6 +69,8 @@ iree_cc_library(
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::Flow::Transforms
     iree::compiler::Dialect::HAL::IR
+    iree::compiler::Dialect::Util::Conversion
+    iree::compiler::Dialect::Util::Conversion::FuncToUtil
     iree::compiler::Dialect::Util::IR
     iree::compiler::Dialect::Util::Transforms
     iree::compiler::Pipelines::Options
@@ -97,6 +99,17 @@ iree_cc_library(
     iree::compiler::PluginAPI
     iree::compiler::Utils
   PUBLIC
+)
+
+iree_tablegen_doc(
+  NAME
+    InputConversionPassesDocGen
+  CATEGORY
+    "Passes"
+  TD_FILE
+    "Passes.td"
+  OUTS
+    --gen-pass-doc InputConversionPasses.md
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

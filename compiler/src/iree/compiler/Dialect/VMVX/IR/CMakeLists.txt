@@ -72,8 +72,8 @@ iree_tablegen_library(
   TD_FILE
     "VMVXBase.td"
   OUTS
-    --gen-enum-decls VMVXEnums.h.inc
-    --gen-enum-defs VMVXEnums.cpp.inc
+    --gen-enum-decls --dialect=vmvx VMVXEnums.h.inc
+    --gen-enum-defs --dialect=vmvx VMVXEnums.cpp.inc
 )
 
 iree_tablegen_library(
@@ -99,6 +99,8 @@ iree_tablegen_library(
 iree_tablegen_doc(
   NAME
     VMVXDialectDocGen
+  CATEGORY
+    "Dialects"
   TD_FILE
     "VMVXOps.td"
   OUTS

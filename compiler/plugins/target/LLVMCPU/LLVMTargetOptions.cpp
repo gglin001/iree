@@ -7,6 +7,7 @@
 #include "compiler/plugins/target/LLVMCPU/LLVMTargetOptions.h"
 
 #include "compiler/plugins/target/LLVMCPU/ResolveCPUAndCPUFeatures.h"
+#include "iree/compiler/Codegen/LLVMCPU/Utils.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
@@ -126,19 +127,17 @@ void LLVMTarget::storeToConfigAttrs(MLIRContext *context,
   auto addBool = [&](StringRef name, bool value) {
     config.emplace_back(b.getStringAttr(name), b.getBoolAttr(value));
   };
-  auto addInt64 = [&](StringRef name, int64_t value) {
-    config.emplace_back(b.getStringAttr(name), b.getI64IntegerAttr(value));
-  };
 
-  addString("target_triple", triple);
+  addConfigTargetTriple(context, triple, config);
   addString("cpu", cpu);
-  addString("cpu_features", cpuFeatures);
+  addConfigCpuFeatures(context, cpuFeatures, config);
   if (!dataLayout.empty()) {
-    addString("data_layout", dataLayout);
+    addConfigDataLayout(context, dataLayout, config);
   }
   if (vectorWidthInBytes != DEFAULT_VECTOR_WIDTH_IN_BYTES) {
-    addInt64("native_vector_size", vectorWidthInBytes);
+    addConfigNativeVectorSize(context, vectorWidthInBytes, config);
   }
+  addConfigMaxStackAllocationSize(context, maxStackAllocSizeInBytes, config);
   if (linkEmbedded != DEFAULT_LINK_EMBEDDED) {
     addBool("link_embedded", linkEmbedded);
   }
@@ -200,7 +199,7 @@ LLVMTarget::loadFromConfigAttr(Location loc, DictionaryAttr config,
   auto getString = [&](StringRef name, StringRef fallback,
                        bool required) -> StringRef {
     Attribute attr = config.get(name);
-    if (auto sattr = llvm::dyn_cast_if_present<StringAttr>(attr)) {
+    if (auto sattr = dyn_cast_if_present<StringAttr>(attr)) {
       return sattr.strref();
     } else {
       if (required) {
@@ -213,7 +212,7 @@ LLVMTarget::loadFromConfigAttr(Location loc, DictionaryAttr config,
   };
   auto getOptionalString = [&](StringRef name) -> std::optional<StringRef> {
     Attribute attr = config.get(name);
-    if (auto sattr = llvm::dyn_cast_if_present<StringAttr>(attr)) {
+    if (auto sattr = dyn_cast_if_present<StringAttr>(attr)) {
       return sattr.strref();
     } else if (attr) {
       hasFailures = true;
@@ -224,7 +223,7 @@ LLVMTarget::loadFromConfigAttr(Location loc, DictionaryAttr config,
   };
   auto getBool = [&](StringRef name, bool fallback) -> bool {
     Attribute attr = config.get(name);
-    if (auto battr = llvm::dyn_cast_if_present<BoolAttr>(attr)) {
+    if (auto battr = dyn_cast_if_present<BoolAttr>(attr)) {
       return battr.getValue();
     } else if (attr) {
       hasFailures = true;
@@ -233,24 +232,13 @@ LLVMTarget::loadFromConfigAttr(Location loc, DictionaryAttr config,
     }
     return fallback;
   };
-  auto getInt64 = [&](StringRef name, int64_t fallback) -> int64_t {
-    Attribute attr = config.get(name);
-    if (auto iattr = llvm::dyn_cast_if_present<IntegerAttr>(attr)) {
-      return iattr.getValue().getSExtValue();
-    } else if (attr) {
-      hasFailures = true;
-      emitError(loc) << "executable config '" << name
-                     << "' requires i64 but got " << attr;
-    }
-    return fallback;
-  };
 
   LLVMTarget target;
 
   // Constructor arguments.
-  auto triple = getOptionalString("target_triple");
+  auto triple = getConfigTargetTriple(config);
   auto cpu = getOptionalString("cpu");
-  auto cpuFeatures = getOptionalString("cpu_features");
+  auto cpuFeatures = getConfigCpuFeatures(config);
   bool linkEmbedded = getBool("link_embedded", DEFAULT_LINK_EMBEDDED);
   if (triple || cpu || cpuFeatures) {
     if (!triple) {
@@ -278,9 +266,9 @@ LLVMTarget::loadFromConfigAttr(Location loc, DictionaryAttr config,
     target.copy(defaultTarget);
   }
 
-  target.dataLayout = getString("data_layout", DEFAULT_DATA_LAYOUT, false);
+  target.dataLayout = getConfigDataLayout(config).value_or(DEFAULT_DATA_LAYOUT);
   target.vectorWidthInBytes =
-      getInt64("native_vector_size", DEFAULT_VECTOR_WIDTH_IN_BYTES);
+      getConfigNativeVectorSize(config).value_or(DEFAULT_VECTOR_WIDTH_IN_BYTES);
 
   target.debugSymbols = getBool("debug_symbols", DEFAULT_DEBUG_SYMBOLS);
   target.linkStatic = getBool("link_static", DEFAULT_LINK_STATIC);
@@ -343,7 +331,12 @@ void LLVMTarget::populateDefaultsFromTargetMachine() {
     if (!cachedTargetMachine) {
       cachedTargetMachine = createTargetMachine(*this);
       // TODO(#13988): proper error propagation. This is a common user scenario.
-      assert(cachedTargetMachine && "createTargetMachine failed");
+      if (!cachedTargetMachine) {
+        llvm::errs() << "createTargetMachine(" << getTriple()
+                     << ") failed; machine may not be "
+                        "enabled in LLVM\n";
+        assert(cachedTargetMachine && "createTargetMachine failed");
+      }
     }
     return cachedTargetMachine.get();
   };
@@ -394,12 +387,13 @@ void LLVMTarget::populateDefaultsFromTargetMachine() {
 std::unique_ptr<llvm::TargetMachine>
 createTargetMachine(const LLVMTarget &target) {
   std::string errorMessage;
-  auto llvmTarget =
-      llvm::TargetRegistry::lookupTarget(target.getTriple(), errorMessage);
+  auto llvmTarget = llvm::TargetRegistry::lookupTarget(
+      llvm::Triple(target.getTriple()), errorMessage);
   if (!llvmTarget)
     return nullptr;
+  llvm::Triple triple(target.getTriple());
   std::unique_ptr<llvm::TargetMachine> machine(llvmTarget->createTargetMachine(
-      target.getTriple(), target.getCpu() /* cpu e.g k8 */,
+      triple, target.getCpu() /* cpu e.g k8 */,
       target.getCpuFeatures() /* cpu features e.g avx512f */,
       target.llvmTargetOptions, llvm::Reloc::Model::PIC_, {},
       target.codeGenOptLevel,
@@ -582,6 +576,11 @@ void LLVMCPUTargetCLOptions::bindOptions(OptionsBinder &binder) {
                        targetVectorWidthInBytes, llvm::cl::cat(category),
                        llvm::cl::desc("Overrides the native vector register "
                                       "width (in bytes) of the target."));
+  binder.opt<llvm::cl::PowerOf2ByteSize>(
+      "iree-llvmcpu-stack-allocation-limit", targetMaxStackAllocSizeInBytes,
+      llvm::cl::cat(category),
+      llvm::cl::desc(
+          "Maximum allowed stack allocation size for LLVM CPU in bytes"));
   binder.opt<std::string>(
       "iree-llvmcpu-enable-ukernels", enableUkernels, llvm::cl::cat(category),
       llvm::cl::desc("Enables ukernels in the llvmcpu backend. May be "
@@ -635,6 +634,7 @@ LLVMTargetOptions LLVMCPUTargetCLOptions::getTargetOptions() {
   target.llvmTargetOptions.FloatABIType = targetFloatABI;
   target.dataLayout = targetDataLayout;
   target.vectorWidthInBytes = targetVectorWidthInBytes;
+  target.maxStackAllocSizeInBytes = targetMaxStackAllocSizeInBytes.value;
   target.ukernels = enableUkernels;
   target.linkUkernelBitcode = linkUKernelBitcode;
 

@@ -13,7 +13,9 @@
 #include "llvm/Support/Debug.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Iterators.h"
 #include "mlir/IR/SymbolTable.h"
 
 #define DEBUG_TYPE "iree-constexpr"
@@ -39,7 +41,13 @@ static std::string getHoistedName(Type type) {
   std::string str;
   llvm::raw_string_ostream os(str);
   os << "__hoisted_";
-  type.print(os);
+  auto rankedTensorType = dyn_cast<RankedTensorType>(type);
+  if (rankedTensorType && rankedTensorType.getEncoding()) {
+    rankedTensorType.dropEncoding().print(os);
+    os << "_encoded";
+  } else {
+    type.print(os);
+  }
   str = sanitizeSymbolName(str);
   if (str.substr(str.size() - 1) == "_")
     str = str.substr(0, str.size() - 1); // strip trailing _
@@ -179,8 +187,8 @@ public:
 
     // No existing mapping - create a new global.
     OpBuilder moduleBuilder(topLevelOp);
-    auto initializerOp =
-        moduleBuilder.create<IREE::Util::InitializerOp>(originalValue.getLoc());
+    auto initializerOp = IREE::Util::InitializerOp::create(
+        moduleBuilder, originalValue.getLoc());
     initializerOp->setDialectAttrs(dialectAttrs);
     auto initializerBuilder =
         OpBuilder::atBlockEnd(initializerOp.addEntryBlock());
@@ -280,8 +288,8 @@ public:
         // Allow the storage type of the global to differ from the local type.
         globalType = hoistableType.getPreferredStorageType();
       }
-      auto globalOp = moduleBuilder.create<IREE::Util::GlobalOp>(
-          loc, getHoistedName(globalType), false, globalType);
+      auto globalOp = IREE::Util::GlobalOp::create(
+          moduleBuilder, loc, getHoistedName(globalType), false, globalType);
       moduleSymbols.insert(globalOp);
       SymbolTable::setSymbolVisibility(globalOp,
                                        SymbolTable::Visibility::Private);
@@ -311,7 +319,7 @@ public:
       globalOp.createStoreOp(loc, clonedResult, initializerBuilder);
     }
 
-    initializerBuilder.create<IREE::Util::ReturnOp>(loc);
+    IREE::Util::ReturnOp::create(initializerBuilder, loc);
     return success();
   }
 
@@ -321,29 +329,24 @@ public:
 
     // Since we are mutating the const-expr ops, the ConstExprAnalysis will no
     // longer be valid after this point.
-    SmallVector<Operation *> worklist;
-    worklist.reserve(allOps.size());
-    bool madeChanges = true;
-    while (madeChanges) {
-      madeChanges = false;
-
-      // Prepare worklist.
-      worklist.clear();
-      worklist.append(allOps.begin(), allOps.end());
-
-      for (Operation *checkOp : worklist) {
-        if (checkOp->use_empty()) {
-          // Bingo.
-          LLVM_DEBUG({
-            llvm::dbgs() << "[HoistIntoGlobals] erase dead op: ";
-            checkOp->print(llvm::dbgs(), constExprs.getAsmState());
-            llvm::dbgs() << "\n";
+    for (auto funcOp : getOperation().getOps<FunctionOpInterface>()) {
+      // Ignore initializers.
+      if (isa<IREE::Util::InitializerOpInterface>(funcOp.getOperation()))
+        continue;
+      funcOp.walk<WalkOrder::PostOrder, ReverseIterator>(
+          [&](Operation *iterOp) {
+            if (allOps.contains(iterOp) && iterOp->use_empty()) {
+              // Bingo.
+              LLVM_DEBUG({
+                llvm::dbgs() << "[HoistIntoGlobals] erase dead op: ";
+                iterOp->print(llvm::dbgs(), constExprs.getAsmState());
+                llvm::dbgs() << "\n";
+              });
+              allOps.erase(iterOp);
+              iterOp->erase();
+            }
+            return WalkResult::advance();
           });
-          madeChanges = true;
-          allOps.erase(checkOp);
-          checkOp->erase();
-        }
-      }
     }
   }
 

@@ -52,7 +52,7 @@ static void hoistImmutableLoads(Region &region,
     for (auto &op : ops) {
       if (!immutableGlobals.contains(op.getGlobalName()))
         continue;
-      auto globalRef = llvm::cast<Attribute>(op.getGlobalAttr());
+      auto globalRef = cast<Attribute>(op.getGlobalAttr());
       auto it = loadOps.find(globalRef);
       if (it == loadOps.end()) {
         // Move to entry block; even if it's already there (so loads are
@@ -260,7 +260,7 @@ class SimplifyGlobalAccessesPass
     : public impl::SimplifyGlobalAccessesPassBase<SimplifyGlobalAccessesPass> {
 public:
   void runOnOperation() override {
-    auto callableOp = getOperation();
+    mlir::CallableOpInterface callableOp = getOperation();
     if (!callableOp.getCallableRegion() ||
         callableOp.getCallableRegion()->empty()) {
       return;

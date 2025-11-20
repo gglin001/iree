@@ -109,12 +109,16 @@ With the requirements out of the way, we can now compile a model and run it.
 
 --8<-- "docs/website/docs/guides/deployment-configurations/snippets/_iree-import-onnx-mobilenet.md"
 
-Then run the following command to compile with the `llvm-cpu` target:
+Then run the following command to compile with the `local` device, `llvm-cpu`
+target compilation backend, and recommended optimization flags:
 
-``` shell hl_lines="2-3"
+``` shell hl_lines="2-4"
 iree-compile \
-    --iree-hal-target-backends=llvm-cpu \
+    --iree-hal-target-device=local \
+    --iree-hal-local-target-device-backends=llvm-cpu \
     --iree-llvmcpu-target-cpu=host \
+    --iree-opt-level=O2 \
+    --iree-opt-data-tiling \
     mobilenetv2.mlir -o mobilenet_cpu.vmfb
 ```
 
@@ -129,6 +133,16 @@ iree-compile \
 
     When not cross compiling, passing `--iree-llvmcpu-target-cpu=host` is
     usually sufficient on most devices.
+
+--8<-- "docs/website/docs/guides/deployment-configurations/snippets/_iree-optimization-options.md"
+
+???+ tip "Tip - Data-Tiling"
+
+    Use `--iree-opt-data-tiling` to enable the optimization that IREE developers
+    have been working on. The option is default off for many reasons, but it has
+    been used for performance when users target CPU. See
+    [Data-Tiling](../../reference/optimization-options.md#data-tiling-iree-opt-data-tiling-off)
+    for more details.
 
 #### Choosing CPU targets
 

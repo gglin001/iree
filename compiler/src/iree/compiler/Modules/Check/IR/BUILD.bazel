@@ -16,7 +16,10 @@ package(
 iree_td_library(
     name = "td_files",
     srcs = enforce_glob(
-        ["CheckOps.td"],
+        [
+            "CheckBase.td",
+            "CheckOps.td",
+        ],
         include = ["*.td"],
     ),
     deps = [
@@ -88,6 +91,7 @@ iree_gentbl_cc_library(
 
 iree_tablegen_doc(
     name = "CheckDialectDocGen",
+    category = "Dialects",
     tbl_outs = [
         (
             [

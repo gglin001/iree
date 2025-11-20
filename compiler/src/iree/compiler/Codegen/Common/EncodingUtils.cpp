@@ -5,55 +5,31 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "iree/compiler/Codegen/Common/EncodingUtils.h"
-#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenTypes.h"
-#include "iree/compiler/Codegen/Dialect/Codegen/Utils/Utils.h"
+#include "iree/compiler/Codegen/Utils/EncodingUtils.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Utils/IndexingUtils.h"
+#include "iree/compiler/Dialect/TensorExt/IR/TensorExtTypes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 
-#include <optional>
+#define DEBUG_TYPE "iree-codegen-encoding-utils"
 
 namespace mlir::iree_compiler {
 
 using IREE::Codegen::MaterializeEncodingInfo;
-using IREE::Encoding::EncodingAttr;
-using IREE::Encoding::getEncodingAttr;
-using IREE::Encoding::getEncodingContractionDims;
+using IREE::Encoding::PaddingAttr;
 
 MaterializeEncodingTypeConverter::MaterializeEncodingTypeConverter(
-    IREE::Codegen::LayoutAttrInterface layoutAttr)
+    IREE::Encoding::LayoutMaterializerAttr layoutAttr)
     : layoutAttr(layoutAttr) {
   addConversion([](IntegerType intType) { return intType; });
   addConversion([](IndexType indexType) { return indexType; });
   addConversion([](FloatType floatType) { return floatType; });
   addConversion([](MemRefType memrefType) { return memrefType; });
-  addConversion([=](RankedTensorType type) -> RankedTensorType {
-    // For a given tensor type with an encoding, return the materialized
-    // type to use for it. If no encoding is set, then return the tensor type
-    // itself.
-    MaterializeEncodingInfo encodingInfo = getEncodingInfo(type);
-    if (IREE::Codegen::isIdentityLayout(encodingInfo)) {
-      return IREE::Encoding::dropEncoding(type);
-    }
-    auto packedType = cast<RankedTensorType>(linalg::PackOp::inferPackedType(
-        type, encodingInfo.innerTileSizes, encodingInfo.innerDimsPos,
-        encodingInfo.outerDimsPerm));
-
-    // There is no swizzle, we are already done. Typically the case on CPU.
-    if (!encodingInfo.swizzle) {
-      return packedType;
-    }
-
-    // There is a swizzle, we need to handle it. Typically the case on GPU.
-    auto swizzle = *encodingInfo.swizzle;
-    SmallVector<int64_t> newShape(
-        packedType.getShape().drop_back(encodingInfo.innerTileSizes.size()));
-    SmallVector<int64_t> swizzledTileShape =
-        IREE::Codegen::getExpandedTileShape(swizzle.expandShape);
-    applyPermutationToVector(swizzledTileShape, swizzle.permutation);
-    newShape.append(swizzledTileShape);
-    return RankedTensorType::get(newShape, packedType.getElementType());
+  addConversion([=](RankedTensorType type) {
+    return cast<RankedTensorType>(getLayoutAttr().convertType(type));
+  });
+  addConversion([&](IREE::TensorExt::DispatchTensorType dispatchTensorType) {
+    return cast<IREE::TensorExt::DispatchTensorType>(
+        getLayoutAttr().convertType(dispatchTensorType));
   });
 }
 
@@ -65,9 +41,11 @@ MaterializeEncodingConversionTarget::MaterializeEncodingConversionTarget(
   markUnknownOpDynamicallyLegal([](Operation *op) {
     auto typeHasDataTilingEncoding = [](Type t) -> bool {
       auto tensorType = dyn_cast<RankedTensorType>(t);
-      if (!tensorType)
+      if (!tensorType || !tensorType.getEncoding()) {
         return false;
-      return getEncodingAttr(tensorType) != nullptr;
+      }
+      return isa<IREE::Encoding::ContractionEncodingAttrInterface,
+                 IREE::Encoding::LayoutAttr>(tensorType.getEncoding());
     };
     auto valueHasDataTilingEncoding = [=](Value v) -> bool {
       return typeHasDataTilingEncoding(v.getType());
@@ -81,44 +59,45 @@ MaterializeEncodingConversionTarget::MaterializeEncodingConversionTarget(
 
 IREE::Codegen::MaterializeEncodingInfo
 MaterializeEncodingTypeConverter::getEncodingInfo(RankedTensorType type) const {
-  // If the layout is present in the encoding, use it directly. It means that
-  // the layout is already resolved and some information could be dropped during
-  // the lowering. Thus, we prioritize the resolved layout.
-  if (auto maybeEncodingInfo = getEncodingInfoFromLayouts(type)) {
-    return maybeEncodingInfo.value();
-  }
-  return layoutAttr.getEncodingInfo(type);
+  return getEncodingInfoFromLayout(type, layoutAttr);
 }
 
-RankedTensorType dropEncoding(RankedTensorType type) {
-  return RankedTensorType::get(type.getShape(), type.getElementType());
+FailureOr<SmallVector<OpFoldResult>>
+MaterializeEncodingTypeConverter::getInnerTileSizesOfr(
+    OpBuilder &rewriter, Location loc, RankedTensorType tensorType,
+    const IREE::Codegen::MaterializeEncodingInfo &materializeEncodingInfo)
+    const {
+  return getInnerTileSizesOfrImpl(rewriter, loc, tensorType, layoutAttr,
+                                  materializeEncodingInfo);
 }
 
-std::optional<IREE::Codegen::MaterializeEncodingInfo>
-getEncodingInfoFromLayouts(RankedTensorType type) {
-  auto encodingAttr = IREE::Encoding::getEncodingAttr(type);
-  if (!encodingAttr) {
-    return std::nullopt;
+FailureOr<SmallVector<OpFoldResult>>
+MaterializeEncodingTypeConverter::getPackedDimsForDispatchTensor(
+    OpBuilder &builder, Location loc,
+    IREE::TensorExt::DispatchTensorType dispatchTensorType,
+    ValueRange dynamicDims) const {
+
+  auto boundTensorType =
+      dyn_cast<RankedTensorType>(dispatchTensorType.getBoundType());
+  if (!boundTensorType) {
+    return failure();
   }
-  ArrayAttr layoutsAttr = encodingAttr.getLayouts();
-  if (!layoutsAttr) {
-    return std::nullopt;
-  }
-  ArrayRef<Attribute> layouts = layoutsAttr.getValue();
-  assert(layouts.size() == 1 && "only single layout is supported");
-  if (auto layout = dyn_cast<IREE::Codegen::LayoutAttrInterface>(layouts[0])) {
-    return layout.getEncodingInfo(type);
-  }
-  return std::nullopt;
+  MaterializeEncodingInfo encodingInfo =
+      getEncodingInfoFromLayout(boundTensorType, layoutAttr);
+  return getPackedDimsForDispatchTensorImpl(
+      builder, loc, dispatchTensorType, dynamicDims, layoutAttr, encodingInfo);
 }
 
-bool isNonZeroPadding(IREE::Encoding::PadEncodingLayoutAttr padLayout) {
-  if (!padLayout) {
-    return false;
-  }
-
-  return !llvm::all_of(padLayout.getPadding().asArrayRef(),
-                       [](int32_t padValue) { return padValue == 0; });
+LogicalResult MaterializeEncodingTypeConverter::getOffsetsSizesStrides(
+    OpBuilder &builder, Location loc, IREE::TensorExt::DispatchTensorType type,
+    ValueRange dynamicDims, ArrayRef<OpFoldResult> offsets,
+    ArrayRef<OpFoldResult> sizes, ArrayRef<OpFoldResult> strides,
+    SmallVectorImpl<OpFoldResult> &newOffsets,
+    SmallVectorImpl<OpFoldResult> &newSizes,
+    SmallVectorImpl<OpFoldResult> &newStrides) const {
+  return getLayoutAttr().getOffsetsSizesStrides(
+      builder, loc, type, dynamicDims, offsets, sizes, strides, newOffsets,
+      newSizes, newStrides);
 }
 
 } // namespace mlir::iree_compiler

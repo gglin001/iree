@@ -216,7 +216,7 @@ private:
     // If the operand is a block argument then we need to ask for the argument
     // semantics first - if it's by reference then it's definitely not the last
     // use and we can short-circuit this.
-    if (auto arg = llvm::dyn_cast<BlockArgument>(operand.get())) {
+    if (auto arg = dyn_cast<BlockArgument>(operand.get())) {
       auto &argumentSemantics = solver.getElementFor<ArgumentSemantics>(
           *this, Position::forValue(operand.get()), DFX::Resolution::REQUIRED);
       LLVM_DEBUG(llvm::dbgs()
@@ -243,7 +243,7 @@ private:
     auto assumedBits = getAssumed();
     auto traversalResult = TraversalResult::COMPLETE;
 
-    auto arg = llvm::cast<BlockArgument>(value);
+    auto arg = cast<BlockArgument>(value);
     bool isEntryArg = arg.getParentBlock()->isEntryBlock();
     if (isEntryArg) {
       // Call argument.
@@ -318,7 +318,7 @@ public:
         continue;
       for (auto &block : *region) {
         for (auto arg : block.getArguments()) {
-          if (llvm::isa<IREE::Stream::ResourceType>(arg.getType())) {
+          if (isa<IREE::Stream::ResourceType>(arg.getType())) {
             solver.getOrCreateElementFor<ArgumentSemantics>(
                 Position::forValue(arg));
           }
@@ -390,12 +390,21 @@ static bool isSafeToElideCloneOp(IREE::Stream::AsyncCloneOp cloneOp,
   });
 
   // If this clone is performing a type change we need to preserve it.
+  //
   // TODO(benvanik): remove this carveout - could make clone not change type
   // and transfer be needed instead.
+  //
+  // HACK: the constant check is to support initializers that have lifetime
+  // transfers to constants. This is clearly bad and can lead to additional
+  // weirdness later on in the program, but without it resource usage analysis
+  // will try to treat entire IR trees that result in a constant transfer as if
+  // they are unknown. The real fix is to the analysis by possibly marking
+  // values as "eventually constant" to allow us to promote to constant
+  // lifetime.
   auto sourceType =
-      llvm::cast<IREE::Stream::ResourceType>(cloneOp.getSource().getType());
+      cast<IREE::Stream::ResourceType>(cloneOp.getSource().getType());
   auto targetType =
-      llvm::cast<IREE::Stream::ResourceType>(cloneOp.getResult().getType());
+      cast<IREE::Stream::ResourceType>(cloneOp.getResult().getType());
   if (sourceType != targetType &&
       sourceType.getLifetime() == IREE::Stream::Lifetime::Constant) {
     LLVM_DEBUG(llvm::dbgs()
@@ -408,7 +417,7 @@ static bool isSafeToElideCloneOp(IREE::Stream::AsyncCloneOp cloneOp,
   // to see if it's been classified as a last use/by-value move. If it isn't
   // then we cannot mutate it in-place as it could be used by the caller/another
   // branch and we need to respect the forking of the value.
-  if (auto arg = llvm::dyn_cast<BlockArgument>(cloneOp.getSource())) {
+  if (auto arg = dyn_cast<BlockArgument>(cloneOp.getSource())) {
     if (!analysis.isArgMoved(arg)) {
       LLVM_DEBUG(llvm::dbgs()
                  << "  - clone source is a by-ref arg; cannot elide\n");
@@ -596,7 +605,7 @@ static void foldSliceIntoDispatch(IREE::Stream::AsyncSliceOp sliceOp,
   unsigned resourceIndex = llvm::count_if(
       dispatchOp.getResourceOperands().slice(0, operandIndex),
       [](Value operand) {
-        return llvm::isa<IREE::Stream::ResourceType>(operand.getType());
+        return isa<IREE::Stream::ResourceType>(operand.getType());
       });
   OpBuilder builder(dispatchOp);
   dispatchOp.getResourceOperandOffsetsMutable()[resourceIndex].set(addOffset(
@@ -679,9 +688,10 @@ struct ElideAsyncCopiesPass
     : public IREE::Stream::impl::ElideAsyncCopiesPassBase<
           ElideAsyncCopiesPass> {
   void runOnOperation() override {
-    auto moduleOp = getOperation();
-    if (moduleOp.getBody()->empty())
+    mlir::ModuleOp moduleOp = getOperation();
+    if (moduleOp.getBody()->empty()) {
       return;
+    }
 
     // Try analyzing the program and eliding the unneeded copies until we reach
     // a fixed point (no more copies can be elided).
@@ -692,7 +702,7 @@ struct ElideAsyncCopiesPass
       // TODO(benvanik): reuse allocator across iterations.
       ElisionAnalysis analysis(moduleOp);
       if (failed(analysis.run())) {
-        moduleOp.emitError() << "failed to solve for last users";
+        moduleOp.emitError() << "failed to solve for elision analysis";
         return signalPassFailure();
       }
 
@@ -700,18 +710,19 @@ struct ElideAsyncCopiesPass
       // If we can't elide any we'll consider the iteration complete and exit.
       bool didChange = false;
       for (auto callableOp : analysis.getTopLevelOps()) {
-        auto *region = callableOp.getCallableRegion();
-        if (!region)
-          continue;
-        didChange = tryElideAsyncCopiesInRegion(*region, analysis) || didChange;
+        if (auto *region = callableOp.getCallableRegion()) {
+          didChange =
+              tryElideAsyncCopiesInRegion(*region, analysis) || didChange;
+        }
       }
-      if (!didChange)
-        break;
+      if (!didChange) {
+        break; // quiesced
+      }
     }
     if (iterationCount == maxIterationCount) {
       // If you find yourself hitting this we can evaluate increasing the
       // iteration count (if it would eventually converge) or whether we allow
-      // this to happen without remarking. For now all our programs coverge in
+      // this to happen without remarking. For now all our programs converge in
       // just one or two iterations and this needs to be tuned with more complex
       // control flow.
       moduleOp.emitRemark()

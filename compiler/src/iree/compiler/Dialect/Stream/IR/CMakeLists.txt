@@ -54,6 +54,8 @@ iree_cc_library(
     MLIRTensorDialect
     MLIRTransformUtils
     MLIRViewLikeInterface
+    iree::compiler::Dialect::Encoding::IR
+    iree::compiler::Dialect::Encoding::Utils
     iree::compiler::Dialect::Util::IR
     iree::compiler::Utils
   PUBLIC
@@ -63,10 +65,10 @@ iree_tablegen_library(
   NAME
     StreamEnumsGen
   TD_FILE
-    "StreamBase.td"
+    "StreamTypes.td"
   OUTS
-    --gen-enum-decls StreamEnums.h.inc
-    --gen-enum-defs StreamEnums.cpp.inc
+    --gen-enum-decls --dialect=stream StreamEnums.h.inc
+    --gen-enum-defs --dialect=stream StreamEnums.cpp.inc
 )
 
 iree_tablegen_library(
@@ -97,7 +99,7 @@ iree_tablegen_library(
   NAME
     StreamTypesGen
   TD_FILE
-    "StreamBase.td"
+    "StreamTypes.td"
   OUTS
     --gen-attrdef-decls --attrdefs-dialect=stream StreamAttrs.h.inc
     --gen-attrdef-defs --attrdefs-dialect=stream StreamAttrs.cpp.inc
@@ -108,6 +110,8 @@ iree_tablegen_library(
 iree_tablegen_doc(
   NAME
     StreamDialectDocGen
+  CATEGORY
+    "Dialects"
   TD_FILE
     "StreamOps.td"
   OUTS

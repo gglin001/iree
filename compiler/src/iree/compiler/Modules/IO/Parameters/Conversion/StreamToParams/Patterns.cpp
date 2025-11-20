@@ -22,15 +22,26 @@ namespace mlir::iree_compiler {
 
 namespace {
 
-struct ParameterLoadOpPattern
-    : public OpConversionPattern<IREE::Stream::ParameterLoadOp> {
-  using OpConversionPattern::OpConversionPattern;
+struct CmdParameterLoadOpPattern
+    : public OpConversionPattern<IREE::Stream::CmdParameterLoadOp> {
+  using Base::Base;
   LogicalResult
-  matchAndRewrite(IREE::Stream::ParameterLoadOp loadOp, OpAdaptor adaptor,
+  matchAndRewrite(IREE::Stream::CmdParameterLoadOp loadOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = loadOp.getLoc();
+
+    // Derive the allocation requirements.
+    auto resourceType =
+        cast<IREE::Stream::ResourceType>(loadOp.getResults().front().getType());
+
+    auto resolveOp = IREE::HAL::AllocatorResolveMemoryPropertiesOp::create(
+        rewriter, loc, rewriter.getI32Type(), rewriter.getI32Type(),
+        IREE::Stream::AffinityAttr::lookupOrDefault(loadOp),
+        static_cast<IREE::HAL::Lifetime>(resourceType.getLifetime()));
+
     auto [device, queueAffinity] =
-        lookupDeviceAndQueueAffinityFor(loadOp, rewriter);
+        lookupDeviceAndQueueAffinityFor(loadOp, resolveOp.getMemoryTypes(),
+                                        resolveOp.getBufferUsage(), rewriter);
 
     // Gather wait/signal fence, which are optional.
     Value waitFence =
@@ -38,24 +49,14 @@ struct ParameterLoadOpPattern
     Value signalFence = getOrCreateSignalFence(
         loc, device, loadOp.getResultTimepoint(), rewriter);
 
-    // Derive the allocation requirements.
-    auto resourceType =
-        cast<IREE::Stream::ResourceType>(loadOp.getResults().front().getType());
-    auto memoryTypes = IREE::HAL::MemoryTypeBitfield::None;
-    auto bufferUsage = IREE::HAL::BufferUsageBitfield::None;
-    if (failed(deriveAllowedResourceBufferBits(loc, resourceType, memoryTypes,
-                                               bufferUsage))) {
-      return failure();
-    }
-
     // Queue operation, which acts like an allocation.
     SmallVector<Type> newResultTypes(loadOp.getResults().size(),
                                      rewriter.getType<IREE::HAL::BufferType>());
-    auto newOp = rewriter.create<IREE::IO::Parameters::LoadOp>(
-        loc, newResultTypes, device, queueAffinity, waitFence, signalFence,
-        adaptor.getSourceScopeAttr(), adaptor.getSourceKeysAttr(),
-        adaptor.getSourceOffsets(), memoryTypes, bufferUsage,
-        adaptor.getResultSizes());
+    auto newOp = IREE::IO::Parameters::LoadOp::create(
+        rewriter, loc, newResultTypes, device, queueAffinity, waitFence,
+        signalFence, adaptor.getSourceScopeAttr(), adaptor.getSourceKeysAttr(),
+        adaptor.getSourceOffsets(), resolveOp.getMemoryTypes(),
+        resolveOp.getBufferUsage(), adaptor.getResultSizes());
 
     SmallVector<Value> resultReplacements;
     llvm::append_range(resultReplacements, newOp.getResults());
@@ -65,11 +66,11 @@ struct ParameterLoadOpPattern
   }
 };
 
-struct ParameterReadOpPattern
-    : public OpConversionPattern<IREE::Stream::ParameterReadOp> {
-  using OpConversionPattern::OpConversionPattern;
+struct CmdParameterReadOpPattern
+    : public OpConversionPattern<IREE::Stream::CmdParameterReadOp> {
+  using Base::Base;
   LogicalResult
-  matchAndRewrite(IREE::Stream::ParameterReadOp readOp, OpAdaptor adaptor,
+  matchAndRewrite(IREE::Stream::CmdParameterReadOp readOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = readOp.getLoc();
     auto [device, queueAffinity] =
@@ -82,8 +83,8 @@ struct ParameterReadOpPattern
         loc, device, readOp.getResultTimepoint(), rewriter);
 
     // Queue operation (a read is just a gather with a single span).
-    rewriter.create<IREE::IO::Parameters::GatherOp>(
-        loc, device, queueAffinity, waitFence, signalFence,
+    IREE::IO::Parameters::GatherOp::create(
+        rewriter, loc, device, queueAffinity, waitFence, signalFence,
         adaptor.getSourceScopeAttr(),
         rewriter.getArrayAttr(adaptor.getSourceKeyAttr()),
         ValueRange{adaptor.getSourceOffset()}, adaptor.getTarget(),
@@ -95,11 +96,11 @@ struct ParameterReadOpPattern
   }
 };
 
-struct ParameterWriteOpPattern
-    : public OpConversionPattern<IREE::Stream::ParameterWriteOp> {
-  using OpConversionPattern::OpConversionPattern;
+struct CmdParameterWriteOpPattern
+    : public OpConversionPattern<IREE::Stream::CmdParameterWriteOp> {
+  using Base::Base;
   LogicalResult
-  matchAndRewrite(IREE::Stream::ParameterWriteOp writeOp, OpAdaptor adaptor,
+  matchAndRewrite(IREE::Stream::CmdParameterWriteOp writeOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = writeOp.getLoc();
     auto [device, queueAffinity] =
@@ -112,9 +113,9 @@ struct ParameterWriteOpPattern
         loc, device, writeOp.getResultTimepoint(), rewriter);
 
     // Queue operation (a write is just a scatter with a single span).
-    rewriter.create<IREE::IO::Parameters::ScatterOp>(
-        loc, device, queueAffinity, waitFence, signalFence, adaptor.getSource(),
-        ValueRange{adaptor.getSourceOffset()},
+    IREE::IO::Parameters::ScatterOp::create(
+        rewriter, loc, device, queueAffinity, waitFence, signalFence,
+        adaptor.getSource(), ValueRange{adaptor.getSourceOffset()},
         ValueRange{adaptor.getSourceLength()}, adaptor.getTargetScopeAttr(),
         rewriter.getArrayAttr(adaptor.getTargetKeyAttr()),
         ValueRange{adaptor.getTargetOffset()});
@@ -124,11 +125,12 @@ struct ParameterWriteOpPattern
   }
 };
 
-struct ParameterGatherOpPattern
-    : public OpConversionPattern<IREE::Stream::ParameterGatherOp> {
-  using OpConversionPattern::OpConversionPattern;
+struct CmdParameterGatherOpPattern
+    : public OpConversionPattern<IREE::Stream::CmdParameterGatherOp> {
+  using Base::Base;
   LogicalResult
-  matchAndRewrite(IREE::Stream::ParameterGatherOp gatherOp, OpAdaptor adaptor,
+  matchAndRewrite(IREE::Stream::CmdParameterGatherOp gatherOp,
+                  OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = gatherOp.getLoc();
     auto [device, queueAffinity] =
@@ -141,8 +143,8 @@ struct ParameterGatherOpPattern
         loc, device, gatherOp.getResultTimepoint(), rewriter);
 
     // Queue operation.
-    rewriter.create<IREE::IO::Parameters::GatherOp>(
-        loc, device, queueAffinity, waitFence, signalFence,
+    IREE::IO::Parameters::GatherOp::create(
+        rewriter, loc, device, queueAffinity, waitFence, signalFence,
         adaptor.getSourceScopeAttr(), adaptor.getSourceKeysAttr(),
         adaptor.getSourceOffsets(), adaptor.getTarget(),
         adaptor.getTargetOffsets(), adaptor.getTargetLengths());
@@ -152,11 +154,12 @@ struct ParameterGatherOpPattern
   }
 };
 
-struct ParameterScatterOpPattern
-    : public OpConversionPattern<IREE::Stream::ParameterScatterOp> {
-  using OpConversionPattern::OpConversionPattern;
+struct CmdParameterScatterOpPattern
+    : public OpConversionPattern<IREE::Stream::CmdParameterScatterOp> {
+  using Base::Base;
   LogicalResult
-  matchAndRewrite(IREE::Stream::ParameterScatterOp scatterOp, OpAdaptor adaptor,
+  matchAndRewrite(IREE::Stream::CmdParameterScatterOp scatterOp,
+                  OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = scatterOp.getLoc();
     auto [device, queueAffinity] =
@@ -169,11 +172,11 @@ struct ParameterScatterOpPattern
         loc, device, scatterOp.getResultTimepoint(), rewriter);
 
     // Queue operation.
-    rewriter.create<IREE::IO::Parameters::ScatterOp>(
-        loc, device, queueAffinity, waitFence, signalFence, adaptor.getSource(),
-        adaptor.getSourceOffsets(), adaptor.getSourceLengths(),
-        adaptor.getTargetScopeAttr(), adaptor.getTargetKeysAttr(),
-        adaptor.getTargetOffsets());
+    IREE::IO::Parameters::ScatterOp::create(
+        rewriter, loc, device, queueAffinity, waitFence, signalFence,
+        adaptor.getSource(), adaptor.getSourceOffsets(),
+        adaptor.getSourceLengths(), adaptor.getTargetScopeAttr(),
+        adaptor.getTargetKeysAttr(), adaptor.getTargetOffsets());
 
     rewriter.replaceOp(scatterOp, {signalFence});
     return success();
@@ -186,9 +189,9 @@ void populateStreamToIOParametersPatterns(MLIRContext *context,
                                           ConversionTarget &conversionTarget,
                                           TypeConverter &typeConverter,
                                           RewritePatternSet &patterns) {
-  patterns.insert<ParameterLoadOpPattern, ParameterReadOpPattern,
-                  ParameterWriteOpPattern, ParameterGatherOpPattern,
-                  ParameterScatterOpPattern>(typeConverter, context);
+  patterns.insert<CmdParameterLoadOpPattern, CmdParameterReadOpPattern,
+                  CmdParameterWriteOpPattern, CmdParameterGatherOpPattern,
+                  CmdParameterScatterOpPattern>(typeConverter, context);
 }
 
 } // namespace mlir::iree_compiler

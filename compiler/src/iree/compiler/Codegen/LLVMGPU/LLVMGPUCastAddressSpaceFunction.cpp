@@ -45,8 +45,8 @@ struct LLVMGPUCastAddressSpaceFunctionPass final
             mlir::MemRefType new_memrefType = mlir::MemRefType::get(
                 memrefType.getShape(), memrefType.getElementType(),
                 memrefType.getLayout());
-            operand = rewriter.create<memref::MemorySpaceCastOp>(
-                operand.getLoc(), new_memrefType, operand);
+            operand = memref::MemorySpaceCastOp::create(
+                rewriter, operand.getLoc(), new_memrefType, operand);
             anyCasted = true;
           }
         }
@@ -62,7 +62,7 @@ struct LLVMGPUCastAddressSpaceFunctionPass final
       rewriter.setInsertionPoint(callOp);
       if (castOperands(callOp->getOperands(), newOperands)) {
         callOp.getArgOperandsMutable().assign(newOperands);
-        auto fnDecl = dyn_cast_or_null<mlir::FunctionOpInterface>(
+        auto fnDecl = dyn_cast_if_present<mlir::FunctionOpInterface>(
             SymbolTable::lookupSymbolIn(moduleOp, callee));
         if (fnDecl) {
           SmallVector<Type> callArgumentTypes;

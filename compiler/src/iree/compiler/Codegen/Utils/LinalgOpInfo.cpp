@@ -12,7 +12,7 @@ using namespace mlir::linalg;
 
 namespace mlir::iree_compiler {
 
-/// Returns true if `map` is a tranpose. A transpose map is a projected
+/// Returns true if `map` is a transpose. A transpose map is a projected
 /// permutation with or without zeros in results where there exist at least two
 /// dimensions di and dj such that di < dj and result_pos(di) > result_pos(dj).
 /// Examples:
@@ -133,7 +133,7 @@ bool isMatmulOrBatchMatmul(linalg::LinalgOp linalgOp) {
   // Also exclude the case of matvec, which has only one non-unit parallel dim.
   // They should go down different pipelines.
   int nonUnitParallelDimCount = 0;
-  SmallVector<int64_t, 4> bounds = linalgOp.getStaticLoopRanges();
+  SmallVector<int64_t> bounds = linalgOp.getStaticLoopRanges();
   FailureOr<mlir::linalg::ContractionDimensions> contractionDims =
       mlir::linalg::inferContractionDims(linalgOp);
   assert(succeeded(contractionDims) && "Could not infer contraction dims");

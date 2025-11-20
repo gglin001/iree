@@ -17,25 +17,33 @@ iree_cc_library(
     "Passes.h"
   SRCS
     "AnnotateAffinities.cpp"
+    "AnnotateConstantTransientSize.cpp"
     "AnnotateDispatchArguments.cpp"
     "AnnotateDispatchAssumptions.cpp"
+    "AutomaticReferenceCounting.cpp"
+    "CloneToConsumers.cpp"
     "ConvertToStream.cpp"
     "DumpStatistics.cpp"
     "ElideAsyncCopies.cpp"
+    "ElideAsyncTransfers.cpp"
     "ElideTimepoints.cpp"
     "EmplaceAllocations.cpp"
+    "EmplaceTransients.cpp"
     "EncodeTensors.cpp"
     "FoldUniformOperands.cpp"
     "FuseDispatchBindings.cpp"
     "LayoutSlices.cpp"
     "MaterializeBuiltins.cpp"
     "MaterializeCopyOnWrite.cpp"
+    "MaterializeEncodings.cpp"
+    "MaterializeTransientSizeQueries.cpp"
     "PackConstants.cpp"
     "PackDispatchOperands.cpp"
     "Passes.cpp"
     "Passes.h.inc"
     "PropagateTimepoints.cpp"
     "RefineUsage.cpp"
+    "ReuseAllocations.cpp"
     "ScheduleAllocation.cpp"
     "ScheduleConcurrency.cpp"
     "ScheduleExecution.cpp"
@@ -53,6 +61,7 @@ iree_cc_library(
     MLIRArithDialect
     MLIRComplexDialect
     MLIRControlFlowDialect
+    MLIRControlFlowInterfaces
     MLIRFuncDialect
     MLIRFunctionInterfaces
     MLIRIR
@@ -67,6 +76,7 @@ iree_cc_library(
     MLIRTransforms
     MLIRVectorDialect
     iree::compiler::Dialect::Encoding::IR
+    iree::compiler::Dialect::Encoding::Utils
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::HAL::IR
     iree::compiler::Dialect::LinalgExt::IR
@@ -78,6 +88,7 @@ iree_cc_library(
     iree::compiler::Dialect::Stream::Conversion::StandardToStream
     iree::compiler::Dialect::Stream::Conversion::UtilToStream
     iree::compiler::Dialect::Stream::IR
+    iree::compiler::Dialect::TensorExt::IR
     iree::compiler::Dialect::Util::Analysis
     iree::compiler::Dialect::Util::Analysis::DFX
     iree::compiler::Dialect::Util::Conversion
@@ -94,6 +105,17 @@ iree_tablegen_library(
     "Passes.td"
   OUTS
     --gen-pass-decls Passes.h.inc
+)
+
+iree_tablegen_doc(
+  NAME
+    StreamPassesDocGen
+  CATEGORY
+    "Passes"
+  TD_FILE
+    "Passes.td"
+  OUTS
+    --gen-pass-doc StreamPasses.md
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

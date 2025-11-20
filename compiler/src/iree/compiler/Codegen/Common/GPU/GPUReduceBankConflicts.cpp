@@ -65,11 +65,12 @@ static void padAlloc(MLIRContext *context, memref::AllocOp allocOp,
   IRRewriter rewriter(context);
   rewriter.setInsertionPoint(allocOp);
   Location loc = allocOp.getLoc();
-  Value paddedAlloc = rewriter.create<memref::AllocOp>(loc, allocType);
+  Value paddedAlloc = memref::AllocOp::create(rewriter, loc, allocType);
   SmallVector<int64_t> offsets(shape.size(), 0);
   SmallVector<int64_t> strides(shape.size(), 1);
-  Value subview = rewriter.create<memref::SubViewOp>(
-      loc, paddedAlloc, offsets, allocOp.getType().getShape(), strides);
+  Value subview =
+      memref::SubViewOp::create(rewriter, loc, paddedAlloc, offsets,
+                                allocOp.getType().getShape(), strides);
   replaceMemrefUsesAndPropagateType(rewriter, loc, allocOp, subview);
   rewriter.eraseOp(allocOp);
 }
@@ -86,7 +87,7 @@ static int64_t computeSharedMemoryUsage(mlir::FunctionOpInterface funcOp) {
       return WalkResult::interrupt();
     }
 
-    MemRefType allocType = llvm::cast<MemRefType>(allocOp.getType());
+    MemRefType allocType = cast<MemRefType>(allocOp.getType());
     unsigned byteWidth =
         allocType.getElementType().isIndex()
             ? 8 // IREE's default byteWidth for indexes
@@ -121,7 +122,7 @@ static unsigned computeEffectiveExtraBytes(mlir::FunctionOpInterface funcOp,
   funcOp.walk([&](memref::AllocOp allocOp) {
     if (hasSharedMemoryAddressSpace(allocOp.getType()) &&
         allocOp.getType().hasStaticShape()) {
-      MemRefType allocType = llvm::cast<MemRefType>(allocOp.getType());
+      MemRefType allocType = cast<MemRefType>(allocOp.getType());
 
       ArrayRef<int64_t> shape = allocType.getShape();
       if (shape.empty())

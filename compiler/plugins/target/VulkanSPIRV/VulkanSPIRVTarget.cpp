@@ -8,6 +8,7 @@
 #include "iree/compiler/Codegen/Dialect/GPU/TargetUtils/KnownTargets.h"
 #include "iree/compiler/Codegen/SPIRV/Passes.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
+#include "iree/compiler/Dialect/Encoding/IR/EncodingDialect.h"
 #include "iree/compiler/Dialect/HAL/Target/TargetRegistry.h"
 #include "iree/compiler/Dialect/HAL/Utils/ExecutableDebugInfoUtils.h"
 #include "iree/compiler/PluginAPI/Client.h"
@@ -154,8 +155,7 @@ createPipelineLayoutDefs(ArrayRef<IREE::HAL::ExecutableExportOp> exportOps,
 // TODO: VulkanOptions for choosing the Vulkan version and extensions/features.
 class VulkanTargetDevice : public TargetDevice {
 public:
-  VulkanTargetDevice(const VulkanSPIRVTargetOptions &options)
-      : options_(options) {}
+  VulkanTargetDevice(const VulkanSPIRVTargetOptions & /*options*/) {}
 
   IREE::HAL::DeviceTargetAttr
   getDefaultDeviceTarget(MLIRContext *context,
@@ -173,9 +173,6 @@ public:
                                             deviceConfigAttr,
                                             executableTargetAttrs);
   }
-
-private:
-  const VulkanSPIRVTargetOptions &options_;
 };
 
 class VulkanSPIRVTargetBackend : public TargetBackend {
@@ -198,7 +195,7 @@ public:
     Builder b(context);
     SmallVector<NamedAttribute, 1> configItems;
     if (auto target = GPU::getVulkanTargetDetails(options_.target, context)) {
-      configItems.emplace_back(kGPUTargetAttrName, target);
+      addConfigGPUTarget(context, target, configItems);
     } else {
       emitError(b.getUnknownLoc(), "Unknown Vulkan target '")
           << options_.target << "'";
@@ -213,7 +210,8 @@ public:
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<IREE::Codegen::IREECodegenDialect, spirv::SPIRVDialect,
+    registry.insert<IREE::Codegen::IREECodegenDialect,
+                    IREE::Encoding::IREEEncodingDialect, spirv::SPIRVDialect,
                     gpu::GPUDialect, IREE::GPU::IREEGPUDialect>();
   }
 
@@ -385,10 +383,13 @@ public:
     iree_hal_vulkan_ExecutableDef_end_as_root(builder);
 
     // Add the binary data to the target executable.
-    auto binaryOp = executableBuilder.create<IREE::HAL::ExecutableBinaryOp>(
-        variantOp.getLoc(), variantOp.getSymName(),
+    auto binaryOp = IREE::HAL::ExecutableBinaryOp::create(
+        executableBuilder, variantOp.getLoc(), variantOp.getSymName(),
         variantOp.getTarget().getFormat(),
-        builder.getBufferAttr(executableBuilder.getContext()));
+        builder.getHeaderPrefixedBufferAttr(
+            executableBuilder.getContext(),
+            /*magic=*/iree_hal_vulkan_ExecutableDef_file_identifier,
+            /*version=*/0));
     binaryOp.setMimeTypeAttr(
         executableBuilder.getStringAttr("application/x-flatbuffers"));
 
@@ -411,7 +412,7 @@ public:
     }
 
     // Load .spv object file.
-    auto objectAttr = llvm::cast<IREE::HAL::ExecutableObjectAttr>(
+    auto objectAttr = cast<IREE::HAL::ExecutableObjectAttr>(
         variantOp.getObjects()->getValue().front());
     std::string spirvBinary;
     if (auto data = objectAttr.loadData()) {
@@ -477,10 +478,13 @@ public:
     iree_hal_vulkan_ExecutableDef_end_as_root(builder);
 
     // Add the binary data to the target executable.
-    auto binaryOp = executableBuilder.create<IREE::HAL::ExecutableBinaryOp>(
-        variantOp.getLoc(), variantOp.getSymName(),
+    auto binaryOp = IREE::HAL::ExecutableBinaryOp::create(
+        executableBuilder, variantOp.getLoc(), variantOp.getSymName(),
         variantOp.getTarget().getFormat(),
-        builder.getBufferAttr(executableBuilder.getContext()));
+        builder.getHeaderPrefixedBufferAttr(
+            executableBuilder.getContext(),
+            /*magic=*/iree_hal_vulkan_ExecutableDef_file_identifier,
+            /*version=*/0));
     binaryOp.setMimeTypeAttr(
         executableBuilder.getStringAttr("application/x-flatbuffers"));
 

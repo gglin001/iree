@@ -30,11 +30,11 @@ iree_cc_library(
     "RegionOpUtils.h"
   SRCS
     "AnnotateDispatches.cpp"
-    "Canonicalizer.cpp"
+    "Canonicalize.cpp"
     "CaptureDynamicDims.cpp"
     "CleanupTensorShapes.cpp"
-    "ConvertMeshToFlow.cpp"
     "ConvertRegionToWorkgroups.cpp"
+    "ConvertShardToFlow.cpp"
     "ConvertToFlow.cpp"
     "DeduplicateExecutables.cpp"
     "DumpDispatchGraph.cpp"
@@ -49,6 +49,7 @@ iree_cc_library(
     "OutlineDispatchRegions.cpp"
     "Passes.cpp"
     "RegionOpUtils.cpp"
+    "ReplicateGlobalsPerAffinity.cpp"
     "TopLevelSCFToCFG.cpp"
     "VerifyInputLegality.cpp"
   DEPS
@@ -72,11 +73,11 @@ iree_cc_library(
     MLIRMathDialect
     MLIRMemRefDialect
     MLIRMemRefTransforms
-    MLIRMeshDialect
     MLIRParser
     MLIRPass
     MLIRSCFDialect
     MLIRSCFToControlFlow
+    MLIRShardDialect
     MLIRSupport
     MLIRTensorDialect
     MLIRTensorTransforms
@@ -87,7 +88,7 @@ iree_cc_library(
     MLIRTransforms
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Dialect::Encoding::IR
-    iree::compiler::Dialect::Flow::Conversion::MeshToFlow
+    iree::compiler::Dialect::Flow::Conversion::ShardToFlow
     iree::compiler::Dialect::Flow::Conversion::TensorToFlow
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::HAL::IR
@@ -95,7 +96,9 @@ iree_cc_library(
     iree::compiler::Dialect::LinalgExt::TransformExtensions::LinalgExtExtensions
     iree::compiler::Dialect::LinalgExt::Transforms
     iree::compiler::Dialect::LinalgExt::Utils
+    iree::compiler::Dialect::Stream::Analysis
     iree::compiler::Dialect::Stream::IR
+    iree::compiler::Dialect::TensorExt::IR
     iree::compiler::Dialect::Util::Analysis
     iree::compiler::Dialect::Util::IR
     iree::compiler::Dialect::Util::Transforms
@@ -107,5 +110,16 @@ set_property(SOURCE
   FormDispatchRegions.cpp
   FormDispatchWorkgroups.cpp
   PROPERTY COMPILE_FLAGS $<$<CXX_COMPILER_ID:GNU>:-fno-devirtualize>)
+
+iree_tablegen_doc(
+  NAME
+    FlowPassesDocGen
+  CATEGORY
+    "Passes"
+  TD_FILE
+    "Passes.td"
+  OUTS
+    --gen-pass-doc FlowPasses.md
+)
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

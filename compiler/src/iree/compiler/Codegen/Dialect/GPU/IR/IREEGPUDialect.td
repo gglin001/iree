@@ -30,20 +30,12 @@ def IREEGPU_Dialect : Dialect {
   }];
   let useDefaultAttributePrinterParser = 1;
 
+  let discardableAttrs = (ins
+    "::mlir::UnitAttr":$use_rocdl_buffer_instructions
+  );
   let extraClassDeclaration = [{
     void registerAttributes();
   }];
 }
-
-//===----------------------------------------------------------------------===//
-// Type definitions
-//===----------------------------------------------------------------------===//
-
-class RankedTensorOrVectorOf<list<Type> allowedTypes> :
-  ShapedContainerType<allowedTypes,
-      Or<[IsVectorOfNonZeroRankTypePred, And<[IsTensorTypePred, HasRankPred]>]>,
-  "ranked tensor or vector", "::mlir::ShapedType">;
-
-def AnyRankedTensorOrVector : RankedTensorOrVectorOf<[AnyType]>;
 
 #endif // IREE_CODEGEN_DIALECT_GPU_IREEGPU_DIALECT

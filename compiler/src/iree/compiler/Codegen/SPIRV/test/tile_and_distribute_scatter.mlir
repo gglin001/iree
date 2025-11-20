@@ -9,7 +9,7 @@
 ]>
 hal.executable private @static_scatter_update_slice  {
   hal.executable.variant @vulkan_spirv_fb target(<"vulkan-spirv", "vulkan-spirv-fb">) {
-    hal.executable.export @static_scatter_update_slice layout(#pipeline_layout) attributes {
+    hal.executable.export public @static_scatter_update_slice layout(#pipeline_layout) attributes {
       translation_info = #translation,
       workgroup_size = [16 : index, 1 : index, 1 : index]
     }
@@ -36,7 +36,7 @@ hal.executable private @static_scatter_update_slice  {
             %9 = memref.cast %8 : memref<1x1xi32, affine_map<(d0, d1)[s0] -> (d0 + s0 + d1)>> to memref<?x1xi32, affine_map<(d0, d1)[s0] -> (d0 + s0 + d1)>>
             %10 = memref.subview %2[0, %arg1] [100, %5] [1, 1] : memref<100x500xi32> to memref<100x?xi32, affine_map<(d0, d1)[s0] -> (d0 * 500 + s0 + d1)>>
             iree_linalg_ext.scatter {lowering_config = #config} dimension_map = [0] unique_indices(true) ins(%7, %9 : memref<?x?xi32, affine_map<(d0, d1)[s0] -> (d0 * 500 + s0 + d1)>>, memref<?x1xi32, affine_map<(d0, d1)[s0] -> (d0 + s0 + d1)>>) outs(%10 : memref<100x?xi32, affine_map<(d0, d1)[s0] -> (d0 * 500 + s0 + d1)>>)  {
-            ^bb0(%arg2: i32, %arg3: i32):  // no predecessors
+            ^bb0(%arg2: i32, %arg3: i32):
               iree_linalg_ext.yield %arg2 : i32
             }
           }
@@ -58,14 +58,11 @@ hal.executable private @static_scatter_update_slice  {
 //       CHECK:     %[[WG_TARGET:.+]] = memref.subview %[[ARG2]]
 //       CHECK:     %[[TID_X:.+]] = gpu.thread_id x
 //       CHECK:     %[[DIM_X:.+]] = gpu.block_dim x
-//       CHECK:     %[[TID_Y:.+]] = gpu.thread_id y
-//       CHECK:     %[[DIM_Y:.+]] = gpu.block_dim y
-//       CHECK:     scf.for %[[IV_Y:.+]] = %[[TID_Y]] to %{{.+}} step %[[DIM_Y]]
-//       CHECK:       scf.for %[[IV_X:.+]] = %[[TID_X]] to %{{.+}} step %[[DIM_X]]
-//       CHECK:         %[[T_UPDATE:.+]] = memref.subview %[[WG_UPDATE]][%[[IV_Y]], %[[IV_X]]] [1, 1] [1, 1]
-//       CHECK:         %[[T_INDEX:.+]] = memref.subview %[[WG_INDEX]][%[[IV_Y]], 0] [1, 1] [1, 1]
-//       CHECK:         %[[T_TARGET:.+]] = memref.subview %[[WG_TARGET]][0, %[[IV_X]]] [100, 1] [1, 1]
-//       CHECK:         iree_linalg_ext.scatter
-//  CHECK-SAME:           unique_indices(true)
-//  CHECK-SAME:           ins(%[[T_UPDATE]], %[[T_INDEX]]
-//  CHECK-SAME:           outs(%[[T_TARGET]]
+//       CHECK:     scf.for %[[IV_X:.+]] = %[[TID_X]] to %{{.+}} step %[[DIM_X]]
+//       CHECK:       %[[T_UPDATE:.+]] = memref.subview %[[WG_UPDATE]][0, %[[IV_X]]] [1, 1] [1, 1]
+//       CHECK:       %[[T_INDEX:.+]] = memref.cast %[[WG_INDEX]]
+//       CHECK:       %[[T_TARGET:.+]] = memref.subview %[[WG_TARGET]][0, %[[IV_X]]] [100, 1] [1, 1]
+//       CHECK:       iree_linalg_ext.scatter
+//  CHECK-SAME:         unique_indices(true)
+//  CHECK-SAME:         ins(%[[T_UPDATE]], %[[T_INDEX]]
+//  CHECK-SAME:         outs(%[[T_TARGET]]

@@ -17,10 +17,9 @@ include "mlir/IR/OpBase.td"
 // #util.int.assumptions
 //===----------------------------------------------------------------------===//
 
-def Util_IntAssumptionAttr : AttrDef<Util_Dialect, "IntAssumption", []
-> {
+def Util_IntAssumptionAttr : Util_AttrDef<"IntAssumption"> {
   let mnemonic = "int.assumption";
-  let summary = [{specifies assumptions that can be made about an integer's value}];
+  let summary = [{Specifies assumptions that can be made about an integer's value.}];
   let description = [{
     This is typically used to memorialize the result of some integer analysis
     or outside knowledge. All components of the attribute are optional.
@@ -44,11 +43,23 @@ def Util_MultiValueIntAssumptionAttrList : TypedArrayAttrBase<
     Util_IntAssumptionAttrList,
     "list of int attribute assumptions for multiple values">;
 
+/// Convenience array attribute for assumption lists.
+def Util_IntAssumptionAttrArray : ArrayOfAttr<
+  Util_Dialect, "IntAssumptionArray", "int.assumption.array", "IntAssumptionAttr"> {
+  let cppNamespace = "::mlir::iree_compiler::IREE::Util";
+}
+
+/// Convenience array attribute for nested assumption lists.
+def Util_MultiValueIntAssumptionAttrArray : ArrayOfAttr<
+  Util_Dialect, "MultiIntAssumptionArray", "int.assumption.multi_array", "IntAssumptionArrayAttr"> {
+  let cppNamespace = "::mlir::iree_compiler::IREE::Util";
+}
+
 //===----------------------------------------------------------------------===//
 // #util.byte_pattern
 //===----------------------------------------------------------------------===//
 
-def Util_BytePatternAttr : AttrDef<Util_Dialect, "BytePattern", [
+def Util_BytePatternAttr : Util_AttrDef<"BytePattern", [
   TypedAttrInterface,
   DeclareAttrInterfaceMethods<Util_SizedStorageAttr, [
     "getStorageSize",
@@ -59,7 +70,7 @@ def Util_BytePatternAttr : AttrDef<Util_Dialect, "BytePattern", [
   ]>,
 ]> {
   let mnemonic = "byte_pattern";
-  let summary = [{an attribute containing a filled byte pattern}];
+  let summary = [{An attribute containing a filled byte pattern.}];
   let description = [{
     A dense serializable attribute with the given byte pattern.
   }];
@@ -78,9 +89,9 @@ def Util_BytePatternAttr : AttrDef<Util_Dialect, "BytePattern", [
 // #util.byte_range
 //===----------------------------------------------------------------------===//
 
-def Util_ByteRangeAttr : AttrDef<Util_Dialect, "ByteRange", []> {
+def Util_ByteRangeAttr : Util_AttrDef<"ByteRange"> {
   let mnemonic = "byte_range";
-  let summary = [{defines a range of bytes}];
+  let summary = [{Defines a range of bytes.}];
   let description = [{
     Specifies a starting offset and total length in bytes.
   }];
@@ -97,7 +108,7 @@ def Util_ByteRangeAttr : AttrDef<Util_Dialect, "ByteRange", []> {
 // #util.composite
 //===----------------------------------------------------------------------===//
 
-def Util_CompositeAttr : AttrDef<Util_Dialect, "Composite", [
+def Util_CompositeAttr : Util_AttrDef<"Composite", [
   DeclareAttrInterfaceMethods<Util_SizedStorageAttr, [
     "getStorageSize",
   ]>,
@@ -107,7 +118,7 @@ def Util_CompositeAttr : AttrDef<Util_Dialect, "Composite", [
   ]>,
 ]> {
   let mnemonic = "composite";
-  let summary = [{an attribute composed of a sequence of attributes}];
+  let summary = [{An attribute composed of a sequence of attributes.}];
   let description = [{
     Models a concatenated set of serializable attributes that when combined
     form a single sequence of i8 elements. As each value references the uniqued
@@ -145,11 +156,11 @@ def Util_CompositeAttr : AttrDef<Util_Dialect, "Composite", [
 // #util.inline.*
 //===----------------------------------------------------------------------===//
 
-def Util_InlineNeverAttr : AttrDef<Util_Dialect, "InlineNever", [
+def Util_InlineNeverAttr : Util_AttrDef<"InlineNever", [
   Util_InliningPolicyAttrInterface,
 ]> {
   let mnemonic = "inline.never";
-  let summary = [{disables inlining on the associated function}];
+  let summary = [{Disables inlining on the associated function.}];
   let description = [{
     Disables inlining of the function the attribute is associated with into
     any call-site.
@@ -163,11 +174,11 @@ def Util_InlineNeverAttr : AttrDef<Util_Dialect, "InlineNever", [
   }];
 }
 
-def Util_InlineAlwaysAttr : AttrDef<Util_Dialect, "InlineAlways", [
+def Util_InlineAlwaysAttr : Util_AttrDef<"InlineAlways", [
   Util_InliningPolicyAttrInterface,
 ]> {
   let mnemonic = "inline.always";
-  let summary = [{forces inlining on the associated function when possible}];
+  let summary = [{Forces inlining on the associated function when possible.}];
   let description = [{
     Skips any cost-model decisions as to whether a function should be inlined
     into call-sites and allows the inlining to happen. Any policies that prevent
@@ -187,11 +198,11 @@ def Util_InlineAlwaysAttr : AttrDef<Util_Dialect, "InlineAlways", [
 // #util.null
 //===----------------------------------------------------------------------===//
 
-def Util_NullAttr : AttrDef<Util_Dialect, "Null", [
+def Util_NullAttr : Util_AttrDef<"Null", [
   TypedAttrInterface,
 ]> {
   let mnemonic = "null";
-  let summary = [{an attribute specifying a null reference}];
+  let summary = [{An attribute specifying a null reference.}];
   let description = [{
     A null reference value.
   }];
@@ -207,14 +218,40 @@ def Util_NullAttr : AttrDef<Util_Dialect, "Null", [
 // #util.uninitialized
 //===----------------------------------------------------------------------===//
 
-def Util_UninitializedAttr : AttrDef<Util_Dialect, "Uninitialized", [
+def Util_PreprocessingPipelineAttr : Util_AttrDef<"PreprocessingPassPipeline"> {
+  let mnemonic = "preprocessing_pipeline";
+  let summary = "[{Preprocessing pass-pipeline to run on the function.}]";
+  let description = [{
+    Textual description of the preprocessing pass-pipeline to run on the
+    function-like object that the attribute is specified on. Note that the
+    string pipeline is implicitly nested to `builtin.module(func-lik(..))`
+    operation. For example to run the transpose convolution pipeline, the
+    attribute is specified as
+
+    ```preprocess_pipeline = #util.preprocess_pipeline<
+        "iree-preprocessing-transpose-convolution-pipeline">```
+  }];
+  let parameters = (ins
+    AttrParameter<"StringAttr", "">:$pipelineString
+  );
+
+  let assemblyFormat = [{
+    `<` $pipelineString `>`
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// #util.uninitialized
+//===----------------------------------------------------------------------===//
+
+def Util_UninitializedAttr : Util_AttrDef<"Uninitialized", [
   TypedAttrInterface,
   DeclareAttrInterfaceMethods<Util_SizedStorageAttr, [
     "getStorageSize",
   ]>,
 ]> {
   let mnemonic = "uninitialized";
-  let summary = [{an attribute specifying uninitialized storage}];
+  let summary = [{An attribute specifying uninitialized storage.}];
   let description = [{
     The contents of the storage backing this attribute _may_ be uninitialized at
     runtime. This is a hint to implementations that if policy allows memory

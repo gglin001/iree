@@ -4,7 +4,12 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-load("//build_tools/bazel:build_defs.oss.bzl", "iree_compiler_cc_library", "iree_gentbl_cc_library")
+load(
+    "//build_tools/bazel:build_defs.oss.bzl",
+    "iree_compiler_cc_library",
+    "iree_gentbl_cc_library",
+    "iree_tablegen_doc",
+)
 
 package(
     default_visibility = ["//visibility:public"],
@@ -16,25 +21,33 @@ iree_compiler_cc_library(
     name = "Transforms",
     srcs = [
         "AnnotateAffinities.cpp",
+        "AnnotateConstantTransientSize.cpp",
         "AnnotateDispatchArguments.cpp",
         "AnnotateDispatchAssumptions.cpp",
+        "AutomaticReferenceCounting.cpp",
+        "CloneToConsumers.cpp",
         "ConvertToStream.cpp",
         "DumpStatistics.cpp",
         "ElideAsyncCopies.cpp",
+        "ElideAsyncTransfers.cpp",
         "ElideTimepoints.cpp",
         "EmplaceAllocations.cpp",
+        "EmplaceTransients.cpp",
         "EncodeTensors.cpp",
         "FoldUniformOperands.cpp",
         "FuseDispatchBindings.cpp",
         "LayoutSlices.cpp",
         "MaterializeBuiltins.cpp",
         "MaterializeCopyOnWrite.cpp",
+        "MaterializeEncodings.cpp",
+        "MaterializeTransientSizeQueries.cpp",
         "PackConstants.cpp",
         "PackDispatchOperands.cpp",
         "Passes.cpp",
         "Passes.h.inc",
         "PropagateTimepoints.cpp",
         "RefineUsage.cpp",
+        "ReuseAllocations.cpp",
         "ScheduleAllocation.cpp",
         "ScheduleConcurrency.cpp",
         "ScheduleExecution.cpp",
@@ -51,6 +64,7 @@ iree_compiler_cc_library(
     deps = [
         ":PassesIncGen",
         "//compiler/src/iree/compiler/Dialect/Encoding/IR",
+        "//compiler/src/iree/compiler/Dialect/Encoding/Utils",
         "//compiler/src/iree/compiler/Dialect/Flow/IR",
         "//compiler/src/iree/compiler/Dialect/HAL/IR",
         "//compiler/src/iree/compiler/Dialect/LinalgExt/IR",
@@ -62,6 +76,7 @@ iree_compiler_cc_library(
         "//compiler/src/iree/compiler/Dialect/Stream/Conversion/StandardToStream",
         "//compiler/src/iree/compiler/Dialect/Stream/Conversion/UtilToStream",
         "//compiler/src/iree/compiler/Dialect/Stream/IR",
+        "//compiler/src/iree/compiler/Dialect/TensorExt/IR",
         "//compiler/src/iree/compiler/Dialect/Util/Analysis",
         "//compiler/src/iree/compiler/Dialect/Util/Analysis/DFX",
         "//compiler/src/iree/compiler/Dialect/Util/Conversion",
@@ -74,6 +89,7 @@ iree_compiler_cc_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:ComplexDialect",
         "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:ControlFlowInterfaces",
         "@llvm-project//mlir:DialectUtils",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FunctionInterfaces",
@@ -97,6 +113,24 @@ iree_gentbl_cc_library(
         (
             ["--gen-pass-decls"],
             "Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes.td",
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+iree_tablegen_doc(
+    name = "StreamPassesDocGen",
+    category = "Passes",
+    tbl_outs = [
+        (
+            [
+                "--gen-pass-doc",
+            ],
+            "StreamPasses.md",
         ),
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",

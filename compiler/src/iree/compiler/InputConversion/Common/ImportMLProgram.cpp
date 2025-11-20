@@ -104,7 +104,7 @@ public:
     bool isExtern = srcOpAttr && isa<ml_program::ExternAttr>(*srcOpAttr);
     auto srcOpTypedAttr =
         (srcOpAttr && !isExtern)
-            ? std::optional<TypedAttr>(llvm::cast<TypedAttr>(srcOpAttr.value()))
+            ? std::optional<TypedAttr>(cast<TypedAttr>(srcOpAttr.value()))
             : std::nullopt;
     const SymbolTable::Visibility visibility = srcOp.getVisibility();
     // Create util Global which is mutable if the ML program global was or if
@@ -154,15 +154,14 @@ public:
         "ml_program.public_global_accessors");
     // TODO(jpienaar): The attribute should be verified before here.
     StringAttr get =
-        v ? llvm::dyn_cast_if_present<StringAttr>(v.get("get")) : nullptr;
+        v ? dyn_cast_if_present<StringAttr>(v.get("get")) : nullptr;
     {
       const std::string getFormat = get ? get.str() : "global${0}$get";
       if (failed(verifyFormat(getFormat)))
         return failure();
       getterName = llvm::formatv(getFormat.c_str(), globalOp.getSymName());
     }
-    auto set =
-        v ? llvm::dyn_cast_if_present<StringAttr>(v.get("set")) : nullptr;
+    auto set = v ? dyn_cast_if_present<StringAttr>(v.get("set")) : nullptr;
     {
       const std::string setFormat = set ? set.str() : "global${0}$set";
       if (failed(verifyFormat(setFormat)))
@@ -175,11 +174,11 @@ public:
       FunctionType funcType =
           rewriter.getFunctionType(/*input=*/TypeRange{}, /*outputs=*/newType);
       ImplicitLocOpBuilder b(globalOp.getLoc(), rewriter);
-      auto funcOp = b.create<IREE::Util::FuncOp>(getterName, funcType);
+      auto funcOp = IREE::Util::FuncOp::create(b, getterName, funcType);
       funcOp.setPublic();
       b.setInsertionPointToStart(funcOp.addEntryBlock());
       auto val = globalOp.createLoadOp(globalOp.getLoc(), b);
-      b.create<IREE::Util::ReturnOp>(val.getLoadedGlobalValue());
+      IREE::Util::ReturnOp::create(b, val.getLoadedGlobalValue());
     }
 
     if (!setterName.empty() && isMutable) {
@@ -187,11 +186,11 @@ public:
       FunctionType funcType =
           rewriter.getFunctionType(/*input=*/newType, /*outputs=*/TypeRange{});
       ImplicitLocOpBuilder b(globalOp.getLoc(), rewriter);
-      auto funcOp = b.create<IREE::Util::FuncOp>(setterName, funcType);
+      auto funcOp = IREE::Util::FuncOp::create(b, setterName, funcType);
       funcOp.setPublic();
       b.setInsertionPointToStart(funcOp.addEntryBlock());
       globalOp.createStoreOp(globalOp.getLoc(), funcOp.getArgument(0), b);
-      b.create<IREE::Util::ReturnOp>();
+      IREE::Util::ReturnOp::create(b);
     }
 
     return success();
@@ -215,19 +214,18 @@ createExternInitFunction(ModuleOp module,
           IREE::Util::VariantType::get(context))},
       /*outputs=*/{});
   auto funcOp =
-      b.create<IREE::Util::FuncOp>("ireeMlProgramGlobalsInit", funcType);
+      IREE::Util::FuncOp::create(b, "ireeMlProgramGlobalsInit", funcType);
   funcOp.setPublic();
   b.setInsertionPointToStart(funcOp.addEntryBlock());
 
   for (auto it : llvm::enumerate(externGlobals)) {
-    auto val = b.create<IREE::Util::ListGetOp>(
-        it.value().newType, funcOp.getArgument(0),
-        b.create<arith::ConstantIndexOp>(it.index()));
-    b.create<IREE::Util::GlobalStoreOp>(val, it.value().name);
+    auto val = IREE::Util::ListGetOp::create(
+        b, it.value().newType, funcOp.getArgument(0),
+        arith::ConstantIndexOp::create(b, it.index()));
+    IREE::Util::GlobalStoreOp::create(b, val, it.value().name);
   }
 
-  b.create<IREE::Util::ReturnOp>();
-
+  IREE::Util::ReturnOp::create(b);
   return success();
 }
 

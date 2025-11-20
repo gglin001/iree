@@ -10,6 +10,7 @@
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/InterleavedRange.h"
 #include "mlir/Dialect/SPIRV/IR/TargetAndABI.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 
@@ -36,12 +37,9 @@ LogicalResult verifySPIRVMatmulPromoteVectorizePassPipeline(
   if (!isa<linalg::MatmulOp, linalg::BatchMatmulOp>(op))
     return success();
 
-  LLVM_DEBUG({
-    llvm::dbgs() << "verifying op: " << *op << "\n";
-    llvm::dbgs() << "chosen workgroup size: [";
-    llvm::interleaveComma(workgroupSize, llvm::dbgs());
-    llvm::dbgs() << "]\n";
-  });
+  LLVM_DEBUG(llvm::dbgs() << "verifying op: " << *op << "\n"
+                          << "chosen workgroup size: "
+                          << llvm::interleaved_array(workgroupSize) << "\n");
 
   FailureOr<int64_t> maybeDepth =
       getSoftwarePipelineDepth(translationInfo.getConfiguration());
@@ -102,9 +100,9 @@ LogicalResult verifySPIRVMatmulPromoteVectorizePassPipeline(
   }
 
   ArrayRef<int64_t> lhsShape =
-      llvm::cast<ShapedType>(op->getOperand(0).getType()).getShape();
+      cast<ShapedType>(op->getOperand(0).getType()).getShape();
   ArrayRef<int64_t> rhsShape =
-      llvm::cast<ShapedType>(op->getOperand(1).getType()).getShape();
+      cast<ShapedType>(op->getOperand(1).getType()).getShape();
 
   if (loweringConfig.getTilingLevels().size() != 1) {
     return op->emitOpError("expected 1 levels of tiling sizes, got ")
@@ -148,12 +146,9 @@ LogicalResult verifySPIRVCooperativeMatrixVectorizePassPipeline(
   if (!isa<linalg::MatmulOp, linalg::BatchMatmulOp>(op)) {
     return success();
   }
-  LLVM_DEBUG({
-    llvm::dbgs() << "verifying op: " << *op << "\n";
-    llvm::dbgs() << "chosen workgroup size: [";
-    llvm::interleaveComma(workgroupSize, llvm::dbgs());
-    llvm::dbgs() << "]\n";
-  });
+  LLVM_DEBUG(llvm::dbgs() << "verifying op: " << *op << "\n"
+                          << "chosen workgroup size: "
+                          << llvm::interleaved_array(workgroupSize) << "\n");
 
   FailureOr<int64_t> maybeDepth =
       getSoftwarePipelineDepth(translationInfo.getConfiguration());
@@ -189,8 +184,7 @@ LogicalResult verifySPIRVCooperativeMatrixVectorizePassPipeline(
       workgroupSize[1] > maxWorkGroupSize[1] ||
       workgroupSize[2] > maxWorkGroupSize[2]) {
     return op->emitOpError("expected workgroup size dimensions not exceeding ")
-           << "[" << maxWorkGroupSize[0] << ", " << maxWorkGroupSize[1] << ", "
-           << maxWorkGroupSize[2] << "]";
+           << llvm::interleaved_array(maxWorkGroupSize);
   }
 
   // Verify the total workgroup size should not exceed maxThreads.
@@ -215,9 +209,9 @@ LogicalResult verifySPIRVCooperativeMatrixVectorizePassPipeline(
   }
 
   ArrayRef<int64_t> lhsShape =
-      llvm::cast<ShapedType>(op->getOperand(0).getType()).getShape();
+      cast<ShapedType>(op->getOperand(0).getType()).getShape();
   ArrayRef<int64_t> rhsShape =
-      llvm::cast<ShapedType>(op->getOperand(1).getType()).getShape();
+      cast<ShapedType>(op->getOperand(1).getType()).getShape();
 
   SmallVector<int64_t> workgroupTileSizes =
       loweringConfig.getTileSizeVals(kWorkgroupTileLevel);
@@ -239,7 +233,7 @@ LogicalResult verifySPIRVCooperativeMatrixVectorizePassPipeline(
   }
 
   auto getElementType = [](Value v) {
-    return llvm::cast<ShapedType>(v.getType()).getElementType();
+    return cast<ShapedType>(v.getType()).getElementType();
   };
 
   Type lhsType = getElementType(op->getOperand(0));
@@ -330,7 +324,7 @@ LogicalResult verifySPIRVBaseVectorizePassPipeline(
   }
 
   ArrayRef<int64_t> outputShape =
-      llvm::cast<ShapedType>(op->getOperand(2).getType()).getShape();
+      cast<ShapedType>(op->getOperand(2).getType()).getShape();
   const int64_t oh = outputShape[1], ow = outputShape[2], oc = outputShape[3];
 
   // Verify the first level tile size divides the Convolution

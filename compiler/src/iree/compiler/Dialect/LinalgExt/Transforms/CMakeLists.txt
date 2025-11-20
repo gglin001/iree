@@ -27,24 +27,30 @@ iree_cc_library(
     "Passes.h.inc"
     "Transforms.h"
   SRCS
-    "ConvertConv2DToIm2ColOp.cpp"
     "ConvertConv2DToWinograd.cpp"
+    "ConvertConvToIm2ColOp.cpp"
     "ConvertToLoops.cpp"
     "DecomposeAttention.cpp"
     "DecomposeIm2col.cpp"
+    "DecomposeMapScatter.cpp"
     "DecomposeWinogradPass.cpp"
+    "FoldUnitExtentDims.cpp"
     "PadContractionToBlockSize.cpp"
     "Passes.cpp"
     "ReshapeFusion.cpp"
+    "RewriteFft.cpp"
     "SplitReduction.cpp"
+    "TestReshapeFusion.cpp"
     "TileAttention.cpp"
     "TransposeFusion.cpp"
+    "VectorizeIREELinalgExtOps.cpp"
   DEPS
     ::PassesIncGen
-    IREEInputDialect
     LLVMSupport
     MLIRAffineDialect
+    MLIRAffineTransforms
     MLIRAffineUtils
+    MLIRAnalysis
     MLIRArithDialect
     MLIRArithUtils
     MLIRBufferizationDialect
@@ -70,8 +76,11 @@ iree_cc_library(
     MLIRTransformDialect
     MLIRTransformUtils
     MLIRTransforms
+    MLIRVectorDialect
     iree::compiler::Dialect::LinalgExt::IR
     iree::compiler::Dialect::LinalgExt::Utils
+    iree::compiler::Dialect::Util::IR
+    iree::compiler::Utils
   PUBLIC
 )
 

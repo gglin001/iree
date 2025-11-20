@@ -62,7 +62,6 @@ class Trailer(str, enum.Enum):
     SKIP_JOBS = "ci-skip"
     EXTRA_JOBS = "ci-extra"
     EXACTLY_JOBS = "ci-exactly"
-    RUNNER_ENV = "runner-env"
 
     # Before Python 3.12, it the native __contains__ doesn't work for checking
     # member values like this and it's not possible to easily override this.
@@ -79,7 +78,7 @@ class Trailer(str, enum.Enum):
 # This is to help prevent typos. For now we hard error on any trailer that
 # starts with this prefix but isn't in our list. We can add known commonly used
 # trailers to our list or we might consider relaxing this.
-RESERVED_TRAILER_PREFIXES = ["ci-", "bewnchmark-", "skip-"]
+RESERVED_TRAILER_PREFIXES = ["ci-", "benchmark-", "skip-"]
 ALL_KEY = "all"
 
 # Note that these are fnmatch patterns, which are not the same as gitignore
@@ -108,9 +107,6 @@ SKIP_PATH_PATTERNS = [
     "*LICENSE",
 ]
 
-RUNNER_ENV_DEFAULT = "prod"
-RUNNER_ENV_OPTIONS = [RUNNER_ENV_DEFAULT, "testing"]
-
 CONTROL_JOB_REGEXES = frozenset(
     [
         re.compile("setup"),
@@ -123,6 +119,8 @@ CONTROL_JOB_REGEXES = frozenset(
 DEFAULT_POSTSUBMIT_ONLY_JOBS = frozenset(
     [
         # None.
+        "windows_x64_msvc",
+        "test_torch",
     ]
 )
 
@@ -132,7 +130,10 @@ DEFAULT_POSTSUBMIT_ONLY_JOBS = frozenset(
 #   ("test_nvidia_a100", ["compiler/plugins/target/CUDA/*"]),
 # Note: these jobs should also be included in DEFAULT_POSTSUBMIT_ONLY_JOBS.
 PRESUBMIT_TOUCH_ONLY_JOBS = [
-    # None.
+    (
+        "windows_x64_msvc",
+        ["*win32*", "*windows*", "*msvc*"],
+    ),
 ]
 
 PR_DESCRIPTION_TEMPLATE = string.Template("${title}\n\n${body}")
@@ -330,19 +331,6 @@ def modifies_non_skip_paths(paths: Optional[Iterable[str]]) -> bool:
     return any(not skip_path(p) for p in paths)
 
 
-def get_runner_env(trailers: Mapping[str, str]) -> str:
-    runner_env = trailers.get(Trailer.RUNNER_ENV)
-    if runner_env is None:
-        print(
-            f"Using '{RUNNER_ENV_DEFAULT}' runners because"
-            f" '{Trailer.RUNNER_ENV}' not found in {trailers}"
-        )
-        runner_env = RUNNER_ENV_DEFAULT
-    else:
-        print(f"Using runner environment '{runner_env}' from PR description trailers")
-    return runner_env
-
-
 def parse_jobs_trailer(
     trailers: Mapping[str, str], key: str, all_jobs: Set[str]
 ) -> Set[str]:
@@ -518,8 +506,6 @@ def main():
     output = {
         "enabled-jobs": json.dumps(sorted(enabled_jobs)),
         "is-pr": json.dumps(is_pr),
-        "runner-env": get_runner_env(trailers),
-        "runner-group": "presubmit" if is_pr else "postsubmit",
         "write-caches": "0" if is_pr else "1",
     }
 

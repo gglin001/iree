@@ -27,6 +27,19 @@ def ApplyPDLPatternsPass : Pass<"iree-preprocessing-apply-pdl-patterns", "Module
   ];
 }
 
+def AttrBasedPipelinePass : Pass<"iree-preprocessing-attr-based-pipeline", ""> {
+  let summary = "Run a pass pipeline specified as an attribute on any function-like operation";
+  let description = [{
+    The textual representation of the pass pipeline specified in the attribute
+    `preprocessing_pipeline=#util.preprocessing_pipeline<...>` is to be run on the
+    function-like operation.
+  }];
+  let dependentDialects = [
+    "iree_compiler::IREE::Flow::FlowDialect",
+    "iree_compiler::IREE::Util::UtilDialect",
+  ];
+}
+
 def ConvertConv2DToImg2ColPass :
     Pass<"iree-preprocessing-convert-conv2d-to-img2col", ""> {
   let summary = "Convert linalg convolution ops to matmul img2col based implementation";
@@ -46,6 +59,7 @@ def ConvertConvFilterToChannelsLastPass:
   let dependentDialects = [
     "mlir::linalg::LinalgDialect",
     "mlir::tensor::TensorDialect",
+    "IREE::TensorExt::IREETensorExtDialect",
   ];
 }
 
@@ -155,6 +169,15 @@ def GeneralizeLinalgMatMulPass :
   let summary = "Convert linalg matmul ops to linalg.generics.";
   let dependentDialects = [
     "mlir::linalg::LinalgDialect",
+  ];
+}
+
+def SinkTransposeThroughPadPass :
+    InterfacePass<"iree-preprocessing-sink-transpose-through-pad", "mlir::FunctionOpInterface"> {
+  let summary = "Sink linalg transpose ops through tensor pad ops";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect",
   ];
 }
 

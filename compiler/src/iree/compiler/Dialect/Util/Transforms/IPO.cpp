@@ -242,7 +242,7 @@ static FuncAnalysis analyzeFuncOp(IREE::Util::FuncOp funcOp,
 
       // If the result value is an argument track that here.
       // We'll only use this value if all return sites are uniform.
-      if (auto arg = llvm::dyn_cast<BlockArgument>(value)) {
+      if (auto arg = dyn_cast<BlockArgument>(value)) {
         if (arg.getParentBlock()->isEntryBlock()) {
           analysis.passthroughResultArgs[i] =
               static_cast<int>(arg.getArgNumber());
@@ -381,7 +381,7 @@ static FuncAnalysis analyzeFuncOp(IREE::Util::FuncOp funcOp,
     auto arg = funcOp.getArgument(argIndex);
     bool onlyReturnUsers = true;
     for (auto user : arg.getUsers()) {
-      if (!isa<IREE::Util::ReturnOp>(user)) {
+      if (!user->hasTrait<OpTrait::ReturnLike>()) {
         onlyReturnUsers = false;
         break;
       }
@@ -413,8 +413,8 @@ static void replaceValueWithConstant(Value value, LocAttr constantValue,
 
   // Immutable global loads are represented as constant symbol refs.
   if (auto globalRef = dyn_cast<SymbolRefAttr>(constantValue.attr)) {
-    op = builder.create<IREE::Util::GlobalLoadOp>(
-        constantValue.loc.value(), constantValue.type,
+    op = IREE::Util::GlobalLoadOp::create(
+        builder, constantValue.loc.value(), constantValue.type,
         globalRef.getLeafReference().getValue(),
         /*is_immutable=*/true);
   }
@@ -423,9 +423,9 @@ static void replaceValueWithConstant(Value value, LocAttr constantValue,
   // themselves.
   if (arith::ConstantOp::isBuildableWith(constantValue.attr,
                                          constantValue.type)) {
-    op = builder.create<arith::ConstantOp>(constantValue.loc.value(),
-                                           constantValue.type,
-                                           cast<TypedAttr>(constantValue.attr));
+    op = arith::ConstantOp::create(builder, constantValue.loc.value(),
+                                   constantValue.type,
+                                   cast<TypedAttr>(constantValue.attr));
   }
 
   // Try the attr and type dialects to see if they can materialize.
@@ -532,8 +532,14 @@ static bool applyFuncChanges(FuncAnalysis &analysis,
   // Erase dead args/results - args uses should have either been unused or
   // replaced with constants above. Note that because results may be using args
   // we need to drop those first above.
-  funcOp.eraseArguments(deadArgs);
-  funcOp.eraseResults(deadResults);
+  if (failed(funcOp.eraseArguments(deadArgs))) {
+    funcOp.emitOpError("can't happen: removing arguments can't make function "
+                       "type conversion fail");
+  }
+  if (failed(funcOp.eraseResults(deadResults))) {
+    funcOp.emitOpError(
+        "can't happen: removing results made function type conversion fail");
+  }
 
   return true;
 }
@@ -611,8 +617,10 @@ static bool applyCallChanges(FuncAnalysis &analysis,
 
   // Fully replace call op because we may have changed result count.
   // TODO(benvanik): update tied operands, arg_attrs, and res_attrs.
-  auto newCallOp = OpBuilder(callOp).create<IREE::Util::CallOp>(
-      callOp.getLoc(), newResultTypes, callOp.getCalleeAttr(), newOperands,
+  OpBuilder newCallBuilder(callOp);
+  auto newCallOp = IREE::Util::CallOp::create(
+      newCallBuilder, callOp.getLoc(), newResultTypes, callOp.getCalleeAttr(),
+      newOperands,
       /*tied_operands=*/ArrayAttr{},
       /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr);
   newCallOp->setDialectAttrs(callOp->getDialectAttrs());
@@ -648,7 +656,7 @@ static bool isFuncEmpty(FunctionOpInterface funcOp) {
 class IPOPass : public impl::IPOPassBase<IPOPass> {
 public:
   void runOnOperation() override {
-    auto moduleOp = getOperation();
+    mlir::ModuleOp moduleOp = getOperation();
 
     // TODO(benvanik): find a nice way of skipping embedded executables. Maybe
     // an op interface like the inliner control interface. For now we recurse

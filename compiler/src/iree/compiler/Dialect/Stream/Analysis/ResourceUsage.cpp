@@ -238,7 +238,7 @@ private:
 
   // Starts analysis of the |value| with known bits based on its resource type.
   void initializeValue(Value value, DFX::Solver &solver) override {
-    auto resourceType = llvm::cast<IREE::Stream::ResourceType>(value.getType());
+    auto resourceType = cast<IREE::Stream::ResourceType>(value.getType());
     initializeFromType(resourceType);
   }
 
@@ -247,7 +247,7 @@ private:
   // itself is under analysis.
   void updateFromDefiningOp(Value value, OpResult result, DFX::Solver &solver) {
     // Some tied uses route through ops that change types - ignore those.
-    if (!llvm::isa<IREE::Stream::ResourceType>(result.getType()))
+    if (!isa<IREE::Stream::ResourceType>(result.getType()))
       return;
 
     TypeSwitch<Operation *, void>(result.getOwner())
@@ -269,10 +269,8 @@ private:
         })
         .Case([&](IREE::Util::GlobalLoadOpInterface op) {
           removeAssumedBits(NOT_GLOBAL_READ);
-          auto *globalInfo =
-              solver.getExplorer().queryGlobalInfoFrom(op.getGlobalName(), op);
-          auto globalType = llvm::cast<IREE::Stream::ResourceType>(
-              globalInfo->op.getGlobalType());
+          auto globalType = cast<IREE::Stream::ResourceType>(
+              op.getLoadedGlobalValue().getType());
           switch (globalType.getLifetime()) {
           case IREE::Stream::Lifetime::Constant:
             removeAssumedBits(NOT_CONSTANT);
@@ -302,7 +300,7 @@ private:
         })
         .Case([&](IREE::Stream::TensorImportOp op) {
           auto targetType =
-              llvm::cast<IREE::Stream::ResourceType>(op.getResult().getType());
+              cast<IREE::Stream::ResourceType>(op.getResult().getType());
           switch (targetType.getLifetime()) {
           default:
           case IREE::Stream::Lifetime::External:
@@ -515,7 +513,7 @@ private:
   // This walks through tied uses as well.
   void updateFromUse(Value value, OpOperand &operand, DFX::Solver &solver) {
     // Some tied uses route through ops that change types - ignore those.
-    if (!llvm::isa<IREE::Stream::ResourceType>(operand.get().getType()))
+    if (!isa<IREE::Stream::ResourceType>(operand.get().getType()))
       return;
 
     auto *userOp = operand.getOwner();
@@ -575,7 +573,7 @@ private:
               DFX::Resolution::REQUIRED);
           getState() ^= parentUsage.getState();
           if (auto whileOp =
-                  dyn_cast_or_null<scf::WhileOp>(op->getParentOp())) {
+                  dyn_cast_if_present<scf::WhileOp>(op->getParentOp())) {
             auto value = Position::forValue(
                 whileOp.getAfter().getArgument(operandIdx - 1));
             auto &valueUsage = solver.getElementFor<ValueResourceUsage>(
@@ -640,10 +638,8 @@ private:
         })
         .Case([&](IREE::Util::GlobalStoreOpInterface op) {
           removeAssumedBits(NOT_GLOBAL_WRITE);
-          auto *globalInfo =
-              solver.getExplorer().queryGlobalInfoFrom(op.getGlobalName(), op);
-          auto globalType = llvm::cast<IREE::Stream::ResourceType>(
-              globalInfo->op.getGlobalType());
+          auto globalType = cast<IREE::Stream::ResourceType>(
+              op.getStoredGlobalValue().getType());
           switch (globalType.getLifetime()) {
           case IREE::Stream::Lifetime::Constant:
             removeAssumedBits(NOT_CONSTANT);
@@ -658,7 +654,7 @@ private:
         })
         .Case([&](IREE::Stream::TensorExportOp op) {
           auto sourceType =
-              llvm::cast<IREE::Stream::ResourceType>(op.getSource().getType());
+              cast<IREE::Stream::ResourceType>(op.getSource().getType());
           switch (sourceType.getLifetime()) {
           default:
           case IREE::Stream::Lifetime::External:
@@ -813,8 +809,25 @@ private:
           removeAssumedBits(NOT_DISPATCH_READ);
           for (auto result : op.getOperandTiedResults(operandIdx)) {
             removeAssumedBits(NOT_MUTATED | NOT_DISPATCH_WRITE);
-            auto &resultUsage = solver.getElementFor<ValueResourceUsage>(
-                *this, Position::forValue(result), DFX::Resolution::REQUIRED);
+            // TODO(#20748): some programs do some very naughty things with
+            // in-place operations that may lead to 10000+ sequentially tied
+            // dispatches. Currently getElementFor will recursively perform an
+            // update on initialization and that easily leads to stack
+            // overflows. The correct solution is to either pre-seed during
+            // value initialization or find a way to short-circuit the walk and
+            // break the tied traversal. An alternative would be to add a solver
+            // getElementFor helper that takes a callback instead of returning
+            // a result to allow it to manage a worklist instead of using the
+            // native stack.
+            //
+            // Original code (that should be what happens):
+            //   auto &resultUsage = solver.getElementFor<ValueResourceUsage>(
+            //    *this, Position::forValue(result), DFX::Resolution::REQUIRED);
+            auto &resultUsage =
+                solver.getOrCreateElementFor<ValueResourceUsage>(
+                    Position::forValue(result), *this,
+                    DFX::Resolution::REQUIRED, /*forceUpdate=*/false,
+                    /*updateAfterInit=*/false);
             getState() ^= resultUsage.getState();
           }
         })
@@ -938,5 +951,7 @@ LogicalResult ResourceUsageAnalysis::run() {
 
   return solver.run();
 }
+
+void ResourceUsageAnalysis::print(llvm::raw_ostream &os) { solver.print(os); }
 
 } // namespace mlir::iree_compiler::IREE::Stream

@@ -42,13 +42,6 @@ jobs:
     if: contains(fromJson(needs.setup.outputs.enabled-jobs), 'unit_test')
     uses: ./.github/workflows/pkgci_unit_test.yml
 
-  # Tests for large programs.
-  regression_test:
-    name: Regression Test
-    needs: [setup, build_packages]
-    if: contains(fromJson(needs.setup.outputs.enabled-jobs), 'regression_test')
-    uses: ./.github/workflows/pkgci_regression_test.yml
-
   ########################### Hardware/accelerators ###########################
   # Jobs that run unit tests on special hardware platforms or accelerators
   #############################################################################
@@ -59,11 +52,11 @@ jobs:
     if: contains(fromJson(needs.setup.outputs.enabled-jobs), 'test_amd_mi250')
     uses: ./.github/workflows/pkgci_test_amd_mi250.yml
 
-  test_amd_mi300:
-    name: Test AMD MI300
+  test_amd_mi325:
+    name: Test AMD MI325
     needs: [setup, build_packages]
-    if: contains(fromJson(needs.setup.outputs.enabled-jobs), 'test_amd_mi300')
-    uses: ./.github/workflows/pkgci_test_amd_mi300.yml
+    if: contains(fromJson(needs.setup.outputs.enabled-jobs), 'test_amd_mi325')
+    uses: ./.github/workflows/pkgci_test_amd_mi325.yml
 
   test_amd_w7900:
     name: Test AMD W7900
@@ -110,6 +103,12 @@ jobs:
     if: contains(fromJson(needs.setup.outputs.enabled-jobs), 'test_sharktank')
     uses: ./.github/workflows/pkgci_test_sharktank.yml
 
+  test_torch:
+    name: Test Torch
+    needs: [setup, build_packages]
+    if: contains(fromJson(needs.setup.outputs.enabled-jobs), 'test_torch')
+    uses: ./.github/workflows/pkgci_test_torch.yml
+
   test_tensorflow:
     name: Test TensorFlow
     needs: [setup, build_packages]
@@ -133,9 +132,8 @@ jobs:
       - setup
       - build_packages
       - unit_test
-      - regression_test
       - test_amd_mi250
-      - test_amd_mi300
+      - test_amd_mi325
       - test_amd_w7900
       # - test_nvidia_t4
       - test_android

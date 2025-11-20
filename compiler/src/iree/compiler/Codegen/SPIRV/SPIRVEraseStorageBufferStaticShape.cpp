@@ -35,11 +35,11 @@ class EraseStorageBufferStaticShapePass final
 /// buffer.
 bool is1DStaticShapedStorageBuffer(
     IREE::HAL::InterfaceBindingSubspanOp subspanOp) {
-  auto type = llvm::dyn_cast<MemRefType>(subspanOp.getType());
+  auto type = dyn_cast<MemRefType>(subspanOp.getType());
   if (!type)
     return false;
-  auto attr = llvm::dyn_cast_if_present<IREE::HAL::DescriptorTypeAttr>(
-      type.getMemorySpace());
+  auto attr =
+      dyn_cast_if_present<IREE::HAL::DescriptorTypeAttr>(type.getMemorySpace());
   if (!attr)
     return false;
   return type.hasStaticShape() && type.getRank() == 1 &&
@@ -75,18 +75,18 @@ rewriteStorageBufferSubspanOp(RewriterBase &rewriter,
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(subspanOp);
 
-  auto oldType = llvm::cast<MemRefType>(subspanOp.getType());
+  auto oldType = cast<MemRefType>(subspanOp.getType());
   auto newType =
       MemRefType::get({ShapedType::kDynamic}, oldType.getElementType(),
                       oldType.getLayout(), oldType.getMemorySpace());
 
   SmallVector<Value, 1> dynamicDims;
   assert(subspanOp.getDynamicDims().empty());
-  dynamicDims.push_back(rewriter.create<arith::ConstantIndexOp>(
-      subspanOp.getLoc(), oldType.getNumElements()));
+  dynamicDims.push_back(arith::ConstantIndexOp::create(
+      rewriter, subspanOp.getLoc(), oldType.getNumElements()));
 
-  auto newOp = rewriter.create<IREE::HAL::InterfaceBindingSubspanOp>(
-      subspanOp.getLoc(), newType, subspanOp.getLayoutAttr(),
+  auto newOp = IREE::HAL::InterfaceBindingSubspanOp::create(
+      rewriter, subspanOp.getLoc(), newType, subspanOp.getLayoutAttr(),
       subspanOp.getBindingAttr(), subspanOp.getByteOffset(), dynamicDims,
       subspanOp.getAlignmentAttr(), subspanOp.getDescriptorFlagsAttr());
 
@@ -118,14 +118,6 @@ void EraseStorageBufferStaticShapePass::runOnOperation() {
     auto newSubspanOp = rewriteStorageBufferSubspanOp(rewriter, subspanOp);
     replaceMemrefUsesAndPropagateType(rewriter, subspanOp.getLoc(), subspanOp,
                                       newSubspanOp);
-  }
-
-  {
-    RewritePatternSet patterns(&getContext());
-    populateRemoveDeadMemAllocPatterns(patterns);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
-      return signalPassFailure();
-    }
   }
 }
 

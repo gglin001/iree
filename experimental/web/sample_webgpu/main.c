@@ -786,8 +786,9 @@ static iree_status_t process_call_outputs(
   }
   iree_hal_semaphore_t* signal_semaphore = NULL;
   if (iree_status_is_ok(status)) {
-    status = iree_hal_semaphore_create(
-        device, 0ull, IREE_HAL_SEMAPHORE_FLAG_NONE, &signal_semaphore);
+    status = iree_hal_semaphore_create(device, IREE_HAL_QUEUE_AFFINITY_ANY,
+                                       0ull, IREE_HAL_SEMAPHORE_FLAG_DEFAULT,
+                                       &signal_semaphore);
   }
   uint64_t signal_value = 1ull;
   if (iree_status_is_ok(status)) {
@@ -799,7 +800,7 @@ static iree_status_t process_call_outputs(
     status = iree_hal_device_queue_execute(
         device, IREE_HAL_QUEUE_AFFINITY_ANY, iree_hal_semaphore_list_empty(),
         signal_semaphores, transfer_command_buffer,
-        iree_hal_buffer_binding_table_empty());
+        iree_hal_buffer_binding_table_empty(), IREE_HAL_EXECUTE_FLAG_NONE);
   }
   // TODO(scotttodd): Make this async - pass a wait source to iree_loop_wait_one
   //     1. create iree_hal_fence_t, iree_hal_fence_insert(fance, semaphore)
@@ -808,7 +809,8 @@ static iree_status_t process_call_outputs(
   //   (requires moving off of nop_semaphore and wait source import)
   if (iree_status_is_ok(status)) {
     status = iree_hal_semaphore_wait(signal_semaphore, signal_value,
-                                     iree_infinite_timeout());
+                                     iree_infinite_timeout(),
+                                     IREE_HAL_WAIT_FLAG_DEFAULT);
   }
   iree_hal_command_buffer_release(transfer_command_buffer);
   iree_hal_semaphore_release(signal_semaphore);

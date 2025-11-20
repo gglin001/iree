@@ -8,6 +8,8 @@
 #include <numeric>
 #include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtOps.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/DialectImplementation.h"
 
 using namespace mlir;
@@ -23,7 +25,7 @@ namespace mlir::iree_compiler::IREE::VectorExt {
 struct IREEVectorExtDialectOpAsmInterface : public OpAsmDialectInterface {
   using OpAsmDialectInterface::OpAsmDialectInterface;
   AliasResult getAlias(Attribute attr, raw_ostream &os) const override {
-    if (llvm::isa<NestedLayoutAttr>(attr)) {
+    if (isa<NestedLayoutAttr>(attr)) {
       os << "nested";
       return AliasResult::OverridableAlias;
     }

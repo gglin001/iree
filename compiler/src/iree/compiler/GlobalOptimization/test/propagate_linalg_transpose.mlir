@@ -2,6 +2,8 @@
 // RUN: iree-opt --pass-pipeline="builtin.module(util.func(iree-global-opt-propagate-linalg-transpose{enable-aggressive-propagation=true}))" --split-input-file %s | FileCheck %s --check-prefix=APROP
 // RUN: iree-opt --pass-pipeline="builtin.module(util.func(iree-global-opt-propagate-linalg-transpose{test-sinking-only=true}))" --split-input-file %s | FileCheck %s --check-prefix=SINK
 // RUN: iree-opt --pass-pipeline="builtin.module(util.func(iree-global-opt-propagate-linalg-transpose{test-bubbling-only=true}))" --split-input-file %s | FileCheck %s --check-prefix=BUBBLE
+// RUN: iree-opt --pass-pipeline="builtin.module(util.func(iree-global-opt-propagate-linalg-transpose{enable-aggressive-propagation-through-conv=true}))" --split-input-file %s | FileCheck %s --check-prefix=CONV
+// RUN: iree-opt --pass-pipeline="builtin.module(util.func(iree-global-opt-propagate-linalg-transpose{enable-edge-reshape-propagation=true}))" %s -o - | FileCheck %s --check-prefix=ENABLE-EDGE-PROP
 
 util.func public @specialize_transpose_op(%arg0 : tensor<1x2x3xf32>,
                                    %empty : tensor<3x2x1xf32>) -> tensor<3x2x1xf32> {
@@ -122,9 +124,16 @@ util.func public @propagate_to_matmul_ops(%lhs: tensor<16x16xf32>,
                             outs(%empty : tensor<16x16xf32>) -> tensor<16x16xf32>
   util.return %second_mm : tensor<16x16xf32>
 }
+//   CHECK-DAG: #[[$MAP0:.*]] = affine_map<(d0, d1, d2) -> (d0, d2)>
+//   CHECK-DAG: #[[$MAP1:.*]] = affine_map<(d0, d1, d2) -> (d1, d2)>
+//   CHECK-DAG: #[[$MAP2:.*]] = affine_map<(d0, d1, d2) -> (d0, d1)>
+//   CHECK-DAG: #[[$MAP3:.*]] = affine_map<(d0, d1, d2) -> (d2, d0)>
+//   CHECK-DAG: #[[$MAP4:.*]] = affine_map<(d0, d1, d2) -> (d2, d1)>
 // CHECK-LABEL: util.func public @propagate_to_matmul_ops
-//       CHECK:   linalg.matmul_transpose_b
-//       CHECK:   %[[SECOND_MM:.+]] = linalg.matmul_transpose_a
+//       CHECK:   linalg.matmul
+//  CHECK-SAME:     indexing_maps = [#[[$MAP0]], #[[$MAP1]], #[[$MAP2]]]
+//       CHECK:   %[[SECOND_MM:.+]] = linalg.matmul
+//  CHECK-SAME:     indexing_maps = [#[[$MAP3]], #[[$MAP4]], #[[$MAP2]]]
 //       CHECK:   util.return %[[SECOND_MM]]
 
 // -----
@@ -135,13 +144,25 @@ util.func public @propagate_to_transposed_matmul_ops(%lhs: tensor<16x16xf32>,
   %empty = tensor.empty(): tensor<16x16xf32>
   %transpose_b = linalg.transpose ins(%rhs : tensor<16x16xf32>)
       outs(%empty : tensor<16x16xf32>) permutation = [1, 0]
-  %first_mm = linalg.matmul_transpose_b ins(%lhs, %transpose_b : tensor<16x16xf32>, tensor<16x16xf32>)
-                                        outs(%empty : tensor<16x16xf32>) -> tensor<16x16xf32>
+  %first_mm = linalg.matmul
+    indexing_maps = [
+      affine_map<(d0, d1, d2) -> (d0, d2)>,
+      affine_map<(d0, d1, d2) -> (d1, d2)>,
+      affine_map<(d0, d1, d2) -> (d0, d1)>
+    ]
+    ins(%lhs, %transpose_b : tensor<16x16xf32>, tensor<16x16xf32>)
+    outs(%empty : tensor<16x16xf32>) -> tensor<16x16xf32>
 
   %transpose_a = linalg.transpose ins(%second_lhs : tensor<16x16xf32>)
       outs(%empty : tensor<16x16xf32>) permutation = [1, 0]
-  %second_mm = linalg.matmul_transpose_a ins(%transpose_a, %first_mm : tensor<16x16xf32>, tensor<16x16xf32>)
-                                         outs(%empty : tensor<16x16xf32>) -> tensor<16x16xf32>
+  %second_mm = linalg.matmul
+    indexing_maps = [
+      affine_map<(d0, d1, d2) -> (d2, d0)>,
+      affine_map<(d0, d1, d2) -> (d2, d1)>,
+      affine_map<(d0, d1, d2) -> (d0, d1)>
+    ]
+    ins(%transpose_a, %first_mm : tensor<16x16xf32>, tensor<16x16xf32>)
+    outs(%empty : tensor<16x16xf32>) -> tensor<16x16xf32>
   util.return %second_mm : tensor<16x16xf32>
 }
 // CHECK-LABEL: util.func public @propagate_to_transposed_matmul_ops
@@ -166,9 +187,16 @@ util.func public @propagate_to_bmm_ops(%lhs: tensor<2x16x16xf32>,
                             outs(%empty : tensor<2x16x16xf32>) -> tensor<2x16x16xf32>
   util.return %second_bmm : tensor<2x16x16xf32>
 }
+//   CHECK-DAG: #[[$MAP0:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
+//   CHECK-DAG: #[[$MAP1:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d2, d3)>
+//   CHECK-DAG: #[[$MAP2:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+//   CHECK-DAG: #[[$MAP3:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d3, d1)>
+//   CHECK-DAG: #[[$MAP4:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
 // CHECK-LABEL: util.func public @propagate_to_bmm_ops
-//       CHECK:   linalg.batch_matmul_transpose_b
-//       CHECK:   %[[SECOND_MM:.+]] = linalg.batch_matmul_transpose_a
+//       CHECK:   linalg.batch_matmul
+//  CHECK-SAME:     indexing_maps = [#[[$MAP0]], #[[$MAP1]], #[[$MAP2]]]
+//       CHECK:   %[[SECOND_MM:.+]] = linalg.batch_matmul
+//  CHECK-SAME:     indexing_maps = [#[[$MAP3]], #[[$MAP4]], #[[$MAP2]]]
 //       CHECK:   util.return %[[SECOND_MM]]
 
 // -----
@@ -179,13 +207,25 @@ util.func public @propagate_to_transposed_bmm_ops(%lhs: tensor<2x16x16xf32>,
   %empty = tensor.empty(): tensor<2x16x16xf32>
   %transpose_b = linalg.transpose ins(%rhs : tensor<2x16x16xf32>)
       outs(%empty : tensor<2x16x16xf32>) permutation = [0, 2, 1]
-  %first_bmm = linalg.batch_matmul_transpose_b ins(%lhs, %transpose_b : tensor<2x16x16xf32>, tensor<2x16x16xf32>)
-                                        outs(%empty : tensor<2x16x16xf32>) -> tensor<2x16x16xf32>
+  %first_bmm = linalg.batch_matmul
+    indexing_maps = [
+      affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>,
+      affine_map<(d0, d1, d2, d3) -> (d0, d2, d3)>,
+      affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+    ]
+    ins(%lhs, %transpose_b : tensor<2x16x16xf32>, tensor<2x16x16xf32>)
+    outs(%empty : tensor<2x16x16xf32>) -> tensor<2x16x16xf32>
 
   %transpose_a = linalg.transpose ins(%second_lhs : tensor<2x16x16xf32>)
       outs(%empty : tensor<2x16x16xf32>) permutation = [0, 2, 1]
-  %second_bmm = linalg.batch_matmul_transpose_a ins(%transpose_a, %first_bmm : tensor<2x16x16xf32>, tensor<2x16x16xf32>)
-                                         outs(%empty : tensor<2x16x16xf32>) -> tensor<2x16x16xf32>
+  %second_bmm = linalg.batch_matmul
+    indexing_maps = [
+      affine_map<(d0, d1, d2, d3) -> (d0, d3, d1)>,
+      affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>,
+      affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+    ]
+    ins(%transpose_a, %first_bmm : tensor<2x16x16xf32>, tensor<2x16x16xf32>)
+    outs(%empty : tensor<2x16x16xf32>) -> tensor<2x16x16xf32>
   util.return %second_bmm : tensor<2x16x16xf32>
 }
 // CHECK-LABEL: util.func public @propagate_to_transposed_bmm_ops
@@ -212,6 +252,46 @@ util.func public @do_not_propagate_to_matmul_in_dispatch(%lhs: tensor<16x16xf32>
 //       CHECK:   %[[DISPATCH:.+]] = flow.dispatch.region
 //       CHECK:     linalg.matmul ins
 //       CHECK:   util.return %[[DISPATCH]]
+
+// -----
+
+util.func public @propagate_to_gather_like_ops(%arg0: tensor<2x3x4x5xf32>, %arg1: tensor<1xi16>) -> tensor<2x3x4x5xf32> {
+  %cst = arith.constant 0xFF800000 : f32
+  %empty_transposed = tensor.empty() : tensor<2x4x5x3xf32>
+  %transposed = linalg.transpose ins(%arg0 : tensor<2x3x4x5xf32>) outs(%empty_transposed : tensor<2x4x5x3xf32>) permutation = [0, 2, 3, 1]
+  %empty = tensor.empty() : tensor<2x4x5x3xf32>
+  %collapsed = tensor.collapse_shape %arg1 [] : tensor<1xi16> into tensor<i16>
+  %mask = linalg.generic {indexing_maps = [affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>, affine_map<(d0, d1, d2, d3) -> ()>, affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%transposed, %collapsed : tensor<2x4x5x3xf32>, tensor<i16>) outs(%empty : tensor<2x4x5x3xf32>) {
+  ^bb0(%in: f32, %in_0: i16, %out: f32):
+    %11 = linalg.index 3 : index
+    %12 = arith.index_cast %in_0 : i16 to index
+    %13 = arith.cmpi ult, %11, %12 : index
+    %14 = arith.select %13, %in, %cst : f32
+    linalg.yield %14 : f32
+  } -> tensor<2x4x5x3xf32>
+  %empty_transposed_0 = tensor.empty() : tensor<2x3x4x5xf32>
+  %transposed_0 = linalg.transpose ins(%mask : tensor<2x4x5x3xf32>) outs(%empty_transposed_0 : tensor<2x3x4x5xf32>) permutation = [0, 3, 1, 2]
+  util.return %transposed_0 : tensor<2x3x4x5xf32>
+}
+
+//   CHECK-DAG: #[[$MAP_0:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
+//   CHECK-DAG: #[[$MAP_1:.+]] = affine_map<(d0, d1, d2, d3) -> ()>
+// CHECK-LABEL:   util.func public @propagate_to_gather_like_ops(
+//  CHECK-SAME:     %[[ARG0:.*]]: tensor<2x3x4x5xf32>,
+//  CHECK-SAME:     %[[ARG1:.*]]: tensor<1xi16>) -> tensor<2x3x4x5xf32> {
+//       CHECK:     %[[VAL_0:.*]] = arith.constant 0xFF800000 : f32
+//       CHECK:     %[[VAL_1:.*]] = tensor.collapse_shape %[[ARG1]] [] : tensor<1xi16> into tensor<i16>
+//       CHECK:     %[[VAL_2:.*]] = tensor.empty() : tensor<2x3x4x5xf32>
+//       CHECK:     %[[VAL_3:.*]] = linalg.generic {indexing_maps = [#[[$MAP_0]], #[[$MAP_1]], #[[$MAP_0]]], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%[[ARG0]], %[[VAL_1]] : tensor<2x3x4x5xf32>, tensor<i16>) outs(%[[VAL_2]] : tensor<2x3x4x5xf32>) {
+//       CHECK:     ^bb0(%[[VAL_4:.*]]: f32, %[[VAL_5:.*]]: i16, %[[VAL_6:.*]]: f32):
+//       CHECK:       %[[VAL_7:.*]] = linalg.index 1 : index
+//       CHECK:       %[[VAL_8:.*]] = arith.index_cast %[[VAL_5]] : i16 to index
+//       CHECK:       %[[VAL_9:.*]] = arith.cmpi ult, %[[VAL_7]], %[[VAL_8]] : index
+//       CHECK:       %[[VAL_10:.*]] = arith.select %[[VAL_9]], %[[VAL_4]], %[[VAL_0]] : f32
+//       CHECK:       linalg.yield %[[VAL_10]] : f32
+//       CHECK:     } -> tensor<2x3x4x5xf32>
+//       CHECK:     util.return %[[VAL_3]] : tensor<2x3x4x5xf32>
+//       CHECK:   }
 
 // -----
 
@@ -254,6 +334,10 @@ util.func public @do_not_propagate_to_conv(%transposed_lhs: tensor<18x2x18x8xf32
 // APROP-LABEL: util.func public @do_not_propagate_to_conv
 //       APROP:   linalg.conv_2d_nhwc_hwcf
 
+// CONV-LABEL:   util.func public @do_not_propagate_to_conv
+//  CONV-SAME:   %[[ARG0:[A-Za-z0-9]+]]: tensor<18x2x18x8xf32>
+//       CONV:   linalg.generic {{.*}} ins(%[[ARG0]]
+
 // -----
 
 #map = affine_map<(d0, d1, d2, d3, d4, d5, d6) -> (d0, d1 + d4, d2 + d5, d6)>
@@ -277,6 +361,10 @@ module {
 // APROP-LABEL: util.func public @do_not_propagate_to_conv_generic
 //       APROP:   linalg.transpose
 //       APROP:   linalg.generic
+
+// CONV-LABEL:   util.func public @do_not_propagate_to_conv_generic
+//  CONV-SAME:   %[[ARG0:[A-Za-z0-9]+]]: tensor<18x2x18x8xf32>
+//       CONV:   linalg.generic {{.*}} ins(%[[ARG0]]
 
 // -----
 
@@ -308,40 +396,6 @@ util.func public @sink_through_expand_shape(%arg0: tensor<?x?x?xf32>) -> tensor<
 //  SINK-SAME:                    outs({{.*}} : tensor<32x?x16x?x?xf32>)
 //  SINK-SAME:                    permutation = [2, 3, 0, 1, 4]
 //       SINK:   util.return %[[RES]] : tensor<32x?x16x?x?xf32>
-
-// -----
-
-util.func public @sink_non_involution_through_expand_shape(%arg0 : tensor<2x3x4xf32>) -> tensor<1x3x4x2xf32> {
-  %empty = tensor.empty(): tensor<3x4x2xf32>
-  %transposed = linalg.transpose ins(%arg0 : tensor<2x3x4xf32>)
-      outs(%empty : tensor<3x4x2xf32>) permutation = [1, 2, 0]
-  %expanded = tensor.expand_shape %transposed [[0, 1], [2], [3]] output_shape [1, 3, 4, 2] : tensor<3x4x2xf32> into tensor<1x3x4x2xf32>
-  util.return %expanded : tensor<1x3x4x2xf32>
-}
-// SINK-LABEL: util.func public @sink_non_involution_through_expand_shape
-//       SINK:   %[[EXP:.+]] = tensor.expand_shape {{.*}} {{\[\[}}0], [1, 2], [3]]
-//  SINK-SAME:                   tensor<2x3x4xf32> into tensor<2x1x3x4xf32>
-//       SINK:   %[[RES:.+]] = linalg.transpose ins(%[[EXP]] : tensor<2x1x3x4xf32>
-//  SINK-SAME:                    outs({{.*}} : tensor<1x3x4x2xf32>)
-//  SINK-SAME:                    permutation = [1, 2, 3, 0]
-//       SINK:   util.return %[[RES]] : tensor<1x3x4x2xf32>
-
-// -----
-
-util.func public @bubble_non_involution_through_collapse_shape(%arg0 : tensor<1x2x3x5x7x11xf32>) -> tensor<35x11x6xf32> {
-  %collapsed = tensor.collapse_shape %arg0 [[0, 1, 2], [3, 4], [5]] : tensor<1x2x3x5x7x11xf32> into tensor<6x35x11xf32>
-  %empty = tensor.empty(): tensor<35x11x6xf32>
-  %transposed = linalg.transpose ins(%collapsed : tensor<6x35x11xf32>)
-      outs(%empty : tensor<35x11x6xf32>) permutation = [1, 2, 0]
-  util.return %transposed : tensor<35x11x6xf32>
-}
-// BUBBLE-LABEL: util.func public @bubble_non_involution_through_collapse_shape
-//       BUBBLE:   %[[T:.+]] = linalg.transpose ins(%{{.*}} : tensor<1x2x3x5x7x11xf32>
-//  BUBBLE-SAME:                    outs({{.*}} : tensor<5x7x11x1x2x3xf32>)
-//  BUBBLE-SAME:                    permutation = [3, 4, 5, 0, 1, 2]
-//       BUBBLE:   %[[COL:.+]] = tensor.collapse_shape %[[T]] {{\[\[}}0, 1], [2], [3, 4, 5]]
-//  BUBBLE-SAME:                   tensor<5x7x11x1x2x3xf32> into tensor<35x11x6xf32>
-//       BUBBLE:   util.return %[[COL]] : tensor<35x11x6xf32>
 
 // -----
 
@@ -733,3 +787,59 @@ util.func public @bubble_transpose_v_from_attention(%q: tensor<2x10x4096x64xf16>
 // CHECK-SAME:    ins(%[[ARG0]], %[[ARG1]], %[[TRANS_V]], %[[ARG5]] : tensor<2x10x4096x64xf16>, tensor<2x10x4096x64xf16>, tensor<2x10x64x4096xf16>, f16)
 // CHECK-SAME:    outs(%[[EMPTY]] : tensor<2x10x4096x64xf16>)
 // CHECK:         util.return %[[ATTN]] : tensor<2x10x4096x64xf16>
+
+// -----
+
+util.func public @dont_reshape_reduction(%arg0: tensor<16x4x4xf32>, %arg1: tensor<16x16xf32>) -> tensor<16x16xf32> {
+  %empty1 = tensor.empty(): tensor<16x4x4xf32>
+  %0 = linalg.transpose ins(%arg0 : tensor<16x4x4xf32>)
+      outs(%empty1 : tensor<16x4x4xf32>) permutation = [0, 2, 1]
+  %collapse = tensor.collapse_shape %0 [[0], [1, 2]] : tensor<16x4x4xf32> into tensor<16x16xf32>
+  %empty2 = tensor.empty(): tensor<16x16xf32>
+  %1 = linalg.matmul ins(%collapse, %arg1: tensor<16x16xf32>, tensor<16x16xf32>)
+                            outs(%empty2 : tensor<16x16xf32>) -> tensor<16x16xf32>
+
+  util.return %1 : tensor<16x16xf32>
+}
+// APROP-LABEL: util.func public @dont_reshape_reduction
+//       APROP:   %[[V0:.+]] = linalg.transpose
+//       APROP:   %[[V1:.+]] = tensor.collapse_shape %[[V0]]
+//       APROP:   %[[V2:.+]] = linalg.matmul ins(%[[V1]]
+//       APROP:   util.return %[[V2]]
+
+// -----
+
+util.func @dont_propagate_edge_reshapes(%arg0: tensor<10x10x10xi32>) -> tensor<10x100xi32> {
+  %collapsed = tensor.collapse_shape %arg0[[0, 1], [2]] : tensor<10x10x10xi32> into tensor<100x10xi32>
+  %empty = tensor.empty() : tensor<10x100xi32>
+  %transpose = linalg.transpose ins(%collapsed : tensor<100x10xi32>) outs(%empty : tensor<10x100xi32>) permutation = [1, 0]
+  util.return %transpose : tensor<10x100xi32>
+}
+// CHECK-LABEL: util.func public @dont_propagate_edge_reshapes
+//  CHECK-SAME:   %[[ARG0:[0-9a-zA-Z]+]]
+//       CHECK:   %[[COLLAPSED:.+]] = tensor.collapse_shape %[[ARG0]]
+//       CHECK:   %[[VAL:.+]] = linalg.transpose ins(%[[COLLAPSED]]
+//       CHECK:   util.return %[[VAL]]
+// ENABLE-EDGE-PROP-LABEL: util.func public @dont_propagate_edge_reshapes
+//  ENABLE-EDGE-PROP-SAME:   %[[ARG0:[0-9a-zA-Z]+]]
+//       ENABLE-EDGE-PROP:   %[[TRANSPOSED:.+]] = linalg.transpose ins(%[[ARG0]]
+//       ENABLE-EDGE-PROP:   %[[COLLAPSED:.+]] = tensor.collapse_shape %[[TRANSPOSED]]
+//       ENABLE-EDGE-PROP:   util.return %[[COLLAPSED]]
+
+// -----
+
+util.func public @dont_sink_through_edge_expand_shape(%arg0 : tensor<2x3x4xf32>) -> tensor<1x3x4x2xf32> {
+  %empty = tensor.empty(): tensor<3x4x2xf32>
+  %transposed = linalg.transpose ins(%arg0 : tensor<2x3x4xf32>)
+      outs(%empty : tensor<3x4x2xf32>) permutation = [1, 2, 0]
+  %expanded = tensor.expand_shape %transposed [[0, 1], [2], [3]] output_shape [1, 3, 4, 2] : tensor<3x4x2xf32> into tensor<1x3x4x2xf32>
+  util.return %expanded : tensor<1x3x4x2xf32>
+}
+// SINK-LABEL: util.func public @dont_sink_through_edge_expand_shape
+//       SINK:   %[[TRANSPOSE:.+]] = linalg.transpose
+//       SINK:   %[[RES:.+]] = tensor.expand_shape %[[TRANSPOSE]]
+//       SINK:   util.return %[[RES]] : tensor<1x3x4x2xf32>
+// ENABLE-EDGE-PROP-LABEL: util.func public @dont_sink_through_edge_expand_shape
+//       ENABLE-EDGE-PROP:   %[[EXP:.+]] = tensor.expand_shape
+//       ENABLE-EDGE-PROP:   %[[RES:.+]] = linalg.transpose
+//       ENABLE-EDGE-PROP:   util.return %[[RES]]

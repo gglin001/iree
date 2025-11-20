@@ -13,7 +13,9 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/MLIRContext.h"
@@ -34,7 +36,7 @@ struct UtilOpAsmInterface : public OpAsmDialectInterface {
   /// end with a numeric digit([0-9]+). Returns success if an alias was
   /// provided, failure otherwise.
   AliasResult getAlias(Attribute attr, raw_ostream &os) const override {
-    if (auto compositeAttr = llvm::dyn_cast<CompositeAttr>(attr)) {
+    if (auto compositeAttr = dyn_cast<CompositeAttr>(attr)) {
       os << "composite_of_" << compositeAttr.getTotalLength() << "b";
       return AliasResult::OverridableAlias;
     }
@@ -84,22 +86,29 @@ struct UtilInlinerInterface : public DialectInlinerInterface {
   }
 
   void handleTerminator(Operation *op, Block *newDest) const final {
-    auto returnOp = dyn_cast<IREE::Util::ReturnOp>(op);
-    if (!returnOp)
+    if (!op->hasTrait<OpTrait::ReturnLike>())
       return;
+
     OpBuilder builder(op);
-    builder.create<mlir::cf::BranchOp>(op->getLoc(), newDest,
-                                       returnOp.getOperands());
+    if (auto returnOp = dyn_cast<IREE::Util::ReturnOp>(op)) {
+      mlir::cf::BranchOp::create(builder, op->getLoc(), newDest,
+                                 returnOp.getOperands());
+    } else if (op->hasTrait<OpTrait::IREE::Util::UnreachableLike>()) {
+      mlir::cf::BranchOp::create(builder, op->getLoc(), newDest, ValueRange{});
+    }
     op->erase();
   }
 
   void handleTerminator(Operation *op, ValueRange valuesToReplace) const final {
-    auto returnOp = dyn_cast<IREE::Util::ReturnOp>(op);
-    if (!returnOp)
-      return;
-    assert(returnOp.getNumOperands() == valuesToReplace.size());
-    for (const auto &it : llvm::enumerate(returnOp.getOperands())) {
-      valuesToReplace[it.index()].replaceAllUsesWith(it.value());
+    if (auto returnOp = dyn_cast<IREE::Util::ReturnOp>(op)) {
+      // Replace return operands with their new values.
+      assert(returnOp.getNumOperands() == valuesToReplace.size());
+      for (const auto &it : llvm::enumerate(returnOp.getOperands())) {
+        valuesToReplace[it.index()].replaceAllUsesWith(it.value());
+      }
+    } else if (op->hasTrait<OpTrait::IREE::Util::UnreachableLike>()) {
+      // Unreachable ops have no operands to replace.
+      assert(valuesToReplace.empty());
     }
   }
 
@@ -113,6 +122,8 @@ struct UtilInlinerInterface : public DialectInlinerInterface {
 UtilDialect::UtilDialect(MLIRContext *context)
     : Dialect(getDialectNamespace(), context, TypeID::get<UtilDialect>()) {
   context->loadDialect<arith::ArithDialect>();
+  context->loadDialect<scf::SCFDialect>();
+  context->loadDialect<ub::UBDialect>();
 
   addInterfaces<UtilOpAsmInterface, UtilInlinerInterface>();
 
@@ -128,9 +139,10 @@ UtilDialect::UtilDialect(MLIRContext *context)
 Operation *UtilDialect::materializeConstant(OpBuilder &builder, Attribute value,
                                             Type type, Location loc) {
   if (isa<IREE::Util::NullAttr>(value)) {
-    return builder.create<IREE::Util::NullOp>(loc, type);
+    return IREE::Util::NullOp::create(builder, loc, type);
   } else if (arith::ConstantOp::isBuildableWith(value, type)) {
-    return builder.create<arith::ConstantOp>(loc, type, cast<TypedAttr>(value));
+    return arith::ConstantOp::create(builder, loc, type,
+                                     cast<TypedAttr>(value));
   }
   return nullptr;
 }
@@ -140,8 +152,13 @@ struct FoldDimOp : public OpRewritePattern<DimOp> {
   using OpRewritePattern<DimOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(DimOp op,
                                 PatternRewriter &rewriter) const override {
+    Value source = op.getSource();
+    while (auto assumeAlignmentOp =
+               source.getDefiningOp<memref::AssumeAlignmentOp>()) {
+      source = assumeAlignmentOp.getViewSource();
+    }
     auto shapeAwareOp =
-        dyn_cast_or_null<ShapeAwareOpInterface>(op.getSource().getDefiningOp());
+        dyn_cast_if_present<ShapeAwareOpInterface>(source.getDefiningOp());
     if (!shapeAwareOp)
       return failure();
 
@@ -156,9 +173,9 @@ struct FoldDimOp : public OpRewritePattern<DimOp> {
     }
 
     // If it's a static dim then just fold to that.
-    auto type = llvm::cast<ShapedType>(op.getSource().getType());
+    auto type = cast<ShapedType>(source.getType());
     int64_t staticDim = type.getDimSize(index.getZExtValue());
-    if (!ShapedType::isDynamic(staticDim)) {
+    if (ShapedType::isStatic(staticDim)) {
       rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(op, staticDim);
       return success();
     }
@@ -166,8 +183,7 @@ struct FoldDimOp : public OpRewritePattern<DimOp> {
     // Otherwise try to get the dynamic dimension cheaply without the need to
     // insert new IR.
     unsigned dynamicIdx = type.getDynamicDimIndex(index.getZExtValue());
-    auto dynamicDims =
-        shapeAwareOp.getResultDynamicDimsFromValue(op.getSource());
+    auto dynamicDims = shapeAwareOp.getResultDynamicDimsFromValue(source);
     rewriter.replaceOp(op, dynamicDims[dynamicIdx]);
 
     return success();

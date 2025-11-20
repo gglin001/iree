@@ -14,7 +14,7 @@ include "iree/compiler/Dialect/Util/IR/UtilInterfaces.td"
 // !util.buffer
 //===----------------------------------------------------------------------===//
 
-def Util_BufferType : TypeDef<Util_Dialect, "Buffer", [
+def Util_BufferType : Util_TypeDef<"Buffer", [
   Util_ReferenceType,
   Util_SizeAwareType,
   DeclareTypeInterfaceMethods<Util_GlobalType, [
@@ -29,7 +29,7 @@ def Util_BufferType : TypeDef<Util_Dialect, "Buffer", [
 ]> {
   let mnemonic = "buffer";
 
-  let summary = [{a reference counted byte buffer}];
+  let summary = [{A reference counted byte buffer.}];
   let description = [{
     A reference counted byte buffer that models a pointer, offset, and length.
   }];
@@ -45,10 +45,10 @@ def Util_BufferType : TypeDef<Util_Dialect, "Buffer", [
 // !util.list<T>
 //===----------------------------------------------------------------------===//
 
-def Util_ListType : TypeDef<Util_Dialect, "List"> {
+def Util_ListType : Util_TypeDef<"List"> {
   let mnemonic = "list";
 
-  let summary = [{dense list container type}];
+  let summary = [{Dense list container type.}];
   let description = [{
     Typed container supporting variant storage.
   }];
@@ -96,10 +96,10 @@ class Util_ListOf<Type type> :
 // !util.ptr<T>
 //===----------------------------------------------------------------------===//
 
-def Util_PtrType : TypeDef<Util_Dialect, "Ptr"> {
+def Util_PtrType : Util_TypeDef<"Ptr"> {
   let mnemonic = "ptr";
 
-  let summary = [{a pointer-like reference}];
+  let summary = [{A pointer-like reference.}];
   let description = [{
     A typed indirect reference to a value. These define a runtime addressable
     value that is strongly referenced.
@@ -131,8 +131,8 @@ def Util_AnyPtrType : TypeAlias<Util_PtrType>;
 
 class Util_PtrOf<Type type> :
     Type<And<[
-      CPred<"isa<IREE::Util::PtrType>($_self)">,
-      SubstLeaves<"$_self", "cast<IREE::Util::PtrType>($_self).getTargetType()",
+      CPred<"::llvm::isa<::mlir::iree_compiler::IREE::Util::PtrType>($_self)">,
+      SubstLeaves<"$_self", "::llvm::cast<::mlir::iree_compiler::IREE::Util::PtrType>($_self).getTargetType()",
                   type.predicate>
     ]>, "ptr<" # type.summary # ">"> {
   string builderCall = !if(!empty(type.builderCall),
@@ -141,11 +141,11 @@ class Util_PtrOf<Type type> :
 
 class Util_AnyPtrOf<list<Type> types> :
     Type<And<[
-      CPred<"isa<IREE::Util::PtrType>($_self)">,
+      CPred<"::llvm::isa<::mlir::iree_compiler::IREE::Util::PtrType>($_self)">,
       Or<!foreach(type, types,
           SubstLeaves<
               "$_self",
-              "cast<IREE::Util::PtrType>($_self).getTargetType()",
+              "::llvm::cast<::mlir::iree_compiler::IREE::Util::PtrType>($_self).getTargetType()",
               type.predicate>)>,
     ]>, !interleave(!foreach(type, types, type.summary), " or ")> {
   string builderCall = "";
@@ -162,10 +162,10 @@ class Util_GlobalPtrOf<list<Type> types> : TypeAlias<Util_AnyPtrType> {
 // !util.object
 //===----------------------------------------------------------------------===//
 
-def Util_ObjectType : TypeDef<Util_Dialect, "Object"> {
+def Util_ObjectType : Util_TypeDef<"Object"> {
   let mnemonic = "object";
 
-  let summary = [{a placeholder for an unspecified object type}];
+  let summary = [{A placeholder for an unspecified object type.}];
   let description = [{
     Describes a runtime object type. These may be reference counted or garbage
     collected at runtime.
@@ -187,10 +187,10 @@ def Util_ObjectType : TypeDef<Util_Dialect, "Object"> {
 // !util.unused
 //===----------------------------------------------------------------------===//
 
-def Util_UnusedType : TypeDef<Util_Dialect, "Unused"> {
+def Util_UnusedType : Util_TypeDef<"Unused"> {
   let mnemonic = "unused";
 
-  let summary = [{a placeholder for unused types}];
+  let summary = [{A placeholder for unused types.}];
   let description = [{
     An unused type placeholder used to satisfy verifiers that may require a
     type even if unused.
@@ -207,10 +207,10 @@ def Util_UnusedType : TypeDef<Util_Dialect, "Unused"> {
 // !util.variant
 //===----------------------------------------------------------------------===//
 
-def Util_VariantType : TypeDef<Util_Dialect, "Variant"> {
+def Util_VariantType : Util_TypeDef<"Variant"> {
   let mnemonic = "variant";
 
-  let summary = [{a placeholder for a variant type (`?`)}];
+  let summary = [{A placeholder for a variant type (`?`).}];
   let description = [{
     Describes a runtime variant type. These may be primitives (i32, f32, etc) or
     object types.

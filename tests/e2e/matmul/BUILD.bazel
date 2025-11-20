@@ -15,7 +15,13 @@ package(
 
 py_binary(
     name = "generate_e2e_matmul_tests",
-    srcs = ["generate_e2e_matmul_tests.py"],
+    srcs = [
+        "common.py",
+        "compilation_info.py",
+        "generate_code.py",
+        "generate_code_mx.py",
+        "generate_e2e_matmul_tests.py",
+    ],
 )
 
 ###########################################################################
@@ -208,7 +214,6 @@ X86_64_AVX512_BF16 = X86_64_AVX512 + [
     compiler_flags = [
         "--iree-opt-data-tiling",
         "--iree-global-opt-enable-early-materialization=false",
-        "--iree-stream-experimental-specialize-encodings",
     ] + ["--iree-llvmcpu-enable-ukernels=%s" % ("all" if use_uk else "none")],
     generator = ":generate_e2e_matmul_tests",
     generator_args = [
@@ -275,7 +280,6 @@ X86_64_AVX512_BF16 = X86_64_AVX512 + [
     compiler_flags = [
         "--iree-opt-data-tiling",
         "--iree-global-opt-enable-early-materialization=false",
-        "--iree-stream-experimental-specialize-encodings",
     ],
     generator = ":generate_e2e_matmul_tests",
     generator_args = [
@@ -299,34 +303,6 @@ X86_64_AVX512_BF16 = X86_64_AVX512 + [
 )]
 
 [iree_generated_e2e_runner_test(
-    name = "e2e_matmul_cuda_experimental_dt_%s_%s" % (
-        lhs_rhs_type,
-        acc_type,
-    ),
-    compiler_flags = [
-        "--iree-opt-data-tiling",
-        "--iree-global-opt-enable-early-materialization=false",
-        "--iree-stream-experimental-specialize-encodings",
-    ],
-    generator = ":generate_e2e_matmul_tests",
-    generator_args = [
-        "--lhs_rhs_type=%s" % lhs_rhs_type,
-        "--acc_type=%s" % acc_type,
-        "--shapes=small",
-    ],
-    tags = [],
-    target_backends_and_drivers = [
-        ("cuda", "cuda"),
-    ],
-    test_runner = "//tools/testing/e2e:iree-e2e-matmul-test",
-    test_type = "matmul",
-) for (lhs_rhs_type, acc_type) in (
-    [
-        ("f32", "f32"),
-    ]
-)]
-
-[iree_generated_e2e_runner_test(
     name = "e2e_matmul_spirv_experimental_dt_%s_%s" % (
         lhs_rhs_type,
         acc_type,
@@ -334,7 +310,6 @@ X86_64_AVX512_BF16 = X86_64_AVX512 + [
     compiler_flags = [
         "--iree-opt-data-tiling",
         "--iree-global-opt-enable-early-materialization=false",
-        "--iree-stream-experimental-specialize-encodings",
     ],
     generator = ":generate_e2e_matmul_tests",
     generator_args = [
@@ -380,202 +355,6 @@ X86_64_AVX512_BF16 = X86_64_AVX512 + [
     test_type = "matmul",
 ) for (lhs_rhs_type, acc_type) in [
     ("i8", "i32"),
-    ("f32", "f32"),
-]]
-
-###########################################################################
-##
-## CUDA backend
-##
-###########################################################################
-
-# Testing Ampere + TensorCore path.
-# WMMA TensorCore(F32): wmma.161616.f32.tf32
-iree_generated_e2e_runner_test(
-    name = "e2e_matmul_cuda_f32_large_tensorcore",
-    compiler_flags = [
-        "--iree-cuda-target=sm_80",
-    ],
-    generator = ":generate_e2e_matmul_tests",
-    generator_args = [
-        "--lhs_rhs_type=f32",
-        "--acc_type=f32",
-        "--shapes=easy_large_static",
-        "--compilation_info=LLVMGPUMatmulTensorCore",
-    ],
-    tags = [
-        # CUDA cuInit fails with sanitizer on.
-        "noasan",
-        "nomsan",
-        "notsan",
-        "noubsan",
-        "requires-gpu-sm80",
-    ],
-    target_backends_and_drivers = [
-        ("cuda", "cuda"),
-    ],
-    test_runner = "//tools/testing/e2e:iree-e2e-matmul-test",
-    test_type = "matmul",
-)
-
-iree_generated_e2e_runner_test(
-    name = "e2e_matmul_cuda_f32",
-    compiler_flags = [
-        "--iree-cuda-target=sm_80",
-    ],
-    generator = ":generate_e2e_matmul_tests",
-    generator_args = [
-        "--lhs_rhs_type=f32",
-        "--acc_type=f32",
-    ],
-    tags = [
-        # CUDA cuInit fails with sanitizer on.
-        "noasan",
-        "nomsan",
-        "notsan",
-        "noubsan",
-        "requires-gpu-sm80",
-    ],
-    target_backends_and_drivers = [
-        ("cuda", "cuda"),
-    ],
-    test_runner = "//tools/testing/e2e:iree-e2e-matmul-test",
-    test_type = "matmul",
-)
-
-iree_generated_e2e_runner_test(
-    name = "e2e_matmul_cuda_f16",
-    compiler_flags = [
-        "--iree-cuda-target=sm_80",
-    ],
-    generator = ":generate_e2e_matmul_tests",
-    generator_args = [
-        "--lhs_rhs_type=f16",
-        "--acc_type=f32",
-    ],
-    tags = [
-        # CUDA cuInit fails with sanitizer on.
-        "noasan",
-        "nomsan",
-        "notsan",
-        "noubsan",
-        "requires-gpu-sm80",
-    ],
-    target_backends_and_drivers = [
-        ("cuda", "cuda"),
-    ],
-    test_runner = "//tools/testing/e2e:iree-e2e-matmul-test",
-    test_type = "matmul",
-)
-
-# MMA.SYNC TensorCore(F32): mma.sync.1688.f32.t32
-iree_generated_e2e_runner_test(
-    name = "e2e_matmul_cuda_f32_large_mma_sync",
-    compiler_flags = [
-        "--iree-cuda-target=sm_80",
-    ],
-    generator = ":generate_e2e_matmul_tests",
-    generator_args = [
-        "--lhs_rhs_type=f32",
-        "--acc_type=f32",
-        "--shapes=easy_large_static",
-        "--compilation_info=LLVMGPUMatmulTensorCoreMmaSync",
-    ],
-    tags = [
-        # CUDA cuInit fails with sanitizer on.
-        "noasan",
-        "nomsan",
-        "notsan",
-        "noubsan",
-        "requires-gpu-sm80",
-    ],
-    target_backends_and_drivers = [
-        ("cuda", "cuda"),
-    ],
-    test_runner = "//tools/testing/e2e:iree-e2e-matmul-test",
-    test_type = "matmul",
-)
-
-# WMMA TensorCore(F16): wmma.161616.f16.f16
-iree_generated_e2e_runner_test(
-    name = "e2e_matmul_cuda_f16_large_tensorcore",
-    compiler_flags = [
-        "--iree-cuda-target=sm_80",
-    ],
-    generator = ":generate_e2e_matmul_tests",
-    generator_args = [
-        "--lhs_rhs_type=f16",
-        "--acc_type=f32",
-        "--shapes=easy_large_static",
-        "--compilation_info=LLVMGPUMatmulTensorCore",
-    ],
-    tags = [
-        # CUDA cuInit fails with sanitizer on.
-        "noasan",
-        "nomsan",
-        "notsan",
-        "noubsan",
-        "requires-gpu-sm80",
-    ],
-    target_backends_and_drivers = [
-        ("cuda", "cuda"),
-    ],
-    test_runner = "//tools/testing/e2e:iree-e2e-matmul-test",
-    test_type = "matmul",
-)
-
-# MMA.SYNC TensorCore(F16): mma.sync.161616.f16.f16
-iree_generated_e2e_runner_test(
-    name = "e2e_matmul_cuda_f16_large_mma_sync",
-    compiler_flags = [
-        "--iree-cuda-target=sm_80",
-    ],
-    generator = ":generate_e2e_matmul_tests",
-    generator_args = [
-        "--lhs_rhs_type=f16",
-        "--acc_type=f32",
-        "--shapes=easy_large_static",
-        "--compilation_info=LLVMGPUMatmulTensorCoreMmaSync",
-    ],
-    tags = [
-        # CUDA cuInit fails with sanitizer on.
-        "noasan",
-        "nomsan",
-        "notsan",
-        "noubsan",
-        "requires-gpu-sm80",
-    ],
-    target_backends_and_drivers = [
-        ("cuda", "cuda"),
-    ],
-    test_runner = "//tools/testing/e2e:iree-e2e-matmul-test",
-    test_type = "matmul",
-)
-
-[iree_generated_e2e_runner_test(
-    name = "e2e_matmul_cuda_%s_splitk" % lhs_rhs_type,
-    compiler_flags = [
-        "--iree-dispatch-creation-split-matmul-reduction=4",
-    ],
-    generator = ":generate_e2e_matmul_tests",
-    generator_args = [
-        "--lhs_rhs_type=%s" % lhs_rhs_type,
-        "--acc_type=%s" % acc_type,
-    ],
-    tags = [
-        # CUDA cuInit fails with sanitizer on.
-        "noasan",
-        "nomsan",
-        "notsan",
-        "noubsan",
-        "requires-gpu-nvidia",
-    ],
-    target_backends_and_drivers = [
-        ("cuda", "cuda"),
-    ],
-    test_runner = "//tools/testing/e2e:iree-e2e-matmul-test",
-    test_type = "matmul",
-) for (lhs_rhs_type, acc_type) in [
     ("f32", "f32"),
 ]]
 
@@ -640,4 +419,4 @@ iree_generated_e2e_runner_test(
     ("f32", "f32"),
 ]]
 
-# TODO(#19465): add large matmul tests for rdna3.
+# TODO(#19465): add large matmul tests for rdna3 and rdna4.

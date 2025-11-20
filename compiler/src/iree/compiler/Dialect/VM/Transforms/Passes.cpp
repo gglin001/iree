@@ -57,6 +57,18 @@ static void addCleanupPatterns(OpPassManager &passManager) {
   passManager.addPass(IREE::Util::createFuseGlobalsPass());
 }
 
+static ConversionPassOptions
+conversionPassOptionsFromTarget(IREE::VM::TargetOptions targetOptions) {
+  ConversionPassOptions passOptions;
+  passOptions.indexBits = targetOptions.indexBits;
+  passOptions.f32Extension = targetOptions.f32Extension;
+  passOptions.f64Extension = targetOptions.f64Extension;
+  passOptions.truncateUnsupportedFloats =
+      targetOptions.truncateUnsupportedFloats;
+  passOptions.optimizeForStackSize = targetOptions.optimizeForStackSize;
+  return passOptions;
+}
+
 //===----------------------------------------------------------------------===//
 // -iree-vm-transformation-pipeline
 //===----------------------------------------------------------------------===//
@@ -71,6 +83,11 @@ void buildVMTransformPassPipeline(OpPassManager &passManager,
   // to vm below.
   passManager.addPass(mlir::createInlinerPass());
   passManager.addPass(mlir::createSymbolDCEPass());
+
+  // Verify module initialization order - subsequent passes rely on it being
+  // correct (and we maintain it as correct from this point on, so this is our
+  // gate).
+  passManager.addPass(IREE::Util::createVerifyInitializationOrderPass());
 
   // Combine the initializers for all globals to allow us to optimize them
   // together.
@@ -95,8 +112,9 @@ void buildVMTransformPassPipeline(OpPassManager &passManager,
       // Remove if it is added there.
       // https://github.com/llvm/llvm-project/issues/78458
       .addPass(affine::createAffineExpandIndexOpsPass)
-      .addPass(mlir::createLowerAffinePass)
-      .addPass(mlir::arith::createArithUnsignedWhenEquivalentPass);
+      .addPass(mlir::createLowerAffinePass);
+
+  passManager.addPass(mlir::arith::createArithUnsignedWhenEquivalentPass());
 
   // Propagate buffer subranges throughout the program - this should remove any
   // remaining subspans and give us a smaller surface area during conversion.
@@ -105,7 +123,8 @@ void buildVMTransformPassPipeline(OpPassManager &passManager,
 
   // Convert std/util/etc -> VM, along with any other dialects implementing the
   // VM conversion dialect interface.
-  passManager.addPass(createConversionPass(targetOptions));
+  passManager.addPass(
+      createConversionPass(conversionPassOptionsFromTarget(targetOptions)));
 
   // Hoist globals and get the final set that need to be initialized.
   passManager.addNestedPass<IREE::VM::ModuleOp>(createReifyRodataTablesPass());
@@ -142,13 +161,29 @@ void buildVMTransformPassPipeline(OpPassManager &passManager,
   }
 }
 
-void registerVMTransformPassPipeline() {
+//===----------------------------------------------------------------------===//
+// Registration
+//===----------------------------------------------------------------------===//
+
+namespace {
+#define GEN_PASS_REGISTRATION
+#include "iree/compiler/Dialect/VM/Transforms/Passes.h.inc" // IWYU pragma: export
+} // namespace
+
+void registerVMPasses() {
+  // Register command line flags.
+  IREE::VM::TargetOptions::FromFlags::get();
+
+  // Generated.
+  registerPasses();
+
+  // Pipelines.
   PassPipelineRegistration<> transformPassPipeline(
       "iree-vm-transformation-pipeline",
       "Runs the full IREE VM dialect transformation pipeline",
       [](OpPassManager &passManager) {
         buildVMTransformPassPipeline(passManager,
-                                     TargetOptions::FromFlags::get());
+                                     IREE::VM::TargetOptions::FromFlags::get());
       });
 }
 

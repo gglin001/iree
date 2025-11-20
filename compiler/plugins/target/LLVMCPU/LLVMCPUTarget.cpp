@@ -18,6 +18,7 @@
 #include "iree/compiler/Codegen/Dialect/CPU/IR/IREECPUDialect.h"
 #include "iree/compiler/Codegen/Dialect/CPU/IR/IREECPUTypes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
+#include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/LLVMCPU/Passes.h"
 #include "iree/compiler/Codegen/LLVMCPU/Utils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
@@ -145,7 +146,7 @@ public:
   explicit LLVMCPUTargetBackend(LLVMTargetOptions options)
       : defaultOptions_(std::move(options)) {}
 
-  std::string getLegacyDefaultDeviceID() const override { return "llvm-cpu"; }
+  std::string getLegacyDefaultDeviceID() const override { return "local"; }
 
   void getDefaultExecutableTargets(
       MLIRContext *context, StringRef deviceID, DictionaryAttr deviceConfigAttr,
@@ -174,7 +175,7 @@ public:
     target.storeToConfigAttrs(context, configItems);
     configItems.emplace_back(
         b.getStringAttr(IREE::Encoding::kEncodingResolverAttrName),
-        IREE::CPU::CPUEncodingLayoutAttr::get(context, {}));
+        IREE::CPU::CPUEncodingResolverAttr::get(context, {}));
 
     // Compute the format used at runtime to select the executable loader.
     std::string format;
@@ -226,6 +227,7 @@ public:
     registry.insert<IREE::Codegen::IREECodegenDialect,
                     IREE::CPU::IREECPUDialect,
                     IREE::LinalgExt::IREELinalgExtDialect,
+                    IREE::VectorExt::IREEVectorExtDialect,
                     mlir::transform::TransformDialect,
                     pdl::PDLDialect,
                     pdl_interp::PDLInterpDialect,
@@ -243,7 +245,8 @@ public:
 
   void buildTranslationPassPipeline(IREE::HAL::ExecutableTargetAttr targetAttr,
                                     OpPassManager &passManager) override {
-    bool enableAArch64SME = isAArch64(targetAttr) && hasSMEFeature(targetAttr);
+    bool enableAArch64SME = isAArch64(targetAttr.getConfiguration()) &&
+                            hasSMEFeature(targetAttr.getConfiguration());
     buildLLVMCPUCodegenPassPipeline(passManager, enableAArch64SME);
   }
 
@@ -369,8 +372,8 @@ public:
     if (auto importsAttr =
             variantOp->getAttrOfType<ArrayAttr>(importsAttrName)) {
       for (auto importAttr : importsAttr.getAsValueRange<ArrayAttr>()) {
-        auto nameAttr = llvm::cast<StringAttr>(importAttr[0]);
-        auto weakAttr = llvm::cast<BoolAttr>(importAttr[1]);
+        auto nameAttr = cast<StringAttr>(importAttr[0]);
+        auto weakAttr = cast<BoolAttr>(importAttr[1]);
         libraryBuilder.addImport(nameAttr.getValue(), weakAttr.getValue());
       }
       variantOp->removeAttr(importsAttrName);
@@ -394,7 +397,7 @@ public:
         llvmFunc->addParamAttr(i, align16);
       }
 
-      LibraryBuilder::DispatchAttrs dispatchAttrs = {0};
+      LibraryBuilder::DispatchAttrs dispatchAttrs = {};
 
       // Entry points may optionally specify that they require workgroup local
       // memory. We fetch that value here and plumb it through so the runtime
@@ -408,6 +411,17 @@ public:
       if (auto layoutAttr = exportOp.getLayout()) {
         dispatchAttrs.constantCount = layoutAttr.getConstants();
         dispatchAttrs.bindingCount = layoutAttr.getBindings().size();
+      }
+
+      // Extract workgroup size if specified at compile time.
+      if (auto workgroupSizeAttr = exportOp.getWorkgroupSize()) {
+        auto workgroupSizeValues = workgroupSizeAttr->getValue();
+        dispatchAttrs.workgroupSize[0] = static_cast<uint32_t>(
+            cast<IntegerAttr>(workgroupSizeValues[0]).getInt());
+        dispatchAttrs.workgroupSize[1] = static_cast<uint32_t>(
+            cast<IntegerAttr>(workgroupSizeValues[1]).getInt());
+        dispatchAttrs.workgroupSize[2] = static_cast<uint32_t>(
+            cast<IntegerAttr>(workgroupSizeValues[2]).getInt());
       }
 
       LibraryBuilder::SourceLocation sourceLocation;
@@ -494,7 +508,7 @@ public:
 
     // Specialize the module to our target machine.
     llvmModule->setDataLayout(targetMachine->createDataLayout());
-    llvmModule->setTargetTriple(targetMachine->getTargetTriple().str());
+    llvmModule->setTargetTriple(targetMachine->getTargetTriple());
 
     // Dump just the codegen bitcode before linking and optimization.
     if (!options.dumpIntermediatesPath.empty()) {
@@ -554,7 +568,7 @@ public:
 
     if (target.linkUkernelBitcode) {
       // Link in ukernel bitcode.
-      if (hasUkernel(variantOp.getTarget())) {
+      if (hasUkernel(variantOp.getTarget().getConfiguration())) {
         llvm::Expected<std::unique_ptr<llvm::Module>> bitcode =
             loadUKernelBitcode(targetMachine.get(), context);
         if (!bitcode) {
@@ -666,7 +680,7 @@ public:
                                                    {".o", ".obj", ".a", ".lib"},
                                                    linkerObjectAttrs);
     for (auto [index, attr] : llvm::enumerate(linkerObjectAttrs)) {
-      auto objectAttr = llvm::cast<IREE::HAL::ExecutableObjectAttr>(attr);
+      auto objectAttr = cast<IREE::HAL::ExecutableObjectAttr>(attr);
       if (auto dataAttr = objectAttr.getData()) {
         objectFiles.push_back(Artifact::createTemporary(
             objectFiles.front().path + "_object_" + std::to_string(index),
@@ -718,9 +732,10 @@ public:
     // loader which static library to load for the target binary.
     std::vector<uint8_t> libraryNameVector(libraryName.begin(),
                                            libraryName.end());
-    executableBuilder.create<IREE::HAL::ExecutableBinaryOp>(
-        variantOp.getLoc(), variantOp.getSymName(), "static",
-        libraryNameVector);
+    libraryNameVector.push_back(0); // NUL
+    IREE::HAL::ExecutableBinaryOp::create(executableBuilder, variantOp.getLoc(),
+                                          variantOp.getSymName(), "static",
+                                          libraryNameVector);
 
     return success();
   }
@@ -767,8 +782,8 @@ public:
           std::move(elfFile.value()));
 
       // Add the binary to the parent hal.executable.
-      auto binaryOp = executableBuilder.create<IREE::HAL::ExecutableBinaryOp>(
-          variantOp.getLoc(), variantOp.getSymName(),
+      auto binaryOp = IREE::HAL::ExecutableBinaryOp::create(
+          executableBuilder, variantOp.getLoc(), variantOp.getSymName(),
           variantOp.getTarget().getFormat(), bufferAttr);
       binaryOp.setMimeTypeAttr(
           executableBuilder.getStringAttr("application/x-elf"));
@@ -824,8 +839,8 @@ public:
           std::move(libraryFile));
 
       // Add the binary to the parent hal.executable.
-      auto binaryOp = executableBuilder.create<IREE::HAL::ExecutableBinaryOp>(
-          variantOp.getLoc(), variantOp.getSymName(),
+      auto binaryOp = IREE::HAL::ExecutableBinaryOp::create(
+          executableBuilder, variantOp.getLoc(), variantOp.getSymName(),
           variantOp.getTarget().getFormat(), bufferAttr);
       binaryOp.setMimeTypeAttr(executableBuilder.getStringAttr(mimeType));
     }
@@ -844,19 +859,6 @@ private:
 struct LLVMCPUSession
     : public PluginSession<LLVMCPUSession, LLVMCPUTargetCLOptions,
                            PluginActivationPolicy::DefaultActivated> {
-  void populateHALTargetDevices(IREE::HAL::TargetDeviceList &targets) {
-    // TODO(multi-device): move local device registration out.
-    // This exists here for backwards compat with the old
-    // iree-hal-target-backends flag that needs to look up the device by backend
-    // name.
-    // #hal.device.target<"llvm-cpu", ...
-    targets.add("llvm-cpu", [=]() {
-      LocalDevice::Options localDeviceOptions;
-      localDeviceOptions.defaultTargetBackends.push_back("llvm-cpu");
-      localDeviceOptions.defaultHostBackends.push_back("llvm-cpu");
-      return std::make_shared<LocalDevice>(localDeviceOptions);
-    });
-  }
   void populateHALTargetBackends(IREE::HAL::TargetBackendList &targets) {
     // #hal.executable.target<"llvm-cpu", ...
     targets.add("llvm-cpu", [=]() {

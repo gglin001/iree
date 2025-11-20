@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "iree/compiler/Codegen/Common/GPU/GPUVectorDistribution.h"
-#include "iree/compiler/Codegen/Common/VectorLayoutAnalysis.h"
+#include "iree/compiler/Codegen/Common/Transforms.h"
 #include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtDialect.h"
 #include "iree/compiler/Codegen/Dialect/VectorExt/IR/VectorExtOps.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -16,6 +16,8 @@
 #include "mlir/Rewrite/PatternApplicator.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
+#include <deque>
 
 #define DEBUG_TYPE "iree-codegen-gpu-vector-distribution"
 
@@ -34,15 +36,16 @@ constexpr StringLiteral kVectorLayoutRedistributeAttrName =
 /// Set signature for the operation based on the analysis. Returns failure if
 /// an operation contains vectors that cannot be distributed i.e. they have no
 /// layout.
-LogicalResult setOpSignature(Operation *op, VectorLayoutAnalysis &analysis,
-                             const VectorLayoutOptions &options) {
+LogicalResult
+setOpSignature(Operation *op,
+               const llvm::MapVector<Value, VectorLayoutInterface> &layouts,
+               const VectorLayoutOptions &options) {
   SmallVector<Attribute> operands;
   SmallVector<Attribute> results;
 
   for (Value operand : op->getOperands()) {
     if (auto vectorOperand = dyn_cast<VectorValue>(operand)) {
-      if (auto layout =
-              analysis.getLayout<VectorLayoutInterface>(vectorOperand)) {
+      if (auto layout = layouts.lookup(vectorOperand)) {
         operands.push_back(layout);
         continue;
       }
@@ -57,8 +60,7 @@ LogicalResult setOpSignature(Operation *op, VectorLayoutAnalysis &analysis,
 
   for (Value result : op->getResults()) {
     if (auto vectorResult = dyn_cast<VectorValue>(result)) {
-      if (auto layout =
-              analysis.getLayout<VectorLayoutInterface>(vectorResult)) {
+      if (auto layout = layouts.lookup(vectorResult)) {
         results.push_back(layout);
         continue;
       }
@@ -139,8 +141,8 @@ DistributionPattern::getDistributed(RewriterBase &rewriter, VectorValue value,
   SmallVector<int64_t> distributedShape = layout.getDistributedShape();
   VectorType distributedType =
       VectorType::get(distributedShape, value.getType().getElementType());
-  auto toSIMT = rewriter.create<IREE::VectorExt::ToSIMTOp>(
-      value.getLoc(), distributedType, value);
+  auto toSIMT = IREE::VectorExt::ToSIMTOp::create(rewriter, value.getLoc(),
+                                                  distributedType, value);
   return toSIMT.getResult();
 }
 
@@ -154,8 +156,8 @@ SmallVector<Value> DistributionPattern::getOpDistributedReplacements(
       auto oldResult = cast<VectorValue>(opResult);
       // Create a toSIMD op to convert the value back to the simd.
       rewriter.setInsertionPointAfterValue(oldResult);
-      Value toSIMD = rewriter.create<IREE::VectorExt::ToSIMDOp>(
-          oldResult.getLoc(), oldResult.getType(), replacement);
+      Value toSIMD = IREE::VectorExt::ToSIMDOp::create(
+          rewriter, oldResult.getLoc(), oldResult.getType(), replacement);
       // Add to replacements.
       replacement = toSIMD;
     }
@@ -181,10 +183,38 @@ DistributionPattern::getOpSignature(Operation *op) const {
 }
 
 void DistributionPattern::setSignatureForRedistribution(
-    PatternRewriter &rewriter, Operation *op, Attribute inputLayoutsAttr,
-    Attribute outputLayoutsAttr) const {
-  Attribute signature[] = {inputLayoutsAttr, outputLayoutsAttr};
+    RewriterBase &rewriter, Operation *op,
+    ArrayRef<VectorLayoutInterface> inputLayouts,
+    ArrayRef<VectorLayoutInterface> outputLayouts) const {
   auto unitAttr = UnitAttr::get(rewriter.getContext());
+  auto inputAttrs = SmallVector<Attribute>(op->getNumOperands(), unitAttr);
+  auto outputAttrs = SmallVector<Attribute>(op->getNumResults(), unitAttr);
+
+  auto isVectorType = [](Value x) { return isa<VectorType>(x.getType()); };
+  assert(llvm::count_if(op->getOperands(), isVectorType) ==
+         inputLayouts.size());
+  int64_t currVectorInput = 0;
+  for (auto [idx, operand] : llvm::enumerate(op->getOperands())) {
+    if (isVectorType(operand)) {
+      inputAttrs[idx] = inputLayouts[currVectorInput];
+      ++currVectorInput;
+    }
+  }
+
+  assert(llvm::count_if(op->getResults(), isVectorType) ==
+         outputLayouts.size());
+  int64_t currVectorOutput = 0;
+  for (auto [idx, result] : llvm::enumerate(op->getResults())) {
+    if (isVectorType(result)) {
+      outputAttrs[idx] = outputLayouts[currVectorOutput];
+      ++currVectorOutput;
+    }
+  }
+
+  auto inputArrayAttr = ArrayAttr::get(rewriter.getContext(), inputAttrs);
+  auto outputArrayAttr = ArrayAttr::get(rewriter.getContext(), outputAttrs);
+
+  Attribute signature[] = {inputArrayAttr, outputArrayAttr};
   rewriter.modifyOpInPlace(op, [&]() {
     op->setAttr(kVectorLayoutFetcherStorageAttrName,
                 ArrayAttr::get(rewriter.getContext(), signature));
@@ -328,9 +358,11 @@ LogicalResult distributeVectorOps(Operation *root,
                                   VectorLayoutOptions &options) {
   // Run the analysis and determine the layouts.
   LLVM_DEBUG(llvm::dbgs() << "Running Layout Analysis\n");
-  VectorLayoutAnalysis analysis(root);
-  if (failed(analysis.run()))
+  llvm::MapVector<Value, VectorLayoutInterface> layouts;
+  if (failed(propagateVectorLayoutInfo(root, layouts))) {
+    LLVM_DEBUG(llvm::dbgs() << "Layout Analysis Failed\n");
     return failure();
+  }
   LLVM_DEBUG(llvm::dbgs() << "Layout Analysis Succeded\n");
   LLVM_DEBUG(llvm::dbgs() << "\n\n");
 
@@ -338,7 +370,7 @@ LogicalResult distributeVectorOps(Operation *root,
   LLVM_DEBUG(
       llvm::dbgs() << "Setting distribution signatures for operations\n");
   root->walk([&](Operation *op) {
-    if (failed(setOpSignature(op, analysis, options))) {
+    if (failed(setOpSignature(op, layouts, options))) {
       LLVM_DEBUG({
         llvm::dbgs() << "Skipping operation because not all vector "
                         "operands/results have a layout:\n";

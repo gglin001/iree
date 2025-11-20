@@ -69,6 +69,12 @@ static llvm::cl::opt<bool> clZeroFillEmptyTensors(
         "Zero fill empty tensors instead of leaving them uninitialized."),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> clReplicateGlobalsPerAffinity(
+    "iree-flow-experimental-replicate-globals-per-affinity",
+    llvm::cl::desc(
+        "Replicates globals for each unique affinity they are used with."),
+    llvm::cl::init(false));
+
 namespace mlir::iree_compiler::IREE::Flow {
 
 using FunctionLikeNest =
@@ -83,7 +89,7 @@ static void addCleanupPatterns(OpPassManager &passManager) {
       // Simplify integer arithmetic.
       .addPass(IREE::Util::createOptimizeIntArithmeticPass)
       // Standard MLIR cleanup.
-      .addPass(IREE::Flow::createCanonicalizerPass)
+      .addPass(IREE::Flow::createCanonicalizePass)
       .addPass(mlir::createCSEPass)
 
       // Simplify util.global accesses; this can help with data flow tracking as
@@ -110,8 +116,16 @@ static void addCleanupPatterns(OpPassManager &passManager) {
 
 void buildFlowTransformPassPipeline(OpPassManager &passManager,
                                     const TransformOptions &transformOptions) {
-  // Start of Flow pipeline, verify input legality.
+  // Start of Flow pipeline: verify semantics legality of the input.
   passManager.addPass(IREE::Flow::createVerifyInputLegalityPass());
+
+  // Verify module initialization order - subsequent passes and pipelines rely
+  // on it being correct (and we maintain it as correct from this point on, so
+  // this is our gate).
+  passManager.addPass(IREE::Util::createVerifyInitializationOrderPass());
+
+  // Propagate attributes from callees to call sites for local analysis.
+  passManager.addPass(IREE::Util::createAttributeCallGraphPass());
 
   FunctionLikeNest(passManager)
       .addPass([&]() {
@@ -119,7 +133,7 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
             InitializeEmptyTensorsPassOptions{clZeroFillEmptyTensors});
       })
       .addPass(IREE::Flow::createCaptureDynamicDimsPass)
-      .addPass(IREE::Flow::createCanonicalizerPass)
+      .addPass(IREE::Flow::createCanonicalizePass)
       .addPass(mlir::createCSEPass);
 
   // Module pass to outline dispatch regions (and similar ops) into their own
@@ -155,7 +169,7 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
       IREE::Util::createStripDebugOpsPass());
 
   // Cleanup identity ops that clutter up the IR and canonicalize.
-  FunctionLikeNest(passManager).addPass(IREE::Flow::createCanonicalizerPass);
+  FunctionLikeNest(passManager).addPass(IREE::Flow::createCanonicalizePass);
 
   // Deduplicate executables created from dispatch regions.
   // Note: this only deduplicates equivalent executables. We could in addition
@@ -222,8 +236,13 @@ void buildFlowTransformPassPipeline(OpPassManager &passManager,
   // Cleanup executable contents.
   {
     auto executablePassManager = passManager.nest<IREE::Flow::ExecutableOp>();
-    executablePassManager.addPass(IREE::Flow::createCanonicalizerPass());
+    executablePassManager.addPass(IREE::Flow::createCanonicalizePass());
     executablePassManager.addPass(mlir::createCSEPass());
+  }
+
+  // Replicate globals per affinity if requested.
+  if (clReplicateGlobalsPerAffinity) {
+    passManager.addPass(IREE::Flow::createReplicateGlobalsPerAffinityPass());
   }
 
   // Symbol DCE any remaining variables/functions that are now no longer

@@ -84,9 +84,8 @@ SmallVector<int64_t> getNativeVectorShapeImpl(VectorTransferOpInterface op) {
        llvm::enumerate(op.getPermutationMap().getResults())) {
     if (auto dimExpr = dyn_cast<AffineDimExpr>(dim)) {
       if (dimExpr.getPosition() == op.getPermutationMap().getNumDims() - 1) {
-        nativeSize[index] =
-            getMemoryVectorSize(op.getSource(), vecType.getElementType(),
-                                vecType.getShape()[index]);
+        nativeSize[index] = getMemoryVectorSize(
+            op.getBase(), vecType.getElementType(), vecType.getShape()[index]);
       }
     }
   }
@@ -100,12 +99,10 @@ Operation *stripElementBitPatternPreservingParents(Value op) {
             .Case<vector::BroadcastOp>([](vector::BroadcastOp broadcast) {
               return broadcast.getVector();
             })
-            .Case<vector::ExtractOp, vector::ExtractElementOp,
-                  vector::ExtractStridedSliceOp>(
-                [](auto extract) { return extract.getVector(); })
-            .Case<vector::InsertOp, vector::InsertElementOp,
-                  vector::InsertStridedSliceOp>(
-                [](auto insert) { return insert.getSource(); })
+            .Case<vector::ExtractOp, vector::ExtractStridedSliceOp>(
+                [](auto extract) { return extract.getSource(); })
+            .Case<vector::InsertOp, vector::InsertStridedSliceOp>(
+                [](auto insert) { return insert.getValueToStore(); })
             .Case<vector::TransposeOp>([](vector::TransposeOp transpose) {
               return transpose.getVector();
             })
@@ -135,9 +132,9 @@ bool mayExtI8ToI32(Value op) {
   Operation *def = stripElementBitPatternPreservingParents(op);
   Type inTy;
 
-  if (auto ext = dyn_cast_or_null<arith::ExtSIOp>(def)) {
+  if (auto ext = dyn_cast_if_present<arith::ExtSIOp>(def)) {
     inTy = getElementTypeOrSelf(ext.getIn().getType());
-  } else if (auto ext = dyn_cast_or_null<arith::ExtUIOp>(def)) {
+  } else if (auto ext = dyn_cast_if_present<arith::ExtUIOp>(def)) {
     inTy = getElementTypeOrSelf(ext.getIn().getType());
   } else {
     return false;
@@ -235,7 +232,7 @@ SmallVector<int64_t> getNativeVectorShapeImpl(vector::GatherOp op) {
 std::optional<SmallVector<int64_t>>
 getNativeVectorShape(Operation *op, bool targetSupportsDotProd) {
   if (OpTrait::hasElementwiseMappableTraits(op) && op->getNumResults() == 1) {
-    if (auto vecType = llvm::dyn_cast<VectorType>(op->getResultTypes()[0])) {
+    if (auto vecType = dyn_cast<VectorType>(op->getResultTypes()[0])) {
       SmallVector<int64_t> nativeSize(vecType.getRank(), 1);
       nativeSize.back() = getComputeVectorSize(vecType.getShape().back());
       return nativeSize;
@@ -264,10 +261,7 @@ void populateVectorUnrollPatterns(RewritePatternSet &patterns,
 bool supportsIntegerDotProductOps(mlir::FunctionOpInterface fn) {
   // First check if the function op itself has a target env attribute. This may
   // be preferred in tests.
-  auto targetEnvAttr =
-      fn->getAttrOfType<IREE::GPU::TargetAttr>(kGPUTargetAttrName);
-  if (!targetEnvAttr)
-    targetEnvAttr = getGPUTargetAttr(fn);
+  auto targetEnvAttr = getGPUTargetAttr(fn);
   if (!targetEnvAttr)
     return false;
 
@@ -423,7 +417,8 @@ public:
       auto options =
           vector::VectorTransformsOptions().setVectorTransformsOptions(
               vector::VectorContractLowering::ParallelArith);
-      vector::populateVectorContractLoweringPatterns(patterns, options);
+      vector::populateVectorContractLoweringPatterns(
+          patterns, options.vectorContractLowering);
       // The pattern can generate transpose ops. Try to fold it if possible to
       // avoid lowering them into extract/insert later.
       vector::TransposeOp::getCanonicalizationPatterns(patterns, context);
@@ -446,7 +441,8 @@ public:
       auto options =
           vector::VectorTransformsOptions().setVectorTransposeLowering(
               vector::VectorTransposeLowering::EltWise);
-      vector::populateVectorTransposeLoweringPatterns(patterns, options);
+      vector::populateVectorTransposeLoweringPatterns(
+          patterns, options.vectorTransposeLowering);
       vector::populateVectorShapeCastLoweringPatterns(patterns);
       if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
         return signalPassFailure();

@@ -8,6 +8,7 @@
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/LinalgOpInfo.h"
 #include "llvm/Support/Debug.h"
+#include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -44,7 +45,7 @@ static bool contractOpFilter(Operation *op) {
   // Check if the shape is tile-distributable. The leading dimension must be a
   // multiple of the target vector size, which is 128b / the element bit width.
   auto isTileDistributable = [&](Value v) {
-    ShapedType ty = llvm::cast<ShapedType>(v.getType());
+    ShapedType ty = cast<ShapedType>(v.getType());
     unsigned bitWidth = ty.getElementTypeBitWidth();
     int targetVectorSize = copyVectorNumBits / bitWidth;
     return ty.getShape().back() % targetVectorSize == 0;
@@ -96,7 +97,7 @@ static bool transposeOpFilter(Operation *op) {
 /// ```
 struct SwapAllocTensorPattern final
     : OpRewritePattern<bufferization::AllocTensorOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(bufferization::AllocTensorOp allocOp,
                                 PatternRewriter &rewriter) const override {
@@ -115,8 +116,9 @@ struct SwapAllocTensorPattern final
 
     rewriter.setInsertionPoint(linalgOp);
     std::optional<Attribute> memorySpace = allocOp.getMemorySpace();
-    auto newAllocOp = rewriter.create<bufferization::AllocTensorOp>(
-        allocOp.getLoc(), allocOp.getType(), allocOp.getDynamicSizes(),
+    auto newAllocOp = bufferization::AllocTensorOp::create(
+        rewriter, allocOp.getLoc(), allocOp.getType(),
+        allocOp.getDynamicSizes(),
         /*copy=*/Value(),
         memorySpace ? cast<IntegerAttr>(*memorySpace) : IntegerAttr());
     rewriter.modifyOpInPlace(linalgOp, [&]() {
@@ -155,6 +157,8 @@ public:
         break;
       }
     });
+
+    bufferization::BufferizationState bufferizationState;
     for (Operation *op : opsToPromote) {
       OpBuilder builder(op);
       auto linalgOp = cast<linalg::LinalgOp>(op);
@@ -164,7 +168,8 @@ public:
         // Promote all the input operands
         for (auto operand : linalgOp.getDpsInputOperands()) {
           FailureOr<Value> ret = bufferization::allocateTensorForShapedValue(
-              builder, op->getLoc(), operand->get(), options);
+              builder, op->getLoc(), operand->get(), options,
+              bufferizationState);
           if (failed(ret)) {
             return signalPassFailure();
           }
@@ -178,7 +183,8 @@ public:
 
         for (auto operand : opInfo.getTransposeOperands()) {
           FailureOr<Value> ret = bufferization::allocateTensorForShapedValue(
-              builder, op->getLoc(), operand->get(), options);
+              builder, op->getLoc(), operand->get(), options,
+              bufferizationState);
           if (failed(ret)) {
             return signalPassFailure();
           }

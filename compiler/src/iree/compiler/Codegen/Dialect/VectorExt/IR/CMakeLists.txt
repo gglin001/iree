@@ -41,10 +41,12 @@ iree_cc_library(
     LLVMSupport
     MLIRAffineDialect
     MLIRIR
+    MLIRMaskableOpInterface
     MLIRSideEffectInterfaces
     MLIRSupport
     MLIRTensorDialect
     MLIRVectorDialect
+    MLIRVectorInterfaces
     iree::compiler::Codegen::Utils::VectorOpUtils
     iree::compiler::Utils
   PUBLIC
@@ -66,8 +68,8 @@ iree_tablegen_library(
   TD_FILE
     "VectorExtAttrs.td"
   OUTS
-    --gen-enum-decls VectorExtEnums.h.inc
-    --gen-enum-defs VectorExtEnums.cpp.inc
+    --gen-enum-decls --dialect=iree_vector_ext VectorExtEnums.h.inc
+    --gen-enum-defs --dialect=iree_vector_ext VectorExtEnums.cpp.inc
 )
 
 iree_tablegen_library(
@@ -103,6 +105,8 @@ iree_tablegen_library(
 iree_tablegen_doc(
   NAME
     IREEVectorExtDialectDocGen
+  CATEGORY
+    "Dialects"
   TD_FILE
     "VectorExtOps.td"
   OUTS

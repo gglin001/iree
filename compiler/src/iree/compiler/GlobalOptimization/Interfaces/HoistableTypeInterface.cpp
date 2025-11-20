@@ -6,7 +6,7 @@
 
 #include "iree/compiler/GlobalOptimization/Interfaces/HoistableTypeInterface.h"
 
-#include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
+#include "iree/compiler/Dialect/TensorExt/IR/TensorExtOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilDialect.h"
 #include "llvm/Support/MathExtras.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -24,21 +24,21 @@ static Value bitcastToStaticTypeImpl(OpBuilder &b, Location loc,
     return global;
   }
   // No dynamic dims because we are always bitcasting constants.
-  return b.create<IREE::Flow::TensorBitCastOp>(loc, targetType, global,
-                                               ValueRange(), ValueRange());
+  return IREE::TensorExt::BitCastOp::create(b, loc, targetType, global,
+                                            ValueRange(), ValueRange());
 }
 
 struct HoistableTensorTypeInterface
     : public IREE::Util::HoistableTypeInterface::ExternalModel<
           HoistableTensorTypeInterface, RankedTensorType> {
   bool isHoistableType(Type type) const {
-    auto tensorType = llvm::cast<RankedTensorType>(type);
+    auto tensorType = cast<RankedTensorType>(type);
     unsigned bitWidth =
         IREE::Util::getTypeBitWidth(tensorType.getElementType());
     return llvm::isPowerOf2_32(bitWidth) && bitWidth <= 64;
   }
   bool isHoistableLeafType(Type type) const {
-    auto tensorType = llvm::cast<RankedTensorType>(type);
+    auto tensorType = cast<RankedTensorType>(type);
     unsigned bitWidth =
         IREE::Util::getTypeBitWidth(tensorType.getElementType());
     // Never hoist boolean values; IREE still does implicit extension of
@@ -46,7 +46,7 @@ struct HoistableTensorTypeInterface
     return bitWidth != 1;
   }
   Type getPreferredStorageType(Type type) const {
-    auto tensorType = llvm::cast<RankedTensorType>(type);
+    auto tensorType = cast<RankedTensorType>(type);
     // Constant data should be statically shaped.
     if (!tensorType.hasStaticShape()) {
       return type;
@@ -103,7 +103,7 @@ struct HoistableIndexTypeInterface
         !isa<IndexType>(init.getType())) {
       return init;
     }
-    return builder.create<arith::IndexCastOp>(loc, storageType, init);
+    return arith::IndexCastOp::create(builder, loc, storageType, init);
   }
   static Value decodeStorageType(OpBuilder &builder, Location loc,
                                  Type originalType, Value loadedGlobal) {
@@ -112,7 +112,7 @@ struct HoistableIndexTypeInterface
         !isa<IntegerType>(loadedGlobal.getType())) {
       return loadedGlobal;
     }
-    return builder.create<arith::IndexCastOp>(loc, originalType, loadedGlobal);
+    return arith::IndexCastOp::create(builder, loc, originalType, loadedGlobal);
   }
 };
 

@@ -169,32 +169,11 @@ iree_select_compiler_opts(IREE_DEFAULT_COPTS
 
     # Disable warnings we don't care about or that generally have a low
     # signal/noise ratio.
-    "-Wno-ambiguous-member-template"
-    "-Wno-char-subscripts"
     "-Wno-extern-c-compat" # Matches upstream. Cannot impact due to extern C inclusion method.
-    "-Wno-gnu-alignof-expression"
-    "-Wno-gnu-variable-sized-type-not-at-end"
-    "-Wno-ignored-optimization-argument"
     "-Wno-invalid-offsetof" # Technically UB but needed for intrusive ptrs
-    "-Wno-invalid-source-encoding"
-    "-Wno-mismatched-tags"
-    "-Wno-pointer-sign"
-    "-Wno-reserved-user-defined-literal"
-    "-Wno-return-type-c-linkage"
-    "-Wno-self-assign-overloaded"
-    "-Wno-sign-compare"
-    "-Wno-signed-unsigned-wchar"
-    "-Wno-strict-overflow"
-    "-Wno-trigraphs"
-    "-Wno-unknown-pragmas"
-    "-Wno-unknown-warning-option"
-    "-Wno-unused-command-line-argument"
     "-Wno-unused-const-variable"
     "-Wno-unused-function"
-    "-Wno-unused-local-typedef"
     "-Wno-unused-private-field"
-    "-Wno-user-defined-warnings"
-    "-Wno-missing-braces"  # Inconsistently triggers between C++/C headers.
 
     # Explicitly enable some additional warnings.
     # Some of these aren't on by default, or under -Wall, or are subsets of
@@ -376,6 +355,13 @@ if(CMAKE_CXX_FLAGS AND "${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
   string(REPLACE "/GR" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 endif()
 
+if(IREE_ENABLE_THREADING)
+  iree_select_compiler_opts(IREE_DEFAULT_COPTS
+    ALL
+      "-DIREE_THREADING_ENABLE=1"
+  )
+endif()
+
 # Find and add threads as dependency.
 if(NOT ANDROID AND IREE_ENABLE_THREADING)
   set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
@@ -385,7 +371,6 @@ if(NOT ANDROID AND IREE_ENABLE_THREADING)
 else()
   # Android provides its own pthreads support with no linking required.
 endif()
-
 
 # Emscripten needs -pthread specified in link _and_ compile options when using
 # atomics, shared memory, or pthreads. If we bring our own threading impl and
@@ -417,6 +402,10 @@ iree_select_compiler_opts(IREE_DEFAULT_LINKOPTS
     ${_IREE_LOGGING_LINKOPTS}
   MSVC
     "-natvis:${IREE_ROOT_DIR}/runtime/iree.natvis"
+
+    # Added to fix "LNK1318" error when "IREECompiler.pdb" exceeds 4GiB per:
+    # https://github.com/iree-org/iree/issues/20763#issuecomment-2902057042
+    "-pdbpagesize:32768"
 )
 
 if(EMSCRIPTEN AND IREE_EXTERNAL_WEBGPU_HAL_DRIVER_FOUND)

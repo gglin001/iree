@@ -46,7 +46,8 @@ static std::optional<unsigned> mapSuccessorOperand(BranchOpInterface branchOp,
 
 Explorer::Explorer(Operation *rootOp, TraversalAction defaultAction)
     : rootOp(rootOp),
-      asmState(rootOp, OpPrintingFlags().elideLargeElementsAttrs()),
+      asmState(rootOp,
+               OpPrintingFlags().elideLargeElementsAttrs().skipRegions()),
       callGraph(rootOp), defaultAction(defaultAction),
       analysisManager(rootOp, /*passInstrumentor=*/nullptr) {}
 
@@ -563,7 +564,7 @@ TraversalResult Explorer::walkReturnOps(Operation *parentOp,
         break;
     }
   } else if (auto parentFuncOp =
-                 llvm::dyn_cast<mlir::FunctionOpInterface>(parentOp)) {
+                 dyn_cast<mlir::FunctionOpInterface>(parentOp)) {
     if (parentFuncOp->getNumRegions() == 0 ||
         parentFuncOp->getRegion(0).empty()) {
       LLVM_DEBUG(
@@ -598,7 +599,8 @@ TraversalResult Explorer::walkReturnOperands(Operation *parentOp,
   return walkReturnOps(parentOp, [&](Operation *returnOp) {
     if (auto terminatorOp =
             dyn_cast<RegionBranchTerminatorOpInterface>(returnOp)) {
-      return fn(terminatorOp.getSuccessorOperands(RegionBranchPoint::parent()));
+      return fn(terminatorOp.getSuccessorOperands(
+          RegionSuccessor(parentOp, parentOp->getResults())));
     } else {
       return fn(returnOp->getOperands());
     }
@@ -739,7 +741,7 @@ TraversalResult Explorer::walkDefiningOps(Value value, ResultWalkFn fn,
   // Fast-path short-circuit for constants, which are like 25% of all IR.
   if (value.getDefiningOp() &&
       value.getDefiningOp()->hasTrait<OpTrait::ConstantLike>()) {
-    fn(llvm::cast<OpResult>(value));
+    fn(cast<OpResult>(value));
     return TraversalResult::COMPLETE;
   }
 
@@ -855,6 +857,16 @@ TraversalResult Explorer::walkDefiningOps(Value value, ResultWalkFn fn,
                             << regionOp->getName().getStringRef() << "\n");
     return walkReturnOperands(
         regionOp.getOperation(), [&](OperandRange returnOperands) {
+          // Bounds check: not all region ops have return operands matching
+          // parent results. For example, stream.cmd.execute regions don't
+          // return values directly.
+          if (idx >= returnOperands.size()) {
+            LLVM_DEBUG(llvm::dbgs()
+                       << "  -- result index " << idx << " out of bounds for "
+                       << returnOperands.size()
+                       << " return operand(s), skipping\n");
+            return WalkResult::advance();
+          }
           auto returnOperand = returnOperands[idx];
           LLVM_DEBUG({
             llvm::dbgs() << "   + queuing ";
@@ -887,7 +899,7 @@ TraversalResult Explorer::walkDefiningOps(Value value, ResultWalkFn fn,
     if (!definingOp) {
       // Op comes from a block argument; we need to continue walking through all
       // predecessors.
-      result |= traverseBlockArg(llvm::cast<BlockArgument>(work));
+      result |= traverseBlockArg(cast<BlockArgument>(work));
       continue;
     }
 
@@ -901,14 +913,15 @@ TraversalResult Explorer::walkDefiningOps(Value value, ResultWalkFn fn,
     }
 
     // Op is visible in the CFG as a leaf.
-    auto resultValue = llvm::cast<OpResult>(work);
+    auto resultValue = cast<OpResult>(work);
     LLVM_DEBUG(llvm::dbgs() << "  == emitting op "
                             << definingOp->getName().getStringRef() << "\n");
     auto fnResult = fn(resultValue);
-    if (fnResult.wasInterrupted())
-      break;
-    if (fnResult.wasSkipped())
-      continue;
+    if (fnResult.wasInterrupted()) {
+      break; // stop walk
+    } else if (fnResult.wasSkipped()) {
+      continue; // don't recurse
+    }
 
     // If the op is tied we may need to walk up to the operand the result is
     // tied to.
@@ -990,8 +1003,9 @@ TraversalResult Explorer::walkTransitiveUses(Value value, UseWalkFn fn,
   // Move within/out-of a region.
   auto traverseRegionBranchOp = [&](RegionBranchTerminatorOpInterface branchOp,
                                     unsigned operandIdx) {
-    auto successorOperands =
-        branchOp.getSuccessorOperands(RegionBranchPoint::parent());
+    Operation *parentOp = branchOp.getOperation()->getParentOp();
+    auto successorOperands = branchOp.getSuccessorOperands(
+        RegionSuccessor(parentOp, parentOp->getResults()));
     unsigned beginIdx = successorOperands.getBeginOperandIndex();
     if (operandIdx < beginIdx ||
         operandIdx >= beginIdx + successorOperands.size()) {
@@ -1001,8 +1015,7 @@ TraversalResult Explorer::walkTransitiveUses(Value value, UseWalkFn fn,
                  << operandIdx << "\n");
       return TraversalResult::COMPLETE;
     }
-    auto result = branchOp.getSuccessorOperands(
-        RegionBranchPoint::parent())[operandIdx - beginIdx];
+    auto result = successorOperands[operandIdx - beginIdx];
     LLVM_DEBUG({
       llvm::dbgs() << "   + queuing region result ";
       result.printAsOperand(llvm::dbgs(), asmState);
@@ -1056,7 +1069,7 @@ TraversalResult Explorer::walkTransitiveUses(Value value, UseWalkFn fn,
     }
     auto entryArg = targetOp.getCallableRegion()->getArgument(operandIdx);
     LLVM_DEBUG({
-      llvm::dbgs() << "   + queuing call to @" << targetSymbol
+      llvm::dbgs() << "   + queuing call to " << targetSymbol
                    << " entry argument ";
       entryArg.printAsOperand(llvm::dbgs(), asmState);
       llvm::dbgs() << "\n";
@@ -1144,8 +1157,12 @@ TraversalResult Explorer::walkTransitiveUses(Value value, UseWalkFn fn,
       // Emit for the op itself.
       LLVM_DEBUG(llvm::dbgs() << "  == emitting op "
                               << ownerOp->getName().getStringRef() << "\n");
-      if (fn(use).wasInterrupted())
-        break;
+      WalkResult fnResult = fn(use);
+      if (fnResult.wasInterrupted()) {
+        break; // stop walk
+      } else if (fnResult.wasSkipped()) {
+        continue; // don't recurse
+      }
 
       // If the op is tied we may need to walk down to the results the operand
       // is tied to (multiple results can tie the same operand).
@@ -1186,12 +1203,12 @@ TraversalResult Explorer::walkTransitiveUses(Value value, UseWalkFn fn,
 
       // If op is a return then we need to walk into the caller results.
       if (ownerOp->hasTrait<OpTrait::ReturnLike>() &&
-          llvm::isa<CallableOpInterface>(ownerOp->getParentOp())) {
+          isa<CallableOpInterface>(ownerOp->getParentOp())) {
         result |= traverseReturnOp(ownerOp, use.getOperandNumber());
       }
 
       if (ownerOp->hasTrait<OpTrait::ReturnLike>() &&
-          !llvm::isa<CallableOpInterface>(ownerOp->getParentOp())) {
+          !isa<CallableOpInterface>(ownerOp->getParentOp())) {
         auto parent = ownerOp->getParentOp();
         auto result = parent->getResult(use.getOperandNumber());
         worklist.insert(result);

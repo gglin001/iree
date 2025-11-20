@@ -9,9 +9,11 @@
 
 include "iree/compiler/Dialect/Flow/IR/FlowInterfaces.td"
 include "iree/compiler/Dialect/Util/IR/UtilBase.td"
+include "iree/compiler/Utils/DocMetadata.td"
 include "iree/compiler/Dialect/Util/IR/UtilTypes.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinAttributeInterfaces.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // IREE execution flow dialect
@@ -68,12 +70,48 @@ def Flow_Dialect : Dialect {
 }
 
 //===----------------------------------------------------------------------===//
-// Base flow dialect op classes
+// Base dialect op/type/attr/interface classes
 //===----------------------------------------------------------------------===//
 
 class FLOW_Op<string mnemonic, list<Trait> traits = []> :
     Op<Flow_Dialect, mnemonic, traits> {
   let hasCustomAssemblyFormat = 1;
+
+  // Optional documentation metadata for rich doc generation.
+  Util_OpDocMetadata docMetadata = ?;
+}
+
+class FLOW_PureOp<string mnemonic, list<Trait> traits = []> :
+    FLOW_Op<mnemonic, !listconcat(traits, [Pure])>;
+
+class Flow_TypeDef<string name, list<Trait> traits = []> :
+    TypeDef<Flow_Dialect, name, traits> {
+  // Optional documentation metadata for rich doc generation.
+  Util_TypeDocMetadata docMetadata = ?;
+}
+
+class Flow_AttrDef<string name, list<Trait> traits = []> :
+    AttrDef<Flow_Dialect, name, traits> {
+  // Optional documentation metadata for rich doc generation.
+  Util_AttrDocMetadata docMetadata = ?;
+}
+
+class Flow_OpInterface<string name, list<Interface> baseInterfaces = []> :
+    OpInterface<name, baseInterfaces> {
+  // Optional documentation metadata for rich doc generation.
+  Util_InterfaceDocMetadata docMetadata = ?;
+}
+
+class Flow_TypeInterface<string name, list<Interface> baseInterfaces = []> :
+    TypeInterface<name, baseInterfaces> {
+  // Optional documentation metadata for rich doc generation.
+  Util_InterfaceDocMetadata docMetadata = ?;
+}
+
+class Flow_AttrInterface<string name, list<Interface> baseInterfaces = []> :
+    AttrInterface<name, baseInterfaces> {
+  // Optional documentation metadata for rich doc generation.
+  Util_InterfaceDocMetadata docMetadata = ?;
 }
 
 //===----------------------------------------------------------------------===//
@@ -95,64 +133,11 @@ def FLOW_GlobalPtr : Util_AnyPtrOf<[FLOW_Tensor, FLOW_PrimitiveType]>;
 // Dispatch types
 //===----------------------------------------------------------------------===//
 
-def FLOW_TensorAccessCanReadPred : CPred<[{
-  cast<IREE::Flow::DispatchTensorType>($_self).getAccess() ==
-      IREE::Flow::TensorAccess::ReadOnly ||
-  cast<IREE::Flow::DispatchTensorType>($_self).getAccess() ==
-      IREE::Flow::TensorAccess::ReadWrite
-}]>;
-
-def FLOW_TensorAccessCanWritePred : CPred<[{
-  cast<IREE::Flow::DispatchTensorType>($_self).getAccess() ==
-      IREE::Flow::TensorAccess::WriteOnly ||
-  cast<IREE::Flow::DispatchTensorType>($_self).getAccess() ==
-      IREE::Flow::TensorAccess::ReadWrite
-}]>;
-
-def FLOW_DispatchTensor : DialectType<
-    Flow_Dialect,
-    CPred<"isa<IREE::Flow::DispatchTensorType>($_self)">,
-    "dispatch.tensor"> {
-  let description = [{
-    A placeholder for a dispatch region input/output operand. This can be used
-    to query the metadata about the tensor (such as its shape) as well as both
-    load and store from the backing tensor representation.
-  }];
-}
-
-def FLOW_ReadableDispatchTensor : DialectType<
-    Flow_Dialect,
-    And<[
-      CPred<"isa<IREE::Flow::DispatchTensorType>($_self)">,
-      FLOW_TensorAccessCanReadPred,
-    ]>,
-    "dispatch.tensor"> {
-  let description = [{
-    A placeholder for a dispatch region input operand. This can be used
-    to query the metadata about the tensor (such as its shape) as well as load
-    from the backing tensor representation.
-  }];
-}
-
-def FLOW_WritableDispatchTensor : DialectType<
-    Flow_Dialect,
-    And<[
-      CPred<"isa<IREE::Flow::DispatchTensorType>($_self)">,
-      FLOW_TensorAccessCanWritePred,
-    ]>,
-    "dispatch.tensor"> {
-  let description = [{
-    A placeholder for a dispatch region output operand. This can be used
-    to query the metadata about the tensor (such as its shape) as well as store
-    to the backing tensor representation.
-  }];
-}
-
 // TODO(benvanik): remove when we have real types using this.
-def FLOW_Dummy0 : TypeDef<Flow_Dialect, "Dummy", []> {
+def FLOW_Dummy0 : Flow_TypeDef<"Dummy", []> {
   let mnemonic = "dummy";
 }
-def FLOW_Dummy1 : AttrDef<Flow_Dialect, "Dummy", []> {
+def FLOW_Dummy1 : Flow_AttrDef<"Dummy", []> {
   let mnemonic = "dummy";
 }
 
@@ -194,9 +179,9 @@ def FLOW_CollectiveElementTypeAttr :
 // Flow channel type
 //===----------------------------------------------------------------------===//
 
-def FLOW_Channel : TypeDef<Flow_Dialect, "Channel", []> {
+def FLOW_Channel : Flow_TypeDef<"Channel", []> {
   let mnemonic = "channel";
-  let summary = [{a collecive communication channel}];
+  let summary = [{A collecive communication channel.}];
   let description = [{
     Represents a single participant in a collective clique. Multiple channels
     may exist within the same program to allow for partial operations or
@@ -239,14 +224,14 @@ def FLOW_CollectiveReductionOpAttr :
 //===----------------------------------------------------------------------===//
 
 def FLOW_NamedParameterAttr :
-    AttrDef<Flow_Dialect, "NamedParameter", [
+    Flow_AttrDef<"NamedParameter", [
       TypedAttrInterface,
       DeclareAttrInterfaceMethods<Util_SizedStorageAttr, [
         "getStorageSize",
       ]>,
     ]> {
   let mnemonic = "parameter.named";
-  let summary = [{named parameter referenced an optional scope and key}];
+  let summary = [{Named parameter referenced an optional scope and key.}];
   let description = [{
     Species an externally-defined parameter that can be referenced by an
     optional scope defining a set of parameters and a key uniquely identifying

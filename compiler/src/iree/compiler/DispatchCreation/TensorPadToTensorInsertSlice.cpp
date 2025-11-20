@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "iree/compiler/Dialect/Encoding/IR/EncodingOps.h"
+#include "iree/compiler/Dialect/Flow/Transforms/RegionOpUtils.h"
 #include "iree/compiler/DispatchCreation/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -34,13 +35,16 @@ namespace {
 /// tensor.insert_slice. This is needed till tensor.pad op can be fused with its
 /// consumers.
 struct TensorPadOpConversion : public OpRewritePattern<tensor::PadOp> {
-  using OpRewritePattern<tensor::PadOp>::OpRewritePattern;
+  using Base::Base;
   TensorPadOpConversion(MLIRContext *context, bool skipSingleLinalgOpUses)
       : OpRewritePattern<tensor::PadOp>(context, skipSingleLinalgOpUses),
         skipSingleLinalgOpUses(skipSingleLinalgOpUses) {}
 
   LogicalResult matchAndRewrite(tensor::PadOp padTensorOp,
                                 PatternRewriter &rewriter) const override {
+    if (!IREE::Flow::isNonNullAndOutsideDispatch(padTensorOp)) {
+      return failure();
+    }
     // Check that the region is just a yield operation which is returning a
     // scalar that is not one of the arguments of the linalg operation.
     Region &region = padTensorOp.getRegion();

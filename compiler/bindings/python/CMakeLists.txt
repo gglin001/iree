@@ -118,6 +118,14 @@ declare_mlir_dialect_python_bindings(
   DIALECT_NAME iree_gpu
 )
 
+declare_mlir_dialect_extension_python_bindings(
+  ADD_TO_PARENT IREEPythonSources.Dialects
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/iree/compiler"
+  TD_FILE dialects/PreprocessingTransformExtensionsBinding.td
+  SOURCES dialects/preprocessing_transform.py
+  DIALECT_NAME transform
+  EXTENSION_NAME preprocessing_transform)
+
 declare_mlir_python_sources(IREECompilerAPIPythonCore
   ADD_TO_PARENT IREEPythonSources
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/iree/compiler"
@@ -159,7 +167,7 @@ if(IREE_INPUT_TORCH)
 
   declare_mlir_python_sources(IREEPythonSources.Torch.Importers
     ADD_TO_PARENT IREEPythonSources
-    ROOT_DIR "${IREE_SOURCE_DIR}/third_party/torch-mlir/python/torch_mlir"
+    ROOT_DIR "${TORCH_MLIR_ROOT_DIR}/python/torch_mlir"
     SOURCES
       extras/fx_importer.py
       extras/onnx_importer.py
@@ -210,6 +218,7 @@ set(_SOURCE_COMPONENTS
   MLIRPythonSources.Core
 
   # Core dialects.
+  MLIRPythonSources.Dialects.affine
   MLIRPythonSources.Dialects.amdgpu
   MLIRPythonSources.Dialects.arith
   MLIRPythonSources.Dialects.builtin
@@ -221,6 +230,7 @@ set(_SOURCE_COMPONENTS
   MLIRPythonSources.Dialects.llvm
   MLIRPythonSources.Dialects.math
   MLIRPythonSources.Dialects.memref
+  MLIRPythonSources.Dialects.nvvm
   MLIRPythonSources.Dialects.pdl
   MLIRPythonSources.Dialects.rocdl
   MLIRPythonSources.Dialects.scf
@@ -232,6 +242,8 @@ set(_SOURCE_COMPONENTS
   MLIRPythonSources.Dialects.transform.extras
   MLIRPythonSources.Dialects.transform.interpreter
   MLIRPythonSources.Dialects.vector
+  MLIRPythonSources.Dialects.vector_transform
+  MLIRPythonSources.Dialects.loop_transform
 
   # iree-dialects project.
   IREEDialectsPythonSources
@@ -319,6 +331,13 @@ add_iree_compiler_busybox_tool(
   OUTPUT_NAME iree-compile
   SRCS
     IREECompileTool.c
+)
+
+add_iree_compiler_busybox_tool(
+  IREECompilerIREELinkTool
+  OUTPUT_NAME iree-link
+  SRCS
+    IREELinkTool.c
 )
 
 add_iree_compiler_busybox_tool(

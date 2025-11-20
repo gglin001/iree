@@ -58,6 +58,7 @@ iree_cc_library(
     MLIRTransformUtils
     MLIRViewLikeInterface
     iree::compiler::Dialect::Encoding::IR
+    iree::compiler::Dialect::TensorExt::IR
     iree::compiler::Dialect::Util::IR
     iree::compiler::Utils
   PUBLIC
@@ -69,8 +70,8 @@ iree_tablegen_library(
   TD_FILE
     "FlowBase.td"
   OUTS
-    --gen-enum-decls FlowEnums.h.inc
-    --gen-enum-defs FlowEnums.cpp.inc
+    --gen-enum-decls --dialect=flow FlowEnums.h.inc
+    --gen-enum-defs --dialect=flow FlowEnums.cpp.inc
 )
 
 iree_tablegen_library(
@@ -110,6 +111,8 @@ iree_tablegen_library(
 iree_tablegen_doc(
   NAME
     FlowDialectDocGen
+  CATEGORY
+    "Dialects"
   TD_FILE
     "FlowOps.td"
   OUTS

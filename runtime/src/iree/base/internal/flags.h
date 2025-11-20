@@ -40,7 +40,7 @@ extern "C" {
 
 // Maximum number of flags that can be registered in a single binary.
 #if !defined(IREE_FLAGS_CAPACITY)
-#define IREE_FLAGS_CAPACITY 64
+#define IREE_FLAGS_CAPACITY 256
 #endif  // !IREE_FLAGS_CAPACITY
 
 //===----------------------------------------------------------------------===//
@@ -318,7 +318,7 @@ void iree_flags_set_usage(const char* program_name, const char* usage);
 // Returns <0 if parsing fails.
 //
 // Usage:
-//   extern "C" int main(int argc, char** argv) {
+//   int main(int argc, char** argv) {
 //     iree_status_t status = iree_flags_parse(&argc, &argv);
 //     if (!iree_status_is_ok(status)) { exit(1); }
 //     consume_positional_args(argc, argv);

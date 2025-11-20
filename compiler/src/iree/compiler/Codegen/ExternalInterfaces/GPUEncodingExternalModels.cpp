@@ -5,14 +5,19 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===- GPUEncodingExternalModels.cpp --------------------------------------===//
 //
-// This file implements the IREE::Codegen::LayoutAttrInterface and
-// IREE::Encoding::EncodingLayoutResolverAttrInterface for GPU backends.
+// This file implements the following interfaces for GPU backends:
+//
+// - IREE::Encoding::LayoutResolverAttr
+// - IREE::Encoding::SerializableAttr
+// - IREE::Encoding::LayoutMaterializerAttr
+// - IREE::Codegen::PackedLayoutMaterializerAttr
+//
 // Different from CPU backends, we do not transpose narrow-N to narrow-M for a
 // combination of reasons:
 //
-//   1. As linalg.matmul materializes into iree_gpu.multi_mma, which inherits
-//      its semantics from the wrapped intrinsic, we can't rely on any kind of
-//      LHS<->RHS symmetry.
+//   1. As linalg.matmul materializes into iree_codegen.inner_tiled, which
+//      inherits its semantics from the wrapped intrinsic, we can't rely on any
+//      kind of LHS<->RHS symmetry.
 //   2. We do not currently use ukernels, which would be one of the main areas
 //      to benefit from transposeNarrowN.
 //   3. Heuristics for cache-friendly dispatch tiling are internal to the GPU
@@ -23,31 +28,55 @@
 #include "iree/compiler/Codegen/ExternalInterfaces/GPUEncodingExternalModels.h"
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/Utils/Utils.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/GPUTileSwizzleUtils.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
-#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUOps.h"
+#include "iree/compiler/Codegen/Dialect/GPU/TargetUtils/KnownTargets.h"
 #include "iree/compiler/Codegen/ExternalInterfaces/Utils.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
-#include "iree/compiler/Dialect/Encoding/IR/EncodingOps.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h"
-#include "llvm/Support/Debug.h"
+#include "iree/compiler/Dialect/Encoding/Utils/Utils.h"
+#include "iree/compiler/Dialect/LinalgExt/Utils/MatchUtils.h"
+#include "llvm/Support/DebugLog.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 
 #include <cassert>
 #include <cfloat>
 #include <cstdint>
 #include <numeric>
 
-#define DEBUG_TYPE "iree-gpu-encoding-external-models"
+#define DEBUG_TYPE "iree-codegen-materialize-encoding"
 
 namespace mlir::iree_compiler::IREE::GPU {
 
-using Codegen::MaterializeEncodingInfo;
-using Codegen::TileMxNxK;
+using IREE::Codegen::MaterializeEncodingInfo;
+using IREE::Codegen::TileMxNxKxKb;
 
 namespace {
+
+/// Chooses a ScaledMMAAttr that supports the given element types. Currently
+/// just selects the first ScaledMMAAttr that is compatible with the given
+/// element types.
+/// TODO(#21923): This is a placeholder for now. We want a better heuristic
+/// in the future.
+static ScaledMMAAttr chooseScaledIntrinsicMMAAttr(TypeRange eTypes,
+                                                  TargetWgpAttr wgp) {
+  ScaledMMAAttr candidateMma;
+  for (ScaledMMAAttr mma : wgp.getScaledMma()) {
+    // Filter out intrinsics that don't match the element types of this matmul.
+    if (mma.getLhsElemType() != eTypes[0] ||
+        mma.getRhsElemType() != eTypes[1] ||
+        mma.getAccElemType() != eTypes[4]) {
+      continue;
+    }
+    candidateMma = mma;
+    break;
+  }
+  return candidateMma;
+}
 
 static MMAAttr chooseIntrinsicMMAAttr(TypeRange eTypes, TargetWgpAttr wgp) {
   MMAAttr candidateMma;
@@ -72,12 +101,27 @@ static MMAAttr chooseIntrinsicMMAAttr(TypeRange eTypes, TargetWgpAttr wgp) {
   return candidateMma;
 }
 
-static DataTiledMMAAttr
+static DataTiledMMAInterfaceAttr
 chooseDataTiledMMAAttr(TypeRange eTypes, TargetAttr target,
-                       Encoding::EncodingAttr encoding) {
+                       IREE::Encoding::EncodingAttr encoding,
+                       GPUEncodingResolverAttr resolver) {
   if (!target) {
     return {};
   }
+  // First try finding a data-tiled MMA layout through the ukernel provider if
+  // one can be found in the config. The ukernel provider is only available in
+  // case ukernels are enabled, so we're sure we want to override the default
+  // logic.
+  DictionaryAttr config = resolver.getConfiguration();
+  if (IREE::Codegen::UKernelProviderInterface provider =
+          getUKernelProviderFromTarget(config)) {
+    auto mma = dyn_cast_if_present<IREE::GPU::DataTiledMMAAttr>(
+        provider.getDataLayoutForUKernel(encoding, config));
+    if (mma) {
+      return mma;
+    }
+  }
+
   MLIRContext *ctx = target.getContext();
   IREE::GPU::TargetWgpAttr wgp = target.getWgp();
   if (!wgp.getMaxLoadInstructionBits() || !wgp.getVgprSpaceBits() ||
@@ -87,31 +131,82 @@ chooseDataTiledMMAAttr(TypeRange eTypes, TargetAttr target,
   }
 
   //
-  // Step 1: select a MMAIntrinsic.
+  // Step 1: select a MMAIntrinsic and compute the LHS and RHS vector sizes.
   //
-  MMAAttr intrinsicMma = chooseIntrinsicMMAAttr(eTypes, wgp);
-  if (!intrinsicMma) {
+  auto sizeInBits = [](VectorType type) -> int64_t {
+    return type.getElementTypeBitWidth() * type.getNumElements();
+  };
+  int64_t intrinsicSizeBitsLHS = 0;
+  int64_t intrinsicSizeBitsRHS = 0;
+  int64_t intrinsicSizeBitsACC = 0;
+  int64_t intrinsicMSize = 0;
+  int64_t intrinsicNSize = 0;
+  Attribute intrinsicAttr;
+  switch (encoding.getOpType().getValue()) {
+  case IREE::Encoding::EncodingOpType::matmul: {
+    MMAAttr intrinsicMma = chooseIntrinsicMMAAttr(eTypes, wgp);
+    if (!intrinsicMma) {
+      return {};
+    }
+    auto [intrinsicA, intrinsicB, intrinsicC] =
+        intrinsicMma.getABCVectorTypes();
+    intrinsicSizeBitsLHS = sizeInBits(intrinsicA);
+    intrinsicSizeBitsRHS = sizeInBits(intrinsicB);
+    intrinsicSizeBitsACC = sizeInBits(intrinsicC);
+    intrinsicMSize = getMSize(intrinsicMma.getIntrinsic());
+    intrinsicNSize = getNSize(intrinsicMma.getIntrinsic());
+    intrinsicAttr = intrinsicMma;
+    break;
+  }
+  case IREE::Encoding::EncodingOpType::scaled_matmul: {
+    ScaledMMAAttr intrinsicScaledMma =
+        chooseScaledIntrinsicMMAAttr(eTypes, wgp);
+    if (!intrinsicScaledMma) {
+      return {};
+    }
+    SmallVector<VectorType> vectorTypes;
+    intrinsicScaledMma.getDistributedTileTypes(vectorTypes);
+    // For scaled_matmul, the size of the LHS scales and RHS scales are added
+    // to the total LHS and RHS sizes, because we use these sizes to select the
+    // unrolling factors for M, N, and K, which affect both the input and the
+    // scale operands.
+    intrinsicSizeBitsLHS = sizeInBits(vectorTypes[kScaledMMAOperandLhs]) +
+                           sizeInBits(vectorTypes[kScaledMMAOperandLhsScale]);
+    intrinsicSizeBitsRHS = sizeInBits(vectorTypes[kScaledMMAOperandRhs]) +
+                           sizeInBits(vectorTypes[kScaledMMAOperandRhsScale]);
+    intrinsicSizeBitsACC = sizeInBits(vectorTypes[4]);
+    intrinsicMSize = getMSize(intrinsicScaledMma.getIntrinsic());
+    intrinsicNSize = getNSize(intrinsicScaledMma.getIntrinsic());
+    intrinsicAttr = intrinsicScaledMma;
+    break;
+  }
+  default:
     return {};
   }
 
   //
-  // Step 2: Select the unrolling factors for the generic case where there is no
-  //         narrow dimension.
+  // Step 2: Select the total unrolling factors along the M, N, and K
+  // dimensions.
   //
-
-  auto sizeInBits = [](VectorType type) -> int {
-    return type.getElementTypeBitWidth() * type.getNumElements();
-  };
-
-  auto [intrinsicA, intrinsicB, intrinsicC] = intrinsicMma.getABCVectorTypes();
   // The intrinsicsK factor serves to allow loads from the A and B matrices to
   // use the target ISA's vector loads. For instance, if the ISA has 128-bit
   // loads and each intrinsic consumes only 32 bits from A and B, then we want
   // to set intrinsicsK=4 to turn 4 separate 32-bit loads into one 128-bit load.
-  int intrinsicLoadBits =
-      std::min(sizeInBits(intrinsicA), sizeInBits(intrinsicB));
-  const int intrinsicsK =
+  int intrinsicLoadBits = std::min(intrinsicSizeBitsLHS, intrinsicSizeBitsRHS);
+  int intrinsicsK =
       std::max(1, *wgp.getMaxLoadInstructionBits() / intrinsicLoadBits);
+
+  // For scaled intrinsics, there is another reason to unroll K. Scales are held
+  // in a vector of multiple scales, but only a single scale is used for each
+  // instruction. We want to be able to load a contiguous vector of scales into
+  // registers, and use the same vector for consecutive instructions. Choose the
+  // LCM of the scales vector size unrolling factor, and the load bitwidth
+  // unrolling factor, so both are satisfied.
+  // * Note that typically, the load bitwidth unrolling factor will be 1, so the
+  // total K unrolling factor will just be the scales vector size.
+  if (auto scaledMmaAttr = dyn_cast<ScaledMMAAttr>(intrinsicAttr)) {
+    intrinsicsK = std::lcm(intrinsicsK, scaledMmaAttr.getScalesVectorSize());
+  }
 
   // The total amount of unrolling along the M and N dimensions is normally
   // limited only by the number of available registers, since larger M and N
@@ -121,344 +216,582 @@ chooseDataTiledMMAAttr(TypeRange eTypes, TargetAttr target,
   // correspondingly divides the available register space between this many
   // subgroups, making it cancel out of the equation here.
   //
-  // We need to solve for two variables here, intrinsics_m and intrinsics_n,
-  // constrained by one quadratic equation expressing that the A, B and C tiles
-  // must fit in VGPR space. Since we have only 1 constraint for two variables,
-  // we self-impose a second constraint for now: that the unrolling shape should
-  // be square, i.e. intrinsicsM == intrinsicsN.
-  // TODO(#18850): that is suboptimal for narrow cases.
+  // We need to find the optimal pair (totalUnrollM, totalUnrollN) by
+  // enumerating feasible (tm, tn) candidates. For each candidate, the
+  // following two constraints are enforced:
+  // 1. The A, B and C tiles must fit in VGPR space.
+  //     A-tile + B-tile + C-tile <= wgp.getVgprSpaceBits()
+  // 2. The A, B tiles must fit in shared memory.
+  //     A-tile + B-tile <= wgp.getMaxWorkgroupMemoryBytes() * 8
+  // A-tile: tm * intrinsicsK * intrinsicSizeBitsLHS
+  // B-tile: tn * intrinsicsK * intrinsicSizeBitsRHS
+  // C-tile: tm * tn * intrinsicSizeBitsACC
   //
-  // Now we have only one variable, call it x, to solve for.
-
-  // The register space taken is:
-  //     A-tile: x * intrinsicsK * sizeInBits(intrinsicA)
-  //     B-tile: x * intrinsicsK * sizeInBits(intrinsicB)
-  //     C-tile: x^2 * sizeInBits(intrinsicC)
-  // So the equation to solve is:
-  //       x^2 * sizeInBits(intrinsicC)
-  //     + x   * intrinsicsK * (sizeInBits(intrinsicA) + sizeInBits(intrinsicB))
-  //    == wgp.getVgprSpaceBits()
-  float c2 = sizeInBits(intrinsicC);
-  float c1 = intrinsicsK * (sizeInBits(intrinsicA) + sizeInBits(intrinsicB));
-  float c0 = -*wgp.getVgprSpaceBits(); // negative by construction.
-  // Now the equation to solve is: c2 * x^2 + c1 * x + c0 == 0.
-  float discriminant = c1 * c1 - 4 * c0 * c2; // positive, because c0 < 0.
-  // x = unique positive solution.
-  float x = (-c1 + std::sqrt(discriminant)) / (2 * c2);
-
-#ifndef NDEBUG
-  // Self-check quadratic solver. 10 epsilon is just a crude upper bound;
-  // In practice, cancellation results in check == 0 in current cases.
-  float check = c2 * x * x + c1 * x + c0;
-  assert(std::abs(check) < 10 * FLT_EPSILON * std::abs(c0));
-#endif
-
-  // Now, looking geometrically at our unrolling space along the M and N
-  // dimensions, we solve the following problem in the (M,N)-plane: approximate
-  // a square of side length `x`, by a rectangle of side lengths `totalUnrollM`
-  // and `totalUnrollN`, under the constraints:
-  // 1. totalUnrollM * totalUnrollN <= x * x
-  //    * Reason: by construction of x, any larger area would exceed the
-  //      wgp.getVgprSpaceBits() budget.
-  // 2. totalUnrollM and totalUnrollN are powers of 2.
-  //    * Reason: that is a self-imposed constraint for now to avoid prematurely
-  //      entering excessing fine-tuning of unrolling factors. Also, since below
-  //      we will put all the unroll-to-subgroups in the N dimension, that
-  //      requires totalUnrollN to be a multiple of wgp.getSimdsPerWgp(),
-  //      which is typically a power of 2, specifically 4.
-  //      TODO(#18851): we will not always put all the unroll-to-subgroups on N.
-  // 3. totalUnrollN >= totalUnrollM.
-  //    * Reason: Just like the previous constraint, that is also motivated by
-  //      the code below currently putting all the unroll-to-subgroups in the N
-  //      dimension, which requires a sufficiently large totalUnrollN.
-  //      TODO(#18851): we will not always put all the unroll-to-subgroups on N.
+  // The optimization goal is to maximize arithmetic intensity (tm * tn) / (tm +
+  // tn).
   //
-  // Set totalUnrollN = round x to nearest power of two, break ties away from 0
-  // per specification of std::round.
-  int totalUnrollN = std::exp2(std::round(std::log2(x)));
-  // Based on above constraint 1:
-  float unroundedMaxTotalUnrollM = x * x / totalUnrollN;
-  int totalUnrollM = std::exp2(std::floor(std::log2(unroundedMaxTotalUnrollM)));
+  // We also self-impose the constraint that tm and tn are powers of 2 to
+  // avoid prematurely entering excessing fine-tuning of unrolling factors.
+  int64_t totalUnrollM = 1;
+  int64_t totalUnrollN = 1;
+  auto computeArithmeticIntensity = [&](int64_t tm, int64_t tn) -> double {
+    return double(tm * tn) / double(tm + tn);
+  };
+  double bestArithmeticIntensity =
+      computeArithmeticIntensity(totalUnrollM, totalUnrollN);
+  // Upper bounds of tm and tn are decided by the matrix and intrinsic sizes.
+  int64_t maxTotalUnrollM = INT64_MAX;
+  int64_t maxTotalUnrollN = INT64_MAX;
+  // Upper bound of tm * tn are decided by the workgroup count of the chip and
+  // the intrinsic sizes.
+  int64_t maxTotalUnrollMN = INT64_MAX;
+  FailureOr<IREE::Encoding::BxMxNxKxKb> matmulSizes =
+      getEncodingContractionLikeSizes(encoding);
+  if (succeeded(matmulSizes)) {
+    if (!ShapedType::isDynamic(matmulSizes->M)) {
+      // Cap maxTotalUnrollM to avoid excessive padding.
+      maxTotalUnrollM = llvm::divideCeil(matmulSizes->M, intrinsicMSize);
+    }
+    if (!ShapedType::isDynamic(matmulSizes->N)) {
+      // Cap maxTotalUnrollN to avoid excessive padding.
+      maxTotalUnrollN = llvm::divideCeil(matmulSizes->N, intrinsicNSize);
+    }
+    if (!ShapedType::isDynamic(matmulSizes->M) &&
+        !ShapedType::isDynamic(matmulSizes->N)) {
+      // Cap maxTotalUnrollMN to avoid underutilizing the workgroups available.
+      IREE::GPU::TargetChipAttr chip = target.getChip();
+      int64_t numWGPs = chip ? chip.getWgpCount() : 512;
+      maxTotalUnrollMN =
+          llvm::divideCeil(matmulSizes->M * matmulSizes->N,
+                           numWGPs * intrinsicMSize * intrinsicNSize);
+    }
+  }
+  // Iterate over possible tm.
+  for (int64_t tm = 1; tm <= maxTotalUnrollM; tm <<= 1) {
+    // Compute the maximum feasible tn for this tm.
+    int64_t maxFeasibleTnVgpr =
+        (*wgp.getVgprSpaceBits() - tm * intrinsicsK * intrinsicSizeBitsLHS) /
+        (intrinsicsK * intrinsicSizeBitsRHS + tm * intrinsicSizeBitsACC);
+    int64_t maxFeasibleTnSharedMem = (wgp.getMaxWorkgroupMemoryBytes() * 8 -
+                                      tm * intrinsicsK * intrinsicSizeBitsLHS) /
+                                     (intrinsicsK * intrinsicSizeBitsRHS);
+    int64_t tn = std::min(maxFeasibleTnVgpr, maxFeasibleTnSharedMem);
+    // Clamp tn to maxTotalUnrollN.
+    tn = std::min(tn, maxTotalUnrollN);
+    // Clamp tn to maxTotalUnrollMN / tm.
+    tn = std::min(tn, maxTotalUnrollMN / tm);
+    // No feasible tn for this tm. Stop the enumeration.
+    if (tn <= 0) {
+      break;
+    }
+    // Round tn down to nearest power of two.
+    tn = 1 << (int64_t)std::floor(std::log2(tn));
+    // Maximize arithmetic intensity (tm * tn) / (tm + tn).
+    double currentArithmeticIntensity = computeArithmeticIntensity(tm, tn);
+    if (currentArithmeticIntensity > bestArithmeticIntensity) {
+      totalUnrollM = tm;
+      totalUnrollN = tn;
+      bestArithmeticIntensity = currentArithmeticIntensity;
+    }
+  }
 
-  // Now we introduce unroll-to-subgroups. It doesn't change the overall tile
+  //
+  // Step 3: Split `totalUnrollM` and `totalUnrollN` into plain unrolling (more
+  // instructions on each thread) and unrolling-to-subgroups (more threads).
+  //
+  // Unrolling-to-subgroups doesn't change the overall tile
   // size, as it increases the number of subgroups but correspondingly decreases
   // the number of registers available to each subgroups. In other words, the
   // overall tile size determined above only needed to be concerned with the
   // overall number of registers, not with how they are split between subgroups.
   //
-  // For now for simplicity we put all the unroll-to-subgroups in the N
-  // dimension. TODO(#18851): revisit that.
-  //
-  // That does simplify the below adjustments for narrow M/N, as we don't need
-  // to think about unroll-to-subgroups when making the narrowing adjustment.
-  int subgroupsM = 1;
-  int subgroupsN = *wgp.getSimdsPerWgp();
-  int intrinsicsM = totalUnrollM / subgroupsM;
-  int intrinsicsN = totalUnrollN / subgroupsN;
-
-  //
-  // Step 3: Adjust the unrolling factors when there is a narrow dimension.
-  // TODO(#18850): dealing with narrow cases as a fix-up is suboptimal.
-  //
-  IREE::Encoding::MatmulNarrowDim narrowDim =
-      IREE::Encoding::getMatmulNarrowDim(encoding);
-  if (narrowDim.isM()) {
-    intrinsicsM =
-        std::min(intrinsicsM,
-                 static_cast<int>(llvm::divideCeil(
-                     narrowDim.size, getMSize(intrinsicMma.getIntrinsic()))));
-  }
-  if (narrowDim.isN()) {
-    std::swap(intrinsicsM, intrinsicsN);
-    std::swap(subgroupsM, subgroupsN);
-    assert(subgroupsN == 1);
-    intrinsicsN =
-        std::min(intrinsicsN,
-                 static_cast<int>(llvm::divideCeil(
-                     narrowDim.size, getNSize(intrinsicMma.getIntrinsic()))));
+  // The goal is still to maximize arithmetic intensity, but now we need to
+  // optimize `intrinsicsM(N)` instead of `totalUnrollM(N)`.
+  int64_t subgroupsM = 1;
+  int64_t subgroupsN = 1;
+  int64_t intrinsicsM = 1;
+  int64_t intrinsicsN = 1;
+  bestArithmeticIntensity =
+      computeArithmeticIntensity(intrinsicsM, intrinsicsN);
+  int64_t simdsPerWgp = *wgp.getSimdsPerWgp();
+  // Enumerate possible unrolling-to-subgroups on M dimension.
+  for (int64_t sm = 1; sm <= std::min(simdsPerWgp, totalUnrollM); sm <<= 1) {
+    // Calculate the unrolling-to-subgroups on N dimension, given the current
+    // sm.
+    int64_t sn = std::min(simdsPerWgp / sm, totalUnrollN);
+    // Round sn down to nearest power of two.
+    sn = 1 << (int64_t)std::floor(std::log2(sn));
+    // Calculate the plain (intrinsic) unrolling factors on M and N dimensions.
+    int64_t im = totalUnrollM / sm;
+    int64_t in = totalUnrollN / sn;
+    // Maximize arithmetic intensity (im * in) / (im + in).
+    double currentArithmeticIntensity = computeArithmeticIntensity(im, in);
+    if (currentArithmeticIntensity > bestArithmeticIntensity) {
+      subgroupsM = sm;
+      subgroupsN = sn;
+      intrinsicsM = im;
+      intrinsicsN = in;
+      bestArithmeticIntensity = currentArithmeticIntensity;
+    }
   }
 
-  return DataTiledMMAAttr::get(ctx, intrinsicMma.getIntrinsic(), intrinsicsM,
-                               subgroupsM, intrinsicsN, subgroupsN,
-                               intrinsicsK);
+  // We currently never generate subgroupsK != 1, as subgroupsK requires
+  // specific partial-accumulator-reduction in the kernel, currently only done
+  // in some microkernels that would provide their own DataTiledMMAAttr.
+  int subgroupsK = 1;
+
+  // Returns the final choice of attributes.
+  if (auto intrinsicMma = dyn_cast<MMAAttr>(intrinsicAttr)) {
+    // For non-scaled matmuls, the purpose of unrolling on K is to allow LHS/RHS
+    // loads to match the preferred load instruction size. This is achieved by
+    // enabling interleaving for those operands.
+    auto mmaInterleaveK =
+        DenseI64ArrayAttr::get(ctx, {kMMAOperandLhs, kMMAOperandRhs});
+    return DataTiledMMAAttr::get(
+        ctx, intrinsicMma.getIntrinsic(), intrinsicsM, subgroupsM, intrinsicsN,
+        subgroupsN, intrinsicsK, subgroupsK,
+        /*operands_interleaving_intrinsics_m=*/{},
+        /*operands_interleaving_intrinsics_n=*/{},
+        /*operands_interleaving_intrinsics_k=*/mmaInterleaveK);
+  }
+  // For scaled matmuls, interleaving happens because we want to load all
+  // the unrolled scales with each vector load, so we need to interleave at
+  // the very last dimension for the scales. For the LHS/RHS, we load in blocks,
+  // so we don't need to interleave.
+  auto scaledMmaInterleaveK = DenseI64ArrayAttr::get(
+      ctx, {kScaledMMAOperandLhsScale, kScaledMMAOperandRhsScale});
+  auto intrinsicScaledMma = cast<ScaledMMAAttr>(intrinsicAttr);
+  return DataTiledScaledMMAAttr::get(
+      ctx, intrinsicScaledMma.getIntrinsic(),
+      intrinsicScaledMma.getLhsElemType(), intrinsicScaledMma.getRhsElemType(),
+      intrinsicScaledMma.getAccElemType(), intrinsicsM, subgroupsM, intrinsicsN,
+      subgroupsN, intrinsicsK, subgroupsK,
+      /*operands_interleaving_intrinsics_m=*/{},
+      /*operands_interleaving_intrinsics_n=*/{},
+      /*operands_interleaving_intrinsics_k=*/scaledMmaInterleaveK);
 }
 
-static Operation *lowerContractionOpToMultiMmaOp(OpBuilder &builder,
-                                                 linalg::LinalgOp linalgOp,
-                                                 ValueRange operands,
-                                                 TargetAttr targetAttr) {
+static Operation *lowerContractionOrScaledContractionOpToInnerTiledOp(
+    OpBuilder &builder, linalg::LinalgOp linalgOp, ValueRange operands,
+    GPUEncodingResolverAttr resolver) {
+  IREE::GPU::TargetAttr targetAttr =
+      getGPUTargetAttr(resolver.getConfiguration());
+  if (!targetAttr) {
+    return nullptr;
+  }
   if (!linalgOp.hasPureTensorSemantics()) {
     return nullptr;
   }
-  if (!linalg::isaContractionOpInterface(linalgOp)) {
-    return nullptr;
-  }
-  FailureOr<linalg::ContractionDimensions> contractionDims =
-      linalg::inferContractionDims(linalgOp);
-  if (failed(contractionDims)) {
-    return nullptr;
-  }
 
-  auto inputs = linalgOp.getDpsInputOperands();
-  auto outputs = linalgOp.getDpsInits();
+  SmallVector<Value> inputs = linalgOp.getDpsInputs();
+  SmallVector<Value> outputs = linalgOp.getDpsInits();
 
-  auto lhsType = cast<RankedTensorType>(inputs[0]->get().getType());
-  auto rhsType = cast<RankedTensorType>(inputs[1]->get().getType());
-  auto resultType = cast<RankedTensorType>(outputs[0].getType());
-  auto lhsEncoding = IREE::Encoding::getEncodingAttr(lhsType);
-  auto rhsEncoding = IREE::Encoding::getEncodingAttr(rhsType);
-  auto resultEncoding = IREE::Encoding::getEncodingAttr(resultType);
-  if (!lhsEncoding || !rhsEncoding || !resultEncoding) {
-    return nullptr;
-  }
-
-  if (lhsEncoding.getOperandIndex().getValue() != IREE::Encoding::MATMUL_LHS ||
-      rhsEncoding.getOperandIndex().getValue() != IREE::Encoding::MATMUL_RHS ||
-      resultEncoding.getOperandIndex().getValue() !=
-          IREE::Encoding::MATMUL_RESULT) {
+  SmallVector<IREE::Encoding::EncodingAttr> operandEncodings;
+  // Return false if the operand has no encoding.
+  auto appendEncodingIfPresent = [&](Value operand) -> bool {
+    auto type = cast<RankedTensorType>(operand.getType());
+    auto encoding = IREE::Encoding::getEncodingAttr(type);
+    if (!encoding) {
+      return false;
+    }
+    operandEncodings.push_back(encoding);
+    return true;
+  };
+  if (!llvm::all_of(llvm::concat<Value>(inputs, outputs),
+                    appendEncodingIfPresent)) {
     return nullptr;
   }
 
-  IREE::GPU::DataTiledMMAAttr mma = chooseDataTiledMMAAttr(
-      resultEncoding.getElementTypesArray(), targetAttr, resultEncoding);
-  if (!mma) {
-    LLVM_DEBUG(llvm::dbgs() << "expect encodings on operand types\n");
+  auto checkEncodingIndex = [&](int64_t idx, int64_t expectedIdx) -> bool {
+    return operandEncodings[idx].getOperandIndex().getInt() == expectedIdx;
+  };
+  switch (operandEncodings[0].getOpType().getValue()) {
+  case IREE::Encoding::EncodingOpType::matmul: {
+    if (!checkEncodingIndex(0, IREE::Encoding::MATMUL_LHS) ||
+        !checkEncodingIndex(1, IREE::Encoding::MATMUL_RHS) ||
+        !checkEncodingIndex(2, IREE::Encoding::MATMUL_RESULT)) {
+      return nullptr;
+    }
+    break;
+  }
+  case IREE::Encoding::EncodingOpType::scaled_matmul: {
+    if (!checkEncodingIndex(0, IREE::Encoding::SCALED_MATMUL_LHS) ||
+        !checkEncodingIndex(1, IREE::Encoding::SCALED_MATMUL_RHS) ||
+        !checkEncodingIndex(2, IREE::Encoding::SCALED_MATMUL_LHS_SCALES) ||
+        !checkEncodingIndex(3, IREE::Encoding::SCALED_MATMUL_RHS_SCALES) ||
+        !checkEncodingIndex(4, IREE::Encoding::SCALED_MATMUL_RESULT)) {
+      return nullptr;
+    }
+    break;
+  }
+  default:
     return nullptr;
   }
-  LLVM_DEBUG(llvm::dbgs() << "Target MMA: " << mma << "\n");
 
-  MLIRContext *ctx = builder.getContext();
+  IREE::Encoding::EncodingAttr resultEncoding = operandEncodings.back();
+  IREE::GPU::DataTiledMMAInterfaceAttr dataTiledAttr =
+      chooseDataTiledMMAAttr(resultEncoding.getElementTypesArray(), targetAttr,
+                             resultEncoding, resolver);
+  if (!dataTiledAttr) {
+    LDBG() << "expect encodings on operand types";
+    return nullptr;
+  }
+
   SmallVector<AffineExpr> lhsExprs, rhsExprs, accExprs;
-  int baseIdx = contractionDims->batch.empty() ? 0 : 1;
-  if (baseIdx) {
-    AffineExpr bExpr = builder.getAffineDimExpr(0);
+  Codegen::EncodingContractionLikeDimInfo cDimInfo =
+      Codegen::getEncodingContractionLikeDims(resultEncoding).value();
+  int numDims = 0;
+  AffineExpr bExpr = builder.getAffineDimExpr(numDims);
+  if (cDimInfo.batchDim.operandIdx.has_value()) {
     lhsExprs.push_back(bExpr);
     rhsExprs.push_back(bExpr);
     accExprs.push_back(bExpr);
+    ++numDims;
   }
-  AffineExpr mExpr = builder.getAffineDimExpr(baseIdx + 0);
-  AffineExpr nExpr = builder.getAffineDimExpr(baseIdx + 1);
-  AffineExpr kExpr = builder.getAffineDimExpr(baseIdx + 2);
+  AffineExpr mExpr = builder.getAffineDimExpr(numDims++);
+  AffineExpr nExpr = builder.getAffineDimExpr(numDims++);
+  AffineExpr kExpr = builder.getAffineDimExpr(numDims++);
 
   // The outer dims are all in row-major order after relayout.
   lhsExprs.append({mExpr, kExpr});
   rhsExprs.append({nExpr, kExpr});
   accExprs.append({mExpr, nExpr});
-  int64_t numDims = baseIdx + 3;
-  auto lhsMap = AffineMap::get(numDims, 0, lhsExprs, ctx);
-  auto rhsMap = AffineMap::get(numDims, 0, rhsExprs, ctx);
-  auto accMap = AffineMap::get(numDims, 0, accExprs, ctx);
-
+  SmallVector<AffineMap> indexingMaps;
+  MLIRContext *ctx = builder.getContext();
+  Location loc = linalgOp.getLoc();
   SmallVector<utils::IteratorType> iteratorTypes =
       linalgOp.getIteratorTypesArray();
-
-  Location loc = linalgOp.getLoc();
-  Operation *mmaOp = builder.create<MultiMmaOp>(
-      loc, operands[0], operands[1], operands[2],
-      ArrayRef<AffineMap>{lhsMap, rhsMap, accMap}, iteratorTypes, mma);
-  return mmaOp;
+  auto semantics = InnerTiledSemanticsAttr::get(
+      builder.getContext(), /*distributed=*/false, /*opaque=*/false);
+  switch (resultEncoding.getOpType().getValue()) {
+  case IREE::Encoding::EncodingOpType::matmul: {
+    indexingMaps.push_back(AffineMap::get(numDims, 0, lhsExprs, ctx));
+    indexingMaps.push_back(AffineMap::get(numDims, 0, rhsExprs, ctx));
+    indexingMaps.push_back(AffineMap::get(numDims, 0, accExprs, ctx));
+    return Codegen::InnerTiledOp::create(
+        builder, loc, operands.take_front(inputs.size()),
+        operands.take_back(outputs.size()), indexingMaps, iteratorTypes,
+        cast<IREE::GPU::DataTiledMMAAttr>(dataTiledAttr), semantics);
+  }
+  case IREE::Encoding::EncodingOpType::scaled_matmul: {
+    SmallVector<AffineExpr> lhsScalesExprs, rhsScalesExprs;
+    if (cDimInfo.batchDim.operandIdx.has_value()) {
+      lhsScalesExprs.push_back(bExpr);
+      rhsScalesExprs.push_back(bExpr);
+    }
+    AffineExpr kbExpr = builder.getAffineDimExpr(numDims++);
+    lhsExprs.append({kbExpr});
+    rhsExprs.append({kbExpr});
+    lhsScalesExprs.append({mExpr, kExpr});
+    rhsScalesExprs.append({nExpr, kExpr});
+    indexingMaps.push_back(AffineMap::get(numDims, 0, lhsExprs, ctx));
+    indexingMaps.push_back(AffineMap::get(numDims, 0, rhsExprs, ctx));
+    indexingMaps.push_back(AffineMap::get(numDims, 0, lhsScalesExprs, ctx));
+    indexingMaps.push_back(AffineMap::get(numDims, 0, rhsScalesExprs, ctx));
+    indexingMaps.push_back(AffineMap::get(numDims, 0, accExprs, ctx));
+    return Codegen::InnerTiledOp::create(
+        builder, loc, operands.take_front(inputs.size()),
+        operands.take_back(outputs.size()), indexingMaps, iteratorTypes,
+        cast<IREE::GPU::DataTiledScaledMMAAttr>(dataTiledAttr), semantics);
+  }
+  default: {
+    assert(false && "unexpected encoding op type");
+    return nullptr;
+  }
+  }
 }
 
-struct GPUDeviceEncodingLayoutResolverAttrInterface
-    : public Codegen::LayoutAttrInterface::ExternalModel<
-          GPUDeviceEncodingLayoutResolverAttrInterface, GPUEncodingLayoutAttr> {
-  MaterializeEncodingInfo getEncodingInfo(Attribute attr,
-                                          RankedTensorType type) const {
-    auto layoutAttr = cast<GPUEncodingLayoutAttr>(attr);
-    DictionaryAttr config = layoutAttr.getConfiguration();
+struct GPUEncodingPackedLayoutMaterializerAttr
+    : public PackedLayoutMaterializerAttrExternalModelBase<
+          GPUEncodingPackedLayoutMaterializerAttr, GPUEncodingResolverAttr> {
+  DictionaryAttr getConfiguration(Attribute attr) const {
+    return cast<GPUEncodingResolverAttr>(attr).getConfiguration();
+  }
 
-    auto encoding = llvm::dyn_cast_or_null<IREE::Encoding::EncodingAttr>(
-        type.getEncoding());
+  MaterializeEncodingInfo getEncodingInfoImpl(Attribute attr,
+                                              RankedTensorType type) const {
+    auto resolver = cast<GPUEncodingResolverAttr>(attr);
+    DictionaryAttr config = resolver.getConfiguration();
+
+    auto encoding =
+        dyn_cast_if_present<IREE::Encoding::EncodingAttr>(type.getEncoding());
 
     MaterializeEncodingInfo info;
     if (!encoding) {
       return info;
     }
 
-    // If the layout is already resolved, use it directly.
-    if (config) {
-      if (std::optional<NamedAttribute> namedAttr =
-              config.getNamed(kEncodingInfoAttrName)) {
-        std::optional<MaterializeEncodingInfo> preresolvedInfo =
-            Codegen::deserializeEncodingInfo(
-                cast<DictionaryAttr>(namedAttr->getValue()));
-        assert(preresolvedInfo && "encoding_info is invalid");
-        return preresolvedInfo.value();
-      }
-    }
-
     IREE::GPU::TargetAttr gpuAttr = getGPUTargetAttr(config);
     if (!gpuAttr) {
       return info;
     }
-    DataTiledMMAAttr mma = chooseDataTiledMMAAttr(
-        encoding.getElementTypesArray(), gpuAttr, encoding);
+
+    DataTiledMMAInterfaceAttr mma = chooseDataTiledMMAAttr(
+        encoding.getElementTypesArray(), gpuAttr, encoding, resolver);
     if (!mma) {
       return info;
     }
 
-    // Map the matmul TileMxNxK to an actual tile shape for the tensor at hand,
-    // based on its operand index in the matmul.
-    TileMxNxK innerTile;
-    std::tie(innerTile.M, innerTile.N, innerTile.K) = mma.getMNKShape();
+    // Map the matmul TileMxNxKxKb to an actual tile shape for the tensor at
+    // hand, based on its operand index in the matmul.
+    TileMxNxKxKb innerTile = mma.getTileMNKKb();
     FailureOr<MaterializeEncodingInfo> maybeEncodingInfo =
         getEncodingInfoForMatmul(encoding, innerTile);
     if (failed(maybeEncodingInfo)) {
       return info;
     }
     info = std::move(maybeEncodingInfo.value());
-    auto fragment = static_cast<IREE::GPU::MMAFragment>(
-        encoding.getOperandIndex().getInt());
-    info.swizzle = getSwizzle(mma, fragment);
+    FailureOr<IREE::Codegen::TileSwizzle> maybeSwizzle =
+        getEncodingSwizzle(encoding, mma, encoding.getOperandIndex().getInt());
+    if (failed(maybeSwizzle)) {
+      return info;
+    }
+    info.swizzle = std::move(maybeSwizzle.value());
     return info;
-  }
-
-  Operation *lowerOp(Attribute attr, OpBuilder &b, Operation *op,
-                     TypeRange convertedResTypes,
-                     ValueRange convertedOperands) const {
-    auto layoutAttr = cast<GPUEncodingLayoutAttr>(attr);
-    auto linalgOp = llvm::dyn_cast<linalg::LinalgOp>(op);
-    if (!linalgOp) {
-      return nullptr;
-    }
-    DictionaryAttr config = layoutAttr.getConfiguration();
-    IREE::GPU::TargetAttr gpuAttr = getGPUTargetAttr(config);
-    if (!gpuAttr) {
-      return nullptr;
-    }
-    return lowerContractionOpToMultiMmaOp(b, linalgOp, convertedOperands,
-                                          gpuAttr);
   }
 };
 
-struct GPUHostSerializableEncodingAttrInterface final
-    : IREE::Encoding::SerializableEncodingAttrInterface::ExternalModel<
-          GPUHostSerializableEncodingAttrInterface, GPUEncodingLayoutAttr> {
+struct GPUEncodingResolverMaterializerAttr
+    : public EncodingLayoutMaterializerAttrExternalModelBase<
+          GPUEncodingResolverMaterializerAttr, GPUEncodingResolverAttr> {
+  Operation *lowerOp(Attribute attr, OpBuilder &b, Operation *op,
+                     TypeRange convertedResTypes,
+                     ValueRange convertedOperands) const {
+    auto resolverAttr = cast<GPUEncodingResolverAttr>(attr);
+    auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+    if (!linalgOp) {
+      return nullptr;
+    }
+    if (auto fillOp = dyn_cast<linalg::FillOp>(op)) {
+      return lowerFillOpWithResolvedLayouts(b, fillOp, convertedResTypes,
+                                            convertedOperands);
+    }
+    if (linalg::isaContractionOpInterface(linalgOp) ||
+        IREE::LinalgExt::isaScaledContractionOpInterface(linalgOp)) {
+      return lowerContractionOrScaledContractionOpToInnerTiledOp(
+          b, linalgOp, convertedOperands, resolverAttr);
+    }
+    if (auto genericOp = dyn_cast<linalg::GenericOp>(op)) {
+      return lowerGenericOpWithResolvedLayouts(
+          b, genericOp, convertedResTypes, convertedOperands,
+          cast<IREE::Encoding::LayoutMaterializerAttr>(attr));
+    }
+    return nullptr;
+  }
+};
+
+struct GPUSerializableAttr final
+    : IREE::Encoding::SerializableAttr::ExternalModel<GPUSerializableAttr,
+                                                      GPUEncodingResolverAttr> {
+  bool isSerialized(Attribute attr) const {
+    auto configuration = cast<GPUEncodingResolverAttr>(attr).getConfiguration();
+    return configuration && configuration.contains(kEncodingInfoAttrName);
+  }
 
   Value calculateStorageSizeInBytes(Attribute attr, Location loc,
                                     OpBuilder &builder, RankedTensorType type,
                                     ValueRange dynamicDims) const {
-    return calculateStorageSizeInBytesImpl(attr, loc, builder, type,
-                                           dynamicDims);
+    return calculatePackedStorageSizeInBytesImpl(attr, loc, builder, type,
+                                                 dynamicDims);
   }
 };
 
-struct GPUHostEncodingLayoutResolverAttrInterface final
-    : IREE::Encoding::EncodingLayoutResolverAttrInterface::ExternalModel<
-          GPUHostEncodingLayoutResolverAttrInterface, GPUEncodingLayoutAttr> {
+struct GPULayoutResolverAttr final
+    : IREE::Encoding::LayoutResolverAttr::ExternalModel<
+          GPULayoutResolverAttr, GPUEncodingResolverAttr> {
   Attribute cloneWithSimplifiedConfig(Attribute attr,
                                       DictionaryAttr config) const {
     MLIRContext *ctx = attr.getContext();
     SmallVector<NamedAttribute> configItems;
     DictionaryAttr existingConfig =
-        cast<GPUEncodingLayoutAttr>(attr).getConfiguration();
+        cast<GPUEncodingResolverAttr>(attr).getConfiguration();
     if (existingConfig) {
       configItems.append(existingConfig.getValue().begin(),
                          existingConfig.getValue().end());
     }
-    storeNamedAttrIfPresent(configItems, config, kGPUTargetAttrName);
-    return GPUEncodingLayoutAttr::get(ctx,
-                                      DictionaryAttr::get(ctx, configItems));
+    if (IREE::GPU::TargetAttr targetAttr = getGPUTargetAttr(config)) {
+      addConfigGPUTarget(ctx, targetAttr, configItems);
+    }
+    // Pass along the ukernel provider if one has been provided, so we can use
+    // it to choose the data tiling layouts.
+    if (IREE::Codegen::UKernelProviderInterface ukernelProvider =
+            getUKernelProviderFromTarget(config)) {
+      configItems.emplace_back(StringAttr::get(ctx, kUKernelProviderName),
+                               ukernelProvider);
+    }
+    return GPUEncodingResolverAttr::get(ctx,
+                                        DictionaryAttr::get(ctx, configItems));
   }
 
   Attribute getLayout(Attribute attr, RankedTensorType type) const {
     MLIRContext *ctx = attr.getContext();
-    return GPUEncodingLayoutAttr::get(ctx, getLayoutImpl(attr, type));
+    return GPUEncodingResolverAttr::get(ctx, getPackedLayoutImpl(attr, type));
   }
 };
 
-struct GPUPadEncodingLayoutResolverAttrInterface final
-    : Encoding::EncodingLayoutResolverAttrInterface::ExternalModel<
-          GPUPadEncodingLayoutResolverAttrInterface, GPUPadLayoutAttr> {
+// Returns the pad encoding layout, or nullptr if this is not the only layout or
+// if there's no encoding at all.
+static IREE::Encoding::PaddingAttr
+getPadLayout(IREE::Encoding::LayoutResolverAttr layoutAttr,
+             RankedTensorType type) {
+  if (!type.getEncoding()) {
+    return nullptr;
+  }
+  auto encoding =
+      dyn_cast_if_present<IREE::Encoding::LayoutAttr>(type.getEncoding());
+  if (encoding) {
+    ArrayAttr layouts = encoding.getLayouts();
+    if (layouts.size() != 1) {
+      return nullptr;
+    }
+    return dyn_cast<IREE::Encoding::PaddingAttr>(*layouts.begin());
+  }
+  Attribute resolvedEncoding = layoutAttr.getLayout(type);
+  LDBG() << "Unresolved type: " << type;
+  LDBG() << "layoutAttr: " << layoutAttr;
+  LDBG() << "Resolved into: " << resolvedEncoding;
+  return dyn_cast<IREE::Encoding::PaddingAttr>(resolvedEncoding);
+}
+
+// Returns a padded tensor type (without encoding) for tensor types with the pad
+// encoding layout, or the same type for all other tensors.
+static RankedTensorType
+getPaddedType(IREE::Encoding::LayoutResolverAttr layoutAttr,
+              RankedTensorType type) {
+  IREE::Encoding::PaddingAttr layout = getPadLayout(layoutAttr, type);
+  if (!layout) {
+    return nullptr;
+  }
+  if (layout.isIdentityLayout()) {
+    return type.dropEncoding();
+  }
+
+  ArrayRef<int64_t> padding = layout.getPadding().asArrayRef();
+  auto newShape = llvm::to_vector_of<int64_t>(type.getShape());
+  for (auto [newDim, padValue] : llvm::zip_equal(newShape, padding)) {
+    assert((padValue == 0 || ShapedType::isStatic(newDim)) &&
+           "Padding dynamic dims not supported");
+    newDim += padValue;
+  }
+
+  return RankedTensorType::get(newShape, type.getElementType());
+}
+
+struct GPUPadEncodingLayoutMaterializerAttr final
+    : IREE::Encoding::LayoutMaterializerAttr::ExternalModel<
+          GPUPadEncodingLayoutMaterializerAttr, GPUPaddingResolverAttr> {
+
+  Type convertType(Attribute attr, Type type) const {
+    auto layoutAttr = cast<IREE::Encoding::LayoutResolverAttr>(attr);
+    return TypeSwitch<Type, Type>(type)
+        .Case([](RankedTensorType type) {
+          // By the definition, the final converted type is the same tensor type
+          // without encodings.
+          return type.dropEncoding();
+        })
+        .Case([&](IREE::TensorExt::DispatchTensorType dispatchTensorType) {
+          auto type =
+              dyn_cast<RankedTensorType>(dispatchTensorType.getBoundType());
+          if (!type || !type.getEncoding()) {
+            return dispatchTensorType;
+          }
+          // The incoming bindings have the padded type, if `padding` is
+          // present.
+          if (getPadLayout(layoutAttr, type)) {
+            type = getPaddedType(layoutAttr, type);
+          }
+          return IREE::TensorExt::DispatchTensorType::get(
+              dispatchTensorType.getAccess(), type);
+        })
+        .Default([](Type type) { return type; });
+  }
+
+  LogicalResult getOffsetsSizesStrides(
+      Attribute attr, OpBuilder &builder, Location loc,
+      IREE::TensorExt::DispatchTensorType type, ValueRange dynamicDims,
+      ArrayRef<OpFoldResult> offsets, ArrayRef<OpFoldResult> sizes,
+      ArrayRef<OpFoldResult> strides, SmallVectorImpl<OpFoldResult> &newOffsets,
+      SmallVectorImpl<OpFoldResult> &newSizes,
+      SmallVectorImpl<OpFoldResult> &newStrides) const {
+    auto boundType = dyn_cast<RankedTensorType>(type.getBoundType());
+    if (!boundType || !boundType.getEncoding()) {
+      return failure();
+    }
+    newSizes.assign(sizes.begin(), sizes.end());
+    newOffsets.assign(offsets.begin(), offsets.end());
+    newStrides.assign(strides.begin(), strides.end());
+    return success();
+  }
+
+  Operation *lowerOp(Attribute attr, OpBuilder &b, Operation *op,
+                     TypeRange convertedResTypes,
+                     ValueRange convertedOperands) const {
+    return clone(b, op, convertedResTypes, convertedOperands);
+  }
+};
+
+struct GPUPadLayoutResolverAttr final
+    : IREE::Encoding::LayoutResolverAttr::ExternalModel<
+          GPUPadLayoutResolverAttr, GPUPaddingResolverAttr> {
   Attribute cloneWithSimplifiedConfig(Attribute attr,
-                                      DictionaryAttr /*config*/) const {
-    // This attribute is self-contained and does not need to look anything up
-    // from the target `config`.
-    return attr;
+                                      DictionaryAttr config) const {
+    MLIRContext *ctx = attr.getContext();
+    IREE::GPU::TargetAttr gpuTarget = getGPUTargetAttr(config);
+    std::optional<IREE::GPU::L1CacheInfo> cache =
+        IREE::GPU::getL1CacheInfo(gpuTarget);
+    if (!cache) {
+      return GPUPaddingResolverAttr::get(ctx, std::nullopt, std::nullopt);
+    }
+    return GPUPaddingResolverAttr::get(ctx, cache->cacheLineBytes,
+                                       cache->cacheSets);
   }
 
   Attribute getLayout(Attribute attr, RankedTensorType type) const {
     MLIRContext *ctx = attr.getContext();
-    auto padLayoutAttr = cast<GPUPadLayoutAttr>(attr);
-    auto encodingAttr = cast<Encoding::EncodingAttr>(type.getEncoding());
+    auto gpuPadLayoutAttr = cast<GPUPaddingResolverAttr>(attr);
 
-    const int64_t rank = type.getRank();
-    SmallVector<int32_t> padValues(rank, 0);
-    auto noPaddingAttr = Encoding::PadEncodingLayoutAttr::get(
-        ctx, DenseI32ArrayAttr::get(ctx, padValues));
-    if (encodingAttr.getOpType().getValue() !=
-        IREE::Encoding::EncodingOpType::matmul) {
-      // We only support simple matmuls for now.
+    int64_t rank = type.getRank();
+    auto noPaddingAttr =
+        IREE::Encoding::PaddingAttr::getIdentityAttr(ctx, rank);
+    if (!gpuPadLayoutAttr.getCacheLineBytes() ||
+        !gpuPadLayoutAttr.getCacheSets()) {
       return noPaddingAttr;
     }
 
-    const int64_t operandIndex = encodingAttr.getOperandIndex().getInt();
-    if (!llvm::is_contained({0, 1}, operandIndex)) {
-      // We only have to pad matmul operands.
-      return noPaddingAttr;
+    auto paddingEncodingAttr =
+        dyn_cast_if_present<IREE::Encoding::PaddingAttr>(type.getEncoding());
+    if (!paddingEncodingAttr) {
+      return nullptr;
     }
 
-    // We only support simple matmuls for now. Filter out everything that
-    // does not have a simple row-major access pattern with a single static
-    // reduction dimension.
-    FailureOr<linalg::ContractionDimensions> contractionDims =
-        Encoding::getEncodingContractionDims(encodingAttr);
-    if (failed(contractionDims) || contractionDims->k.size() != 1) {
-      return noPaddingAttr;
+    // If all the padding values are already static, just return the padding
+    // attribute as is.
+    ArrayRef<int64_t> givenPadValues =
+        paddingEncodingAttr.getPadding().asArrayRef();
+    if (llvm::none_of(givenPadValues, ShapedType::isDynamic)) {
+      return paddingEncodingAttr;
     }
 
-    std::optional<unsigned> padDimensionIndex =
-        encodingAttr.mapDimToOperandIndex(contractionDims->k[0]);
-    if (!padDimensionIndex || padDimensionIndex != rank - 1) {
-      return noPaddingAttr;
+    // Currently only support case where the
+    // - innermost padding dimension is dynamic
+    // - all other padding values are zero.
+    if (llvm::any_of(givenPadValues.drop_back(),
+                     [](int64_t val) { return val != 0; }) ||
+        givenPadValues.back() != ShapedType::kDynamic) {
+      return nullptr;
     }
-    ArrayRef<int64_t> shape = type.getShape();
-    if (ShapedType::isDynamic(shape[*padDimensionIndex])) {
-      return noPaddingAttr;
+
+    if (rank != givenPadValues.size()) {
+      return nullptr;
+    }
+    // TODO: Support dynamic shape of the inner tensor size.
+    ArrayRef<int64_t> tensorShape = type.getShape();
+    if (tensorShape.back() == ShapedType::kDynamic) {
+      return nullptr;
     }
 
     const int64_t elementBits = type.getElementTypeBitWidth();
-    const int64_t cacheLineBytes = padLayoutAttr.getCacheLineBytes();
+    const int64_t cacheLineBytes = *gpuPadLayoutAttr.getCacheLineBytes();
     if (elementBits % 8 != 0 || elementBits > cacheLineBytes) {
       // We do not support unaligned element types.
       return noPaddingAttr;
@@ -469,9 +802,13 @@ struct GPUPadEncodingLayoutResolverAttrInterface final
     // cache line, but not a multiple of cache line * cache sets. This way the
     // next 'row' will start at a different cache set.
     const int64_t cacheSetSpanBytes =
-        padLayoutAttr.getCacheSets() * cacheLineBytes;
-    const int64_t dimSizeInBytes =
-        type.getDimSize(*padDimensionIndex) * (elementBits / 8);
+        *gpuPadLayoutAttr.getCacheSets() * cacheLineBytes;
+    const int64_t dimSizeInBytes = tensorShape.back() * (elementBits / 8);
+    if (dimSizeInBytes < cacheSetSpanBytes) {
+      // Very small dimension, leave as-is.
+      return noPaddingAttr;
+    }
+
     int64_t padBytes = 0;
     if (int64_t unalignedBytes = dimSizeInBytes % cacheLineBytes;
         unalignedBytes != 0) {
@@ -487,10 +824,10 @@ struct GPUPadEncodingLayoutResolverAttrInterface final
     assert((dimSizeInBytes + padBytes) % cacheLineBytes == 0 &&
            "Incorrect pad amount");
     assert(padBytes < cacheSetSpanBytes && "Incorrect pad amount");
-    const int64_t numPadElements = (padBytes * 8) / elementBits;
-    padValues[*padDimensionIndex] = numPadElements;
-    auto padLayout = Encoding::PadEncodingLayoutAttr::get(
-        ctx, DenseI32ArrayAttr::get(ctx, padValues));
+    int64_t numPadElements = (padBytes * 8) / elementBits;
+    SmallVector<int64_t> padValues(rank, 0);
+    padValues.back() = numPadElements;
+    auto padLayout = IREE::Encoding::PaddingAttr::get(ctx, padValues);
     return padLayout;
   }
 };
@@ -498,15 +835,15 @@ struct GPUPadEncodingLayoutResolverAttrInterface final
 } // namespace
 
 void registerGPUEncodingExternalModels(DialectRegistry &registry) {
-  registry.addExtension(
-      +[](MLIRContext *ctx, IREE::GPU::IREEGPUDialect *dialect) {
-        IREE::GPU::GPUEncodingLayoutAttr::attachInterface<
-            GPUDeviceEncodingLayoutResolverAttrInterface,
-            GPUHostEncodingLayoutResolverAttrInterface,
-            GPUHostSerializableEncodingAttrInterface>(*ctx);
-        IREE::GPU::GPUPadLayoutAttr::attachInterface<
-            GPUPadEncodingLayoutResolverAttrInterface>(*ctx);
-      });
+  registry.addExtension(+[](MLIRContext *ctx,
+                            IREE::GPU::IREEGPUDialect *dialect) {
+    IREE::GPU::GPUEncodingResolverAttr::attachInterface<
+        GPUEncodingPackedLayoutMaterializerAttr,
+        GPUEncodingResolverMaterializerAttr, GPULayoutResolverAttr,
+        GPUSerializableAttr>(*ctx);
+    IREE::GPU::GPUPaddingResolverAttr::attachInterface<
+        GPUPadEncodingLayoutMaterializerAttr, GPUPadLayoutResolverAttr>(*ctx);
+  });
 }
 
 } // namespace mlir::iree_compiler::IREE::GPU

@@ -126,6 +126,7 @@ static iree_status_t iree_vm_bytecode_function_enter(
       iree_host_align(ref_register_count * sizeof(iree_vm_ref_t), 16);
   iree_host_size_t frame_size =
       header_size + i32_register_size + ref_register_size;
+  IREE_ASSERT_ALIGNED(frame_size, sizeof(iree_max_align_t));
 
   // Enter function and allocate stack frame storage.
   IREE_RETURN_IF_ERROR(iree_vm_stack_function_enter(
@@ -181,6 +182,7 @@ static iree_status_t iree_vm_bytecode_external_enter(
       } break;
       case IREE_VM_CCONV_TYPE_I64:
       case IREE_VM_CCONV_TYPE_F64: {
+        i32_reg = iree_host_align(i32_reg, 2);  // ensure aligned
         uint16_t dst_reg = i32_reg;
         i32_reg += 2;
         memcpy(&callee_registers.i32[dst_reg], p, sizeof(int64_t));
@@ -235,7 +237,7 @@ static iree_status_t iree_vm_bytecode_external_leave(
         iree_vm_ref_retain_or_move(
             src_reg & IREE_REF_REGISTER_MOVE_BIT,
             &callee_registers->ref[src_reg & IREE_REF_REGISTER_MASK],
-            (iree_vm_ref_t*)p);
+            (iree_vm_ref_t*)p);  // safe unaligned
         p += sizeof(iree_vm_ref_t);
       } break;
     }
@@ -356,7 +358,12 @@ static iree_status_t iree_vm_bytecode_internal_leave(
   return iree_vm_stack_function_leave(stack);
 }
 
-// Populates an import call arguments
+// Populates an import call arguments ABI storage struct by sourcing registers
+// from the |caller_registers| register file based on the |cconv_arguments| and
+// the specified |src_reg_list|. If the call is variadic the provided
+// |segment_size_list| is used to iterate over the available registers.
+// |storage| must be allocated to at least the size as calculated by
+// iree_vm_function_call_compute_cconv_fragment_size.
 static void iree_vm_bytecode_populate_import_cconv_arguments(
     iree_string_view_t cconv_arguments,
     const iree_vm_registers_t caller_registers,
@@ -385,7 +392,7 @@ static void iree_vm_bytecode_populate_import_cconv_arguments(
         uint16_t src_reg = src_reg_list->registers[reg_i++];
         iree_vm_ref_assign(
             &caller_registers.ref[src_reg & IREE_REF_REGISTER_MASK],
-            (iree_vm_ref_t*)p);
+            (iree_vm_ref_t*)p);  // safe unaligned
         p += sizeof(iree_vm_ref_t);
       } break;
       case IREE_VM_CCONV_TYPE_SPAN_START: {
@@ -429,7 +436,7 @@ static void iree_vm_bytecode_populate_import_cconv_arguments(
                 uint16_t src_reg = src_reg_list->registers[reg_i++];
                 iree_vm_ref_assign(
                     &caller_registers.ref[src_reg & IREE_REF_REGISTER_MASK],
-                    (iree_vm_ref_t*)p);
+                    (iree_vm_ref_t*)p);  // safe unaligned
                 p += sizeof(iree_vm_ref_t);
               } break;
             }
@@ -491,7 +498,7 @@ static iree_status_t iree_vm_bytecode_issue_import_call(
         break;
       case IREE_VM_CCONV_TYPE_REF:
         iree_vm_ref_move(
-            (iree_vm_ref_t*)p,
+            (iree_vm_ref_t*)p,  // safe unaligned
             &caller_registers.ref[dst_reg & IREE_REF_REGISTER_MASK]);
         p += sizeof(iree_vm_ref_t);
         break;
@@ -682,9 +689,9 @@ static iree_status_t iree_vm_bytecode_dispatch(
           .bytecode_offset;
 
   int32_t* IREE_RESTRICT regs_i32 = regs.i32;
-  IREE_BUILTIN_ASSUME_ALIGNED(regs_i32, 16);
+  IREE_BUILTIN_ASSUME_ALIGNED(regs_i32, sizeof(iree_max_align_t));
   iree_vm_ref_t* IREE_RESTRICT regs_ref = regs.ref;
-  IREE_BUILTIN_ASSUME_ALIGNED(regs_ref, 16);
+  IREE_BUILTIN_ASSUME_ALIGNED(regs_ref, sizeof(iree_max_align_t));
 
   iree_vm_source_offset_t pc = current_frame->pc;
   BEGIN_DISPATCH_CORE() {
@@ -1712,9 +1719,9 @@ static iree_status_t iree_vm_bytecode_dispatch(
       // Restore the local dispatch variables that may have changed during the
       // function call due to stack growth.
       regs_i32 = regs.i32;
-      IREE_BUILTIN_ASSUME_ALIGNED(regs_i32, 16);
+      IREE_BUILTIN_ASSUME_ALIGNED(regs_i32, sizeof(iree_max_align_t));
       regs_ref = regs.ref;
-      IREE_BUILTIN_ASSUME_ALIGNED(regs_ref, 16);
+      IREE_BUILTIN_ASSUME_ALIGNED(regs_ref, sizeof(iree_max_align_t));
       pc = current_frame->pc;
     });
 
@@ -1748,9 +1755,9 @@ static iree_status_t iree_vm_bytecode_dispatch(
       // Restore the local dispatch variables that may have changed during the
       // function call due to stack growth.
       regs_i32 = regs.i32;
-      IREE_BUILTIN_ASSUME_ALIGNED(regs_i32, 16);
+      IREE_BUILTIN_ASSUME_ALIGNED(regs_i32, sizeof(iree_max_align_t));
       regs_ref = regs.ref;
-      IREE_BUILTIN_ASSUME_ALIGNED(regs_ref, 16);
+      IREE_BUILTIN_ASSUME_ALIGNED(regs_ref, sizeof(iree_max_align_t));
       pc = current_frame->pc;
     });
 
@@ -1778,9 +1785,9 @@ static iree_status_t iree_vm_bytecode_dispatch(
           module->function_descriptor_table[current_frame->function.ordinal]
               .bytecode_offset;
       regs_i32 = regs.i32;
-      IREE_BUILTIN_ASSUME_ALIGNED(regs_i32, 16);
+      IREE_BUILTIN_ASSUME_ALIGNED(regs_i32, sizeof(iree_max_align_t));
       regs_ref = regs.ref;
-      IREE_BUILTIN_ASSUME_ALIGNED(regs_ref, 16);
+      IREE_BUILTIN_ASSUME_ALIGNED(regs_ref, sizeof(iree_max_align_t));
       pc = current_frame->pc;
     });
 

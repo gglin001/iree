@@ -17,26 +17,33 @@ iree_cc_library(
     "FusionUtils.h"
     "Passes.h"
   SRCS
+    "AnnotateDataTilingHints.cpp"
+    "BitcastUnsupportedElementTypes.cpp"
     "BubbleUpExpandShapes.cpp"
-    "BubbleUpExtractSlices.cpp"
     "CloneProducersIntoDispatchRegions.cpp"
     "CollapseDimensions.cpp"
-    "CollapseReductionDimensions.cpp"
     "ConvertDispatchRegionsToWorkgroups.cpp"
+    "ConvertEncodingToFlow.cpp"
     "ConvertTensorToFlow.cpp"
     "ElementwiseOpFusion.cpp"
     "FoldUnitExtentDims.cpp"
     "FormDispatchRegions.cpp"
     "FormScalarDispatches.cpp"
+    "FormSplitReductionDispatches.cpp"
     "FuseEncodingOpsIntoDispatchRegions.cpp"
     "FuseHorizontalContractions.cpp"
     "FuseMultiUseElementwiseProducer.cpp"
     "FusionPreprocessing.cpp"
     "FusionUtils.cpp"
     "HoistEncodingOps.cpp"
+    "HoistUniformScalarCompute.cpp"
+    "InsertTensorBarriers.cpp"
     "MaterializeDefaultWorkgroupCountRegion.cpp"
     "Passes.cpp"
+    "PropagateEncodings.cpp"
+    "RemoveTensorBarriers.cpp"
     "SetEncoding.cpp"
+    "SetSplitReductionSizes.cpp"
     "SinkReshapes.cpp"
     "SplitReduction.cpp"
     "TensorPadToTensorInsertSlice.cpp"
@@ -80,6 +87,7 @@ iree_cc_library(
     MLIRTransforms
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Dialect::Encoding::IR
+    iree::compiler::Dialect::Encoding::Utils
     iree::compiler::Dialect::Flow::Conversion::TensorToFlow
     iree::compiler::Dialect::Flow::IR
     iree::compiler::Dialect::Flow::Transforms
@@ -87,8 +95,11 @@ iree_cc_library(
     iree::compiler::Dialect::LinalgExt::Transforms
     iree::compiler::Dialect::LinalgExt::Utils
     iree::compiler::Dialect::Stream::IR
+    iree::compiler::Dialect::TensorExt::IR
+    iree::compiler::Dialect::TensorExt::Transforms
     iree::compiler::Dialect::Util::Analysis
     iree::compiler::Dialect::Util::Analysis::Attributes
+    iree::compiler::Dialect::Util::Analysis::Constant
     iree::compiler::Dialect::Util::Analysis::DFX
     iree::compiler::Dialect::Util::IR
     iree::compiler::Dialect::Util::Transforms
@@ -118,6 +129,17 @@ iree_cc_library(
     MLIRTransformUtils
     MLIRTransforms
   PUBLIC
+)
+
+iree_tablegen_doc(
+  NAME
+    DispatchCreationPassesDocGen
+  CATEGORY
+    "Passes"
+  TD_FILE
+    "Passes.td"
+  OUTS
+    --gen-pass-doc DispatchCreationPasses.md
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

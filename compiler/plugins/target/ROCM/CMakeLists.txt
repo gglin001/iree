@@ -30,6 +30,7 @@ iree_cc_library(
     LLVMAnalysis
     LLVMBitWriter
     LLVMCore
+    LLVMFrontendOffloading
     LLVMIRReader
     LLVMLinker
     LLVMMC
@@ -64,9 +65,11 @@ iree_cc_library(
     iree::compiler::Dialect::HAL::Target
     iree::compiler::Dialect::HAL::Utils::ExecutableDebugInfoUtils
     iree::compiler::Dialect::HAL::Utils::LLVMLinkerUtils
+    iree::compiler::Dialect::Util::IR
     iree::compiler::PluginAPI
     iree::compiler::Utils
-    iree::compiler::plugins::target::ROCM::builtins::tuning::iree_default_tuning_specs_amdgpu
+    iree::compiler::plugins::target::ROCM::Dialect::ROCM::IR::ROCMDialect
+    iree::compiler::plugins::target::ROCM::Dialect::ROCM::Transforms
     iree::compiler::plugins::target::ROCM::builtins::ukernel::iree_uk_amdgpu_bitcode
     iree::schemas::amdgpu_executable_def_c_fbs
     iree::schemas::executable_debug_info_c_fbs

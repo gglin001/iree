@@ -7,6 +7,7 @@
 #ifndef IREE_COMPILER_CODEGEN_COMMON_TRANSFORMEXTENSIONS_COMMONEXTENSIONS
 #define IREE_COMPILER_CODEGEN_COMMON_TRANSFORMEXTENSIONS_COMMONEXTENSIONS
 
+include "mlir/Dialect/Transform/Interfaces/MatchInterfaces.td"
 include "mlir/Dialect/Transform/IR/TransformAttrs.td"
 include "mlir/Dialect/Transform/IR/TransformDialect.td"
 include "mlir/Dialect/Transform/IR/TransformTypes.td"
@@ -178,7 +179,7 @@ def CopyTensorOperandOp :  Op<Transform_Dialect, "iree.copy_tensor_operand",
      TransformEachOpTrait,
      TransformOpInterface,
      ReportTrackingListenerFailuresOpTrait]> {
-  let summary = "Hoist static allocations";
+  let summary = [{Create a linalg copy of a specified value.}];
   let description = [{
     Inserts a copy of the specified operand of the target operation.
 
@@ -213,7 +214,7 @@ def GpuDistributeSharedMemoryCopyOp :
   Op<Transform_Dialect, "iree.gpu_distribute_shared_memory_copy",
     [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
      TransformOpInterface, TransformEachOpTrait]> {
-  let summary = "Distribute shared memory copies";
+  let summary = [{Distribute shared memory copies.}];
   let description = [{
     Find copies to/from shared memory and distribute the copies based on the
     workgroup size.
@@ -243,7 +244,7 @@ def HoistStaticAllocOp :  Op<Transform_Dialect, "iree.hoist_static_alloc",
      TransformEachOpTrait,
      TransformOpInterface,
      ReportTrackingListenerFailuresOpTrait]> {
-  let summary = "Hoist static allocations";
+  let summary = [{Hoist static allocations.}];
   let description = [{
     Find static allocations and hoist them to the top level.
 
@@ -465,6 +466,33 @@ def IREEEliminateEmptyTensorsOp : Op<
   }];
 }
 
+def MatchHasNoLoweringConfigOp : Op<Transform_Dialect, "iree.match.has_no_lowering_config",
+    [MatchOpInterface,
+     SingleOpMatcher,
+     MemoryEffectsOpInterface]> {
+  let summary = [{
+    Checks that the payload op does not carry a lowering config or compilation info.
+  }];
+  let description = [{
+    Verifies that the payload does not have a "compilation_info" or
+    "lowering_config" attribute. This is a very common check needed for external
+    matchers to avoid overwriting already configured ops.
+
+    #### Return modes
+
+    Succeeds if the payload lacks a configuration. Produces a silenceable
+    failure otherwise. Produces a definite failure if the operand is not
+    associated with a single payload op.
+  }];
+
+  let arguments = (ins TransformHandleTypeInterface:$operand_handle);
+  let results = (outs);
+  let assemblyFormat = "$operand_handle attr-dict `:` type($operand_handle)";
+  let extraClassDeclaration = SingleOpMatcher.extraDeclaration;
+
+  let cppNamespace = "mlir::iree_compiler::IREE::transform_dialect";
+}
+
 def PopulateWorkgroupCountRegionUsingNumThreadsSliceOp :
     Op<Transform_Dialect, "iree.populate_workgroup_count_region_using_num_threads_slice",
       [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
@@ -503,7 +531,7 @@ def ReduceSharedMemoryBankConflictsOp :  Op<Transform_Dialect, "iree.reduce_shar
      TransformEachOpTrait,
      TransformOpInterface,
      ReportTrackingListenerFailuresOpTrait]> {
-  let summary = "Add padding to 'memref.alloc' ops reduce shared memory bank conflicts";
+  let summary = [{Add padding to 'memref.alloc' ops reduce shared memory bank conflicts.}];
   let description = [{
     The `paddingSizeBits` argument should be picked based on the target
     architecture, striking balance between minimizing bank conflicts and keeping
@@ -632,44 +660,8 @@ def TestGpuVectorDistribution :
 
     let arguments = (ins TransformHandleTypeInterface:$target,
                          DefaultValuedOptionalAttr<BoolAttr, "false">:$experimental,
+                         DefaultValuedAttr<DenseI64ArrayAttr, "{}">:$workgroup_size,
                          DefaultValuedOptionalAttr<I64Attr, "64">:$subgroup_size);
-    let results = (outs);
-
-    let assemblyFormat = [{ $target attr-dict `:` type($target)}];
-    let cppNamespace = "mlir::iree_compiler::IREE::transform_dialect";
-
-    let extraClassDeclaration = [{
-      ::mlir::DiagnosedSilenceableFailure applyToOne(
-          ::mlir::transform::TransformRewriter &rewriter,
-          ::mlir::FunctionOpInterface funcOp,
-          ::mlir::transform::ApplyToEachResultList &results,
-          ::mlir::transform::TransformState &state);
-    }];
-}
-
-def TestVectorLayoutAnalysisOp :
-  Op<Transform_Dialect, "iree.test_vector_layout_analysis",
-    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-     TransformEachOpTrait,
-     TransformOpInterface,
-     ReportTrackingListenerFailuresOpTrait]> {
-  let description = [{
-    Run VectorLayoutAnalysis on the target as the root.
-
-    The anchor points are set by using the attribute
-    "__vector_layout_test_anchor_operand_x" and
-    "__vector_layout_test_anchor_result_x", where "x" is the operand/result
-    number.
-
-    The analysis emits remarks for the layout for each SSA value infered
-    on it's owning operation.
-
-    #### Return modes
-
-    This transform does not consume the target handle and always return success.
-    }];
-
-    let arguments = (ins TransformHandleTypeInterface:$target);
     let results = (outs);
 
     let assemblyFormat = [{ $target attr-dict `:` type($target)}];
@@ -694,13 +686,14 @@ def FuseConsumerOp : Op<Transform_Dialect, "iree.fuse_consumer",
   }];
   let cppNamespace = "mlir::iree_compiler::IREE::transform_dialect";
 
-  let arguments =
-    (ins TransformHandleTypeInterface:$target);
+  let arguments =(ins
+      TransformHandleTypeInterface:$target,
+      Variadic<TransformHandleTypeInterface>:$loops);
   let results = (outs TransformHandleTypeInterface:$consumer,
                       TransformHandleTypeInterface:$fused_consumer);
 
   let assemblyFormat = [{
-    $target attr-dict `:` functional-type(operands, results)
+    $target `in` `(` $loops `)` attr-dict `:` functional-type(operands, results)
   }];
 }
 

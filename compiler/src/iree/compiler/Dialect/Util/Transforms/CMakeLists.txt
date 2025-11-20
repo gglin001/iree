@@ -20,6 +20,7 @@ iree_cc_library(
   SRCS
     "AnnotateOpOrdinals.cpp"
     "ApplyPatterns.cpp"
+    "AttributeCallGraph.cpp"
     "CombineInitializers.cpp"
     "DropCompilerHints.cpp"
     "DumpModule.cpp"
@@ -29,6 +30,8 @@ iree_cc_library(
     "HoistIntoGlobals.cpp"
     "IPO.cpp"
     "ImportResources.cpp"
+    "LiftCFGToSCF.cpp"
+    "LinkModules.cpp"
     "OptimizeIntArithmetic.cpp"
     "Passes.cpp"
     "Patterns.cpp"
@@ -38,6 +41,8 @@ iree_cc_library(
     "StripDebugOps.cpp"
     "TestConversion.cpp"
     "TestFloatRangeAnalysis.cpp"
+    "VerifyInitializationOrder.cpp"
+    "VerifyStructuredControlFlow.cpp"
   DEPS
     ::PassesIncGen
     LLVMSupport
@@ -49,23 +54,28 @@ iree_cc_library(
     MLIRArithTransforms
     MLIRBytecodeWriter
     MLIRControlFlowDialect
+    MLIRControlFlowInterfaces
     MLIRFuncDialect
     MLIRFunctionInterfaces
     MLIRIR
     MLIRLinalgDialect
     MLIRMathDialect
     MLIRMemRefDialect
+    MLIRParser
     MLIRPass
     MLIRSCFDialect
+    MLIRSideEffectInterfaces
     MLIRSupport
     MLIRTransformUtils
     MLIRTransforms
+    MLIRUBDialect
     MLIRVectorDialect
     iree::compiler::Dialect::Util::Analysis
     iree::compiler::Dialect::Util::Analysis::Attributes
     iree::compiler::Dialect::Util::Analysis::Constant
     iree::compiler::Dialect::Util::Analysis::DFX
     iree::compiler::Dialect::Util::Conversion
+    iree::compiler::Dialect::Util::Conversion::FuncToUtil
     iree::compiler::Dialect::Util::Conversion::MemRefToUtil
     iree::compiler::Dialect::Util::IR
     iree::compiler::Utils
@@ -79,6 +89,17 @@ iree_tablegen_library(
     "Passes.td"
   OUTS
     --gen-pass-decls Passes.h.inc
+)
+
+iree_tablegen_doc(
+  NAME
+    UtilPassesDocGen
+  CATEGORY
+    "Passes"
+  TD_FILE
+    "Passes.td"
+  OUTS
+    --gen-pass-doc UtilPasses.md
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

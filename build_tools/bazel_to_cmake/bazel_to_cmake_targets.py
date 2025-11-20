@@ -66,11 +66,15 @@ class TargetConverter:
                 "@llvm-project//mlir:GPUDialect": ["MLIRGPUDialect"],
                 "@llvm-project//mlir:GPUTransforms": ["MLIRGPUTransforms"],
                 "@llvm-project//mlir:InliningUtils": [""],
+                "@llvm-project//mlir:LinalgInterfaces": [
+                    "MLIRLinalgInterfacesIncGenLib"
+                ],
                 "@llvm-project//mlir:LinalgOpsIncGen": ["MLIRLinalgOpsIncGenLib"],
                 "@llvm-project//mlir:LinalgStructuredOpsIncGen": [
                     "MLIRLinalgStructuredOpsIncGenLib"
                 ],
                 "@llvm-project//mlir:ShapeTransforms": ["MLIRShapeOpsTransforms"],
+                "@llvm-project//mlir:FromLLVMIRTranslation": ["MLIRTargetLLVMIRImport"],
                 "@llvm-project//mlir:ToLLVMIRTranslation": ["MLIRTargetLLVMIRExport"],
                 "@llvm-project//mlir:mlir-translate": ["mlir-translate"],
                 "@llvm-project//mlir:MlirLspServerLib": ["MLIRLspServerLib"],
@@ -115,7 +119,6 @@ class TargetConverter:
                 "@com_github_dvidelabs_flatcc//:runtime": ["flatcc::runtime"],
                 "@com_google_googletest//:gtest": ["gmock", "gtest"],
                 "@spirv_cross//:spirv_cross_lib": ["spirv-cross-msl"],
-                "@cpuinfo": ["${IREE_CPUINFO_TARGET}"],
                 "@hsa_runtime_headers": ["hsa_runtime::headers"],
                 "@webgpu_headers": [],
             }

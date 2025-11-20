@@ -75,8 +75,11 @@ iree_cc_library(
     iree::hal::drivers::vulkan::util::ref_ptr
     iree::hal::utils::deferred_command_buffer
     iree::hal::utils::executable_debug_info
+    iree::hal::utils::executable_header
     iree::hal::utils::file_transfer
     iree::hal::utils::files
+    iree::hal::utils::queue_emulation
+    iree::hal::utils::queue_host_call_emulation
     iree::hal::utils::resource_set
     iree::hal::utils::semaphore_base
     iree::schemas::executable_debug_info_c_fbs

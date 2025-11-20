@@ -11,14 +11,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
-#include "iree/compiler/Utils/ConversionUtils.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "mlir/Dialect/AMDGPU/IR/AMDGPUDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -30,9 +29,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #define DEBUG_TYPE "iree-codegen-convert-bf16-to-uint16-buffers"
 
@@ -79,7 +76,7 @@ public:
 //===----------------------------------------------------------------------===//
 struct ConvertHalInterfaceBindingSubspan final
     : OpConversionPattern<IREE::HAL::InterfaceBindingSubspanOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(IREE::HAL::InterfaceBindingSubspanOp op, OpAdaptor adaptor,
@@ -102,7 +99,7 @@ struct ConvertHalInterfaceBindingSubspan final
 };
 
 struct ConvertMemRefAlloc final : OpConversionPattern<memref::AllocOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(memref::AllocOp op, OpAdaptor adaptor,
@@ -188,7 +185,7 @@ struct GenericTypeConversionPattern : public ConversionPattern {
 };
 
 struct ConvertMemRefLoad final : OpConversionPattern<memref::LoadOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(memref::LoadOp op, OpAdaptor adaptor,
@@ -207,7 +204,7 @@ struct ConvertMemRefLoad final : OpConversionPattern<memref::LoadOp> {
 };
 
 struct ConvertMemRefStore final : OpConversionPattern<memref::StoreOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(memref::StoreOp op, OpAdaptor adaptor,
@@ -225,13 +222,37 @@ struct ConvertMemRefStore final : OpConversionPattern<memref::StoreOp> {
   }
 };
 
+struct ConvertAmdgpuFatRawBufferCast final
+    : OpConversionPattern<amdgpu::FatRawBufferCastOp> {
+  using Base::Base;
+
+  LogicalResult
+  matchAndRewrite(amdgpu::FatRawBufferCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type newTy = getTypeConverter()->convertType(op.getType());
+    if (!newTy) {
+      return rewriter.notifyMatchFailure(
+          op->getLoc(),
+          llvm::formatv("failed to convert memref type: {}", op.getType()));
+    }
+
+    auto newOp = rewriter.replaceOpWithNewOp<amdgpu::FatRawBufferCastOp>(
+        op, newTy, adaptor.getSource(), adaptor.getValidBytes(),
+        adaptor.getCacheSwizzleStride(), adaptor.getBoundsCheck(),
+        adaptor.getResetOffset());
+    LLVM_DEBUG(llvm::dbgs() << "Bf16Emulation: new op: " << newOp << "\n");
+    (void)newOp;
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
 
 Value materializeArithBitcast(OpBuilder &builder, Type resultTy,
                               mlir::ValueRange inputs, mlir::Location loc) {
-  return builder.create<arith::BitcastOp>(loc, resultTy, inputs);
+  return arith::BitcastOp::create(builder, loc, resultTy, inputs);
 }
 
 static void populateIreeBf16EmulationPatterns(RewritePatternSet &patterns,
@@ -241,8 +262,9 @@ static void populateIreeBf16EmulationPatterns(RewritePatternSet &patterns,
   populateCallOpTypeConversionPattern(patterns, typeConverter);
   populateReturnOpTypeConversionPattern(patterns, typeConverter);
   patterns.add<GenericTypeConversionPattern, ConvertHalInterfaceBindingSubspan,
-               ConvertMemRefAlloc, ConvertMemRefLoad, ConvertMemRefStore>(
-      typeConverter, patterns.getContext());
+               ConvertMemRefAlloc, ConvertMemRefLoad, ConvertMemRefStore,
+               ConvertAmdgpuFatRawBufferCast>(typeConverter,
+                                              patterns.getContext());
 }
 
 //===----------------------------------------------------------------------===//
@@ -260,7 +282,6 @@ struct ConvertBf16ToUInt16BuffersPass final
     MLIRContext *ctx = &getContext();
 
     Bf16EmulationConverter typeConverter;
-    typeConverter.addArgumentMaterialization(materializeArithBitcast);
     typeConverter.addTargetMaterialization(materializeArithBitcast);
     typeConverter.addSourceMaterialization(materializeArithBitcast);
 
@@ -284,18 +305,17 @@ struct ConvertBf16ToUInt16BuffersPass final
           });
 
       // Support the list of all vector operations that do not perform numerical
-      // changes:
+      // changes. Also handle amdgpu buffer casts:
       target.addDynamicallyLegalOp<
-          vector::BroadcastOp, vector::ShuffleOp, vector::ExtractElementOp,
-          vector::ExtractOp, vector::InsertElementOp, vector::InsertOp,
-          vector::ScalableInsertOp, vector::ScalableExtractOp,
-          vector::InsertStridedSliceOp, vector::ExtractStridedSliceOp,
-          vector::TransferReadOp, vector::TransferWriteOp, vector::LoadOp,
-          vector::StoreOp, vector::MaskedLoadOp, vector::MaskedStoreOp,
-          vector::GatherOp, vector::ScatterOp, vector::ExpandLoadOp,
-          vector::CompressStoreOp, vector::ShapeCastOp, vector::ConstantMaskOp,
-          vector::CreateMaskOp, vector::MaskOp, vector::TransposeOp,
-          vector::FlatTransposeOp, vector::SplatOp, vector::YieldOp>(
+          amdgpu::FatRawBufferCastOp, vector::BroadcastOp, vector::ShuffleOp,
+          vector::ExtractOp, vector::InsertOp, vector::ScalableInsertOp,
+          vector::ScalableExtractOp, vector::InsertStridedSliceOp,
+          vector::ExtractStridedSliceOp, vector::TransferReadOp,
+          vector::TransferWriteOp, vector::LoadOp, vector::StoreOp,
+          vector::MaskedLoadOp, vector::MaskedStoreOp, vector::GatherOp,
+          vector::ScatterOp, vector::ExpandLoadOp, vector::CompressStoreOp,
+          vector::ShapeCastOp, vector::ConstantMaskOp, vector::CreateMaskOp,
+          vector::MaskOp, vector::TransposeOp, vector::YieldOp>(
           [&typeConverter](Operation *op) {
             bool legal = typeConverter.isLegal(op);
             LLVM_DEBUG(if (!legal) llvm::dbgs()

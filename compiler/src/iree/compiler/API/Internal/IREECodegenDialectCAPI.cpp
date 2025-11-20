@@ -11,11 +11,18 @@
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenInterfaces.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
+#include "iree/compiler/Dialect/LinalgExt/Utils/IndexingUtils.h"
+#include "iree/compiler/Dialect/LinalgExt/Utils/Utils.h"
 #include "iree/compiler/dialects/iree_codegen.h"
 #include "mlir-c/BuiltinAttributes.h"
 #include "mlir-c/IR.h"
+#include "mlir/CAPI/AffineMap.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Support.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -25,7 +32,6 @@ using mlir::iree_compiler::IREE::Codegen::DispatchLoweringPassPipeline;
 using mlir::iree_compiler::IREE::Codegen::DispatchLoweringPassPipelineAttr;
 using mlir::iree_compiler::IREE::Codegen::LoweringConfigAttrInterface;
 using mlir::iree_compiler::IREE::Codegen::TranslationInfoAttr;
-using mlir::iree_compiler::IREE::GPU::MMAIntrinsic;
 using mlir::iree_compiler::IREE::HAL::ExecutableVariantOp;
 
 bool ireeAttributeIsACodegenDispatchLoweringPassPipelineAttr(
@@ -176,25 +182,141 @@ void ireeCodegenGetExecutableVariantOps(MlirModule module, size_t *numOps,
   }
 }
 
-void ireeCodegenQueryMMAIntrinsics(MlirOperation op, size_t *numIntrinsics,
-                                   uint32_t *mmaIntrinsics) {
-  assert(numIntrinsics && "numIntrinsics cannot be nullptr");
+void ireeCodegenGetTunerRootOps(MlirModule module, size_t *numOps,
+                                MlirOperation *rootOps) {
+  assert(!mlirModuleIsNull(module) && "module cannot be nullptr");
+  assert(numOps && "numOps cannot be nullptr");
 
-  mlir::Operation *mlirOp = unwrap(op);
-  auto variantOp = llvm::dyn_cast_if_present<ExecutableVariantOp>(mlirOp);
-  assert(variantOp && "operation is not a ExecutableVariantOp");
+  mlir::ModuleOp moduleOp = unwrap(module);
+  llvm::SmallVector<mlir::Operation *> tunerRootOps =
+      mlir::iree_compiler::getTunerRootOps(moduleOp);
 
-  llvm::SmallVector<MMAIntrinsic> intrinsics =
-      mlir::iree_compiler::queryMMAIntrinsics(variantOp);
-  if (!mmaIntrinsics) {
-    *numIntrinsics = intrinsics.size();
+  if (!rootOps) {
+    *numOps = tunerRootOps.size();
     return;
   }
 
-  assert(*numIntrinsics == intrinsics.size() &&
-         "*numIntrinsics must match the number of elements in the intrinsics");
+  assert(*numOps == tunerRootOps.size() &&
+         "*numOps must match the number of elements in the rootOps");
 
-  for (size_t i = 0, e = intrinsics.size(); i < e; ++i) {
-    mmaIntrinsics[i] = static_cast<uint32_t>(intrinsics[i]);
+  for (size_t i = 0, e = tunerRootOps.size(); i < e; ++i) {
+    rootOps[i] = wrap(tunerRootOps[i]);
   }
+}
+
+ireeCodegenAttentionOpDetail
+ireeCodegenGetAttentionOpDetail(MlirAffineMap qMap, MlirAffineMap kMap,
+                                MlirAffineMap vMap, MlirAffineMap oMap) {
+  mlir::AffineMap QMap = unwrap(qMap);
+  mlir::AffineMap KMap = unwrap(kMap);
+  mlir::AffineMap VMap = unwrap(vMap);
+  mlir::AffineMap OMap = unwrap(oMap);
+
+  llvm::FailureOr<mlir::iree_compiler::IREE::LinalgExt::AttentionOpDetail>
+      maybeDetail =
+          mlir::iree_compiler::IREE::LinalgExt::AttentionOpDetail::get(
+              QMap, KMap, VMap, OMap);
+
+  if (failed(maybeDetail)) {
+    return ireeCodegenAttentionOpDetail{/*batch=*/wrap(mlir::Attribute()),
+                                        /*m=*/wrap(mlir::Attribute()),
+                                        /*k1=*/wrap(mlir::Attribute()),
+                                        /*k2=*/wrap(mlir::Attribute()),
+                                        /*n=*/wrap(mlir::Attribute()),
+                                        /*domainRank=*/-1};
+  }
+
+  const mlir::iree_compiler::IREE::LinalgExt::AttentionOpDetail &opInfo =
+      *maybeDetail;
+
+  mlir::Builder builder(QMap.getContext());
+
+  ireeCodegenAttentionOpDetail result;
+  result.batch = wrap(builder.getI64ArrayAttr(opInfo.getBatchDims()));
+  result.m = wrap(builder.getI64ArrayAttr(opInfo.getMDims()));
+  result.k1 = wrap(builder.getI64ArrayAttr(opInfo.getK1Dims()));
+  result.k2 = wrap(builder.getI64ArrayAttr(opInfo.getK2Dims()));
+  result.n = wrap(builder.getI64ArrayAttr(opInfo.getNDims()));
+  result.domainRank = opInfo.getDomainRank();
+
+  return result;
+}
+
+bool ireeCodegenMlirOperationIsACodegenAttentionOp(MlirOperation op) {
+  return llvm::isa<mlir::iree_compiler::IREE::LinalgExt::AttentionOp>(
+      unwrap(op));
+}
+
+bool ireeCodegenHasIGEMMGenericConvDetails(MlirOperation op) {
+  auto linalgOp = llvm::dyn_cast<mlir::linalg::LinalgOp>(unwrap(op));
+  if (!linalgOp) {
+    return false;
+  }
+
+  return succeeded(
+      mlir::iree_compiler::IREE::LinalgExt::getIGEMMGenericConvDetails(
+          linalgOp));
+}
+
+ireeCodegenIGEMMGenericConvDetails
+ireeCodegenGetIGEMMGenericConvDetails(MlirOperation op) {
+  auto linalgOp = llvm::cast<mlir::linalg::LinalgOp>(unwrap(op));
+
+  llvm::FailureOr<mlir::iree_compiler::IREE::LinalgExt::IGEMMGenericConvDetails>
+      maybeDetails =
+          mlir::iree_compiler::IREE::LinalgExt::getIGEMMGenericConvDetails(
+              linalgOp);
+  assert(succeeded(maybeDetails) &&
+         "Failed to get IGEMM details; must check with "
+         "ireeCodegenHasIGEMMGenericConvDetails first");
+
+  const mlir::iree_compiler::IREE::LinalgExt::IGEMMGenericConvDetails &details =
+      *maybeDetails;
+
+  mlir::Builder builder(linalgOp.getContext());
+
+  ireeCodegenIGEMMGenericConvDetails result;
+
+  result.igemmContractionMaps = wrap(builder.getArrayAttr(llvm::map_to_vector(
+      details.igemmContractionMaps, [](auto map) -> mlir::Attribute {
+        return mlir::AffineMapAttr::get(map);
+      })));
+
+  result.igemmLoopBounds =
+      wrap(builder.getI64ArrayAttr(details.igemmLoopBounds));
+
+  llvm::SmallVector<mlir::Attribute> iteratorAttrs;
+  for (mlir::utils::IteratorType iterType : details.igemmLoopIterators) {
+    iteratorAttrs.push_back(
+        builder.getStringAttr(mlir::utils::stringifyIteratorType(iterType)));
+  }
+  result.igemmLoopIterators = wrap(builder.getArrayAttr(iteratorAttrs));
+
+  result.im2colOutputPerm =
+      wrap(builder.getI64ArrayAttr(details.im2colOutputPerm));
+
+  llvm::SmallVector<mlir::Attribute> reassocAttrs;
+  for (const mlir::ReassociationIndices &indices :
+       details.filterReassocIndices) {
+    reassocAttrs.push_back(builder.getI64ArrayAttr(
+        llvm::map_to_vector(indices, llvm::StaticCastTo<int64_t>)));
+  }
+  result.filterReassocIndices = wrap(builder.getArrayAttr(reassocAttrs));
+
+  result.isOutputChannelFirst = details.isOutputChannelFirst;
+
+  // Mapping from conv dimensions to IGEMM dimensions.
+  // Encode as ArrayAttr of [conv_dim, igemm_dim] pairs.
+  llvm::SmallVector<mlir::Attribute> dimMapAttrs;
+  for (const auto &[convDim, igemmExpr] : details.convToIgemmDimMap) {
+    // All entries in convToIgemmDimMap must be AffineDimExpr.
+    auto dimExpr = llvm::cast<mlir::AffineDimExpr>(igemmExpr);
+    llvm::SmallVector<mlir::Attribute> pairAttrs;
+    pairAttrs.push_back(builder.getI64IntegerAttr(convDim));
+    pairAttrs.push_back(builder.getI64IntegerAttr(dimExpr.getPosition()));
+    dimMapAttrs.push_back(builder.getArrayAttr(pairAttrs));
+  }
+  result.convToIgemmDimMap = wrap(builder.getArrayAttr(dimMapAttrs));
+
+  return result;
 }

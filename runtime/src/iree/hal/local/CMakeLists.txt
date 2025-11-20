@@ -27,6 +27,18 @@ iree_cc_library(
 
 iree_cc_library(
   NAME
+    executable_format
+  HDRS
+    "executable_format.h"
+  SRCS
+    "executable_format.c"
+  DEPS
+    iree::base
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
     executable_library
   HDRS
     "executable_library.h"
@@ -45,11 +57,11 @@ iree_cc_binary_benchmark(
     ::executable_library
     ::local
     iree::base
-    iree::base::internal::file_io
     iree::base::internal::flags
     iree::hal
     iree::hal::local::loaders::registration
     iree::hal::local::plugins::registration
+    iree::io::file_handle
     iree::testing::benchmark
   TESTONLY
 )

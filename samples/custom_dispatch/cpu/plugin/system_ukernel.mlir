@@ -4,7 +4,9 @@
 // This is an example of how ukernels can be called from code generated
 // by IREE.
 
-// RUN: iree-compile --iree-hal-target-backends=llvm-cpu %s | \
+// RUN: iree-compile %s \
+// RUN:     --iree-hal-target-device=local \
+// RUN:     --iree-hal-local-target-device-backends=llvm-cpu | \
 // RUN: iree-run-module \
 // RUN:     --device=local-sync \
 // RUN:     --executable_plugin=$IREE_BINARY_DIR/samples/custom_dispatch/cpu/plugin/system_plugin$IREE_DYLIB_EXT \
@@ -62,7 +64,7 @@ func.func @ukernel_example(%arg0 : tensor<?xf32>, %arg1 : tensor<?xf32>) -> tens
       fn_def_attrs {hal.import.fields = ["processor_id", "processor_data"]}
       // Set the operation to not incorporate any strides. The implementation
       // expects no stride arguments.
-      strided_outer_dims(0) -> tensor<?xf32>
+      strided_dims([[], [], []]) -> tensor<?xf32>
 
     // Insert the result back into the result at the right position.
     %5 = tensor.insert_slice %4 into %dest[%offset] [%size] [1] : tensor<?xf32> into tensor<?xf32>

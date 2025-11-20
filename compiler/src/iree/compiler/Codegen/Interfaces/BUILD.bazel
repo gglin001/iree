@@ -16,6 +16,7 @@ package(
 exports_files([
     "ProcessorOpInterfaces.td",
     "UKernelOpInterface.td",
+    "TensorMaskingOpInterface.td",
 ])
 
 iree_td_library(
@@ -25,6 +26,7 @@ iree_td_library(
             "PartitionableLoopsInterface.td",
             "ProcessorOpInterfaces.td",
             "UKernelOpInterface.td",
+            "TensorMaskingOpInterface.td",
         ],
         include = ["*.td"],
     ),
@@ -46,6 +48,7 @@ iree_compiler_cc_library(
         ":PartitionableLoopsInterface",
         ":ProcessorOpInterfaces",
         ":UKernelOpInterface",
+        ":TensorMaskingOpInterface",
         "//compiler/src/iree/compiler/Codegen/ExternalInterfaces:ExternalModels",
         "//compiler/src/iree/compiler/Dialect/LinalgExt/TransformExtensions:LinalgExtExtensions",
         "//llvm-external-projects/iree-dialects:IREELinalgTransformDialect",
@@ -56,7 +59,6 @@ iree_compiler_cc_library(
         "//compiler/src/iree/compiler/Codegen/Dialect/GPU/TransformExtensions:IREEGPUExtensions",
         "//compiler/src/iree/compiler/Codegen/LLVMCPU/TransformExtensions:LLVMCPUExtensions",
         "//compiler/src/iree/compiler/Codegen/LLVMGPU/TransformExtensions:LLVMGPUExtensions",
-        "//compiler/src/iree/compiler/Dialect/Flow/TransformExtensions:FlowExtensions",
         "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:AffineTransformOps",
         "@llvm-project//mlir:AMDGPUDialect",
@@ -89,11 +91,16 @@ iree_compiler_cc_library(
         "BufferizationInterfaces.h",
     ],
     deps = [
+        "//compiler/src/iree/compiler/Codegen/Dialect/Codegen/IR:IREECodegenDialect",
+        "//compiler/src/iree/compiler/Codegen/Dialect/GPU/IR:IREEGPUDialect",
         "//compiler/src/iree/compiler/Codegen/Dialect/GPU/Transforms:BufferizationInterfaces",
+        "//compiler/src/iree/compiler/Codegen/Dialect/VectorExt/IR:IREEVectorExtDialect",
+        "//compiler/src/iree/compiler/Codegen/Dialect/VectorExt/Transforms:VectorExtTransforms",
         "//compiler/src/iree/compiler/Codegen/Utils",
-        "//compiler/src/iree/compiler/Dialect/Flow/IR",
         "//compiler/src/iree/compiler/Dialect/HAL/IR",
         "//compiler/src/iree/compiler/Dialect/LinalgExt/IR",
+        "//compiler/src/iree/compiler/Dialect/TensorExt/IR",
+        "@llvm-project//mlir:AMDGPUDialect",
         "@llvm-project//mlir:ArithTransforms",
         "@llvm-project//mlir:BufferizationDialect",
         "@llvm-project//mlir:BufferizationInterfaces",
@@ -162,7 +169,7 @@ iree_compiler_cc_library(
     ],
     deps = [
         ":PartitionableLoopsInterfaceGen",
-        "//compiler/src/iree/compiler/Codegen/Dialect/GPU/IR:IREEGPUDialect",
+        "//compiler/src/iree/compiler/Codegen/Dialect/Codegen/IR:IREECodegenDialect",
         "//compiler/src/iree/compiler/Dialect/LinalgExt/IR",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:DialectUtils",
@@ -226,4 +233,46 @@ iree_gentbl_cc_library(
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "ProcessorOpInterfaces.td",
     deps = [":td_files"],
+)
+
+iree_compiler_cc_library(
+    name = "TensorMaskingOpInterface",
+    srcs = [
+        "TensorMaskingOpInterface.cpp",
+    ],
+    hdrs = [
+        "TensorMaskingOpInterface.h",
+    ],
+    textual_hdrs = [
+        "TensorMaskingOpInterface.cpp.inc",
+        "TensorMaskingOpInterface.h.inc",
+    ],
+    deps = [
+        ":TensorMaskingOpInterfaceGen",
+        "//compiler/src/iree/compiler/Dialect/LinalgExt/IR",
+        "@llvm-project//mlir:Analysis",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LinalgDialect",
+        "@llvm-project//mlir:LinalgTransforms",
+        "@llvm-project//mlir:UBDialect",
+    ],
+)
+
+iree_gentbl_cc_library(
+    name = "TensorMaskingOpInterfaceGen",
+    tbl_outs = [
+        (
+            ["--gen-op-interface-decls"],
+            "TensorMaskingOpInterface.h.inc",
+        ),
+        (
+            ["--gen-op-interface-defs"],
+            "TensorMaskingOpInterface.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "TensorMaskingOpInterface.td",
+    deps = ["@llvm-project//mlir:OpBaseTdFiles"],
 )

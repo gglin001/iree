@@ -10,6 +10,13 @@
 
 namespace mlir::iree_compiler {
 
+Value getFlagsI64(Location loc, IntegerAttr flagsAttr, OpBuilder &builder) {
+  return flagsAttr
+             ? IREE::VM::ConstI64Op::create(builder, loc, flagsAttr.getInt())
+                   .getResult()
+             : IREE::VM::ConstI64ZeroOp::create(builder, loc).getResult();
+}
+
 extern void populateHALAllocatorToVMPatterns(MLIRContext *context,
                                              SymbolTable &importSymbols,
                                              TypeConverter &typeConverter,

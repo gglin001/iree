@@ -14,16 +14,20 @@ iree_lit_test_suite(
   NAME
     lit
   SRCS
-    "conv2d_to_im2col.mlir"
     "conv2d_to_winograd.mlir"
+    "conv_to_im2col.mlir"
     "convert_to_loops.mlir"
     "convert_to_online_attention.mlir"
     "decompose_im2col.mlir"
+    "decompose_map_scatter.mlir"
     "decompose_winograd.mlir"
     "distribution.mlir"
+    "fold_unit_dims.mlir"
     "pad_contraction_to_block_size.mlir"
+    "reshape_fusion.mlir"
     "split_reduction.mlir"
     "tiling.mlir"
+    "vectorize_iree_linalg_ext_ops.mlir"
   TOOLS
     FileCheck
     iree-opt

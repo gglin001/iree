@@ -6,6 +6,7 @@
 
 #include "iree/compiler/ConstEval/Passes.h"
 #include "iree/compiler/ConstEval/Runtime.h"
+#include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/HAL/Target/TargetOptions.h"
 #include "iree/compiler/Dialect/Util/Analysis/Constant/ConstExpr.h"
 #include "iree/compiler/Dialect/Util/Analysis/Constant/OpOracle.h"
@@ -68,39 +69,24 @@ emitDebugWarning(Location loc,
 // shared.
 // TODO: See if we can make them copyable?
 struct CompileOptions {
+  GlobalPipelineOptions pipelineOptions;
   BindingOptions bindingOptions;
   InputDialectOptions inputOptions;
   PreprocessingOptions preprocessingOptions;
   GlobalOptimizationOptions globalOptimizationOptions;
+  DispatchCreationOptions dispatchCreationOptions;
   SchedulingOptions schedulingOptions;
   IREE::HAL::TargetOptions executableOptions;
   IREE::VM::TargetOptions targetOptions;
   IREEVMPipelineHooks hooks;
 };
 
-// Supported types vary by backend and other factors, so we track them here.
-// Types that cross the ABI boundary are configured here.
-class SupportedFeatures {
-public:
-  void addScalarType(Type t) { scalarTypes.insert(t); }
-  void addElementType(Type t) { elementTypes.insert(t); }
-
-  bool supportsScalarType(Type t) const { return scalarTypes.contains(t); }
-
-  bool supportsElementType(Type t) const { return elementTypes.contains(t); }
-
-  bool isSupportedAbiType(Type t) const {
-    if (auto tensorType = llvm::dyn_cast<TensorType>(t)) {
-      return supportsElementType(tensorType.getElementType());
-    } else {
-      return supportsScalarType(t);
-    }
-  }
-
-private:
-  llvm::DenseSet<Type> scalarTypes;
-  llvm::DenseSet<Type> elementTypes;
-};
+static inline bool isAttrParameterized(Attribute attr) {
+  if (!attr)
+    return false;
+  return !isa<IntegerAttr>(attr) && !isa<FloatAttr>(attr) &&
+         !isa<IREE::Util::SerializableAttrInterface>(attr);
+}
 
 template <typename AccessorTy>
 static inline bool isAccessorParameterized(const SymbolTable &moduleSymbols,
@@ -109,12 +95,7 @@ static inline bool isAccessorParameterized(const SymbolTable &moduleSymbols,
       moduleSymbols.lookup<IREE::Util::GlobalOpInterface>(op.getGlobalName());
   if (!global)
     return true;
-  auto attr = global.getGlobalInitialValue();
-  if (!attr)
-    return false;
-  return !isa<IntegerAttr>(attr) && !isa<FloatAttr>(attr) &&
-         !isa<IREE::Util::SerializableAttrInterface>(
-             global.getGlobalInitialValue());
+  return isAttrParameterized(global.getGlobalInitialValue());
 }
 
 // Today the only way to interact with a global is with loads, stores, and
@@ -131,6 +112,9 @@ static bool isParameterized(const SymbolTable &moduleSymbols,
             })
             .Case([=](IREE::Util::GlobalStoreOpInterface accessor) {
               return isAccessorParameterized(moduleSymbols, accessor);
+            })
+            .Case([=](IREE::Flow::TensorConstantOp accessor) {
+              return isAttrParameterized(accessor.getValueAttr());
             })
             .Default([=](auto) { return false; });
     if (parameterized)
@@ -451,14 +435,19 @@ static LogicalResult cloneUsedObjects(FunctionOpInterface funcOp,
 class ProgramBuilder {
 public:
   ProgramBuilder(ModuleOp sourceModuleOp,
-                 const SupportedFeatures &supportedFeatures,
+                 IREE::HAL::DeviceTargetAttr deviceTargetAttr,
+                 const IREE::HAL::TargetBackend::SupportedTypes &supportedTypes,
                  const IREE::Util::ConstExprAnalysis &constExprAnalysis)
       : targetModuleOp(createInnerModule(sourceModuleOp)),
         sourceSymbolTable(sourceModuleOp), targetSymbolTable(targetModuleOp),
-        supportedFeatures(supportedFeatures),
-        constExprAnalysis(constExprAnalysis),
+        supportedTypes(supportedTypes), constExprAnalysis(constExprAnalysis),
         initializationAnalysis(sourceModuleOp, sourceSymbolTable,
-                               constExprAnalysis) {}
+                               constExprAnalysis) {
+    targetModuleOp->setAttr(
+        "hal.device.targets",
+        ArrayAttr::get(sourceModuleOp.getContext(),
+                       {static_cast<Attribute>(deviceTargetAttr)}));
+  }
 
   llvm::SmallVector<JitFunctionDesc> &getJitFunctions() { return jitFunctions; }
   ModuleOp getTargetModule() { return targetModuleOp; }
@@ -485,8 +474,8 @@ public:
                                 targetSymbolTable, moduleBuilder)))
       return failure();
 
-    auto funcOp = moduleBuilder.create<IREE::Util::FuncOp>(
-        initializerOp.getLoc(), "jit_eval",
+    auto funcOp = IREE::Util::FuncOp::create(
+        moduleBuilder, initializerOp.getLoc(), "jit_eval",
         moduleBuilder.getFunctionType({}, {}));
     targetSymbolTable.insert(funcOp);
     IRMapping unusedMapping;
@@ -501,7 +490,7 @@ public:
 private:
   static ModuleOp createInnerModule(ModuleOp sourceModuleOp) {
     OpBuilder builder = OpBuilder::atBlockEnd(sourceModuleOp.getBody());
-    auto m = builder.create<ModuleOp>(sourceModuleOp.getLoc());
+    auto m = ModuleOp::create(builder, sourceModuleOp.getLoc());
     m->setAttr("iree.consteval", builder.getUnitAttr());
     return m;
   }
@@ -517,7 +506,7 @@ private:
 
     // Find immutable loads.
     for (auto loadOp : funcOp.getOps<IREE::Util::GlobalLoadOpInterface>()) {
-      auto globalOp = llvm::dyn_cast_or_null<IREE::Util::GlobalOpInterface>(
+      auto globalOp = dyn_cast_if_present<IREE::Util::GlobalOpInterface>(
           sourceSymbolTable.lookup(loadOp.getGlobalAttr().getAttr()));
       if (!globalOp || globalOp.isGlobalMutable()) {
         emitDebugWarning(loadOp.getLoc(), [&](InFlightDiagnostic &diagnostic) {
@@ -527,7 +516,7 @@ private:
         return failure();
       }
       Type t = loadOp.getLoadedGlobalValue().getType();
-      if (!supportedFeatures.isSupportedAbiType(t)) {
+      if (!supportedTypes.supportsType(t)) {
         emitDebugWarning(funcOp.getLoc(), [&](InFlightDiagnostic &diagnostic) {
           diagnostic << "skipping consteval initializer: unsupported type for "
                         "current jit configuration: "
@@ -548,7 +537,7 @@ private:
       auto elementsAttr = dyn_cast<ElementsAttr>(constantOp.getValue());
       if (!tensorType || !elementsAttr)
         continue;
-      if (!supportedFeatures.isSupportedAbiType(tensorType)) {
+      if (!supportedTypes.supportsType(tensorType)) {
         emitDebugWarning(funcOp.getLoc(), [&](InFlightDiagnostic &diagnostic) {
           diagnostic << "skipping consteval initializer: unsupported type for "
                         "current jit configuration: "
@@ -567,12 +556,12 @@ private:
     // Find immutable stores, early exiting if not supported.
     // The consumers must come after rewrites of the producers above.
     for (auto storeOp : funcOp.getOps<IREE::Util::GlobalStoreOpInterface>()) {
-      auto globalOp = llvm::dyn_cast_or_null<IREE::Util::GlobalOpInterface>(
+      auto globalOp = dyn_cast_if_present<IREE::Util::GlobalOpInterface>(
           sourceSymbolTable.lookup(storeOp.getGlobalAttr().getAttr()));
       assert(globalOp && "should have been checked in isConstExpr");
 
       Type t = storeOp.getStoredGlobalValue().getType();
-      if (!supportedFeatures.isSupportedAbiType(t)) {
+      if (!supportedTypes.supportsType(t)) {
         emitDebugWarning(funcOp.getLoc(), [&](InFlightDiagnostic &diagnostic) {
           diagnostic << "skipping consteval initializer: unsupported type for "
                         "current jit configuration: "
@@ -595,7 +584,7 @@ private:
     // Rewrite the terminator and the function type.
     entryBlock->getTerminator()->erase();
     OpBuilder termBuilder = OpBuilder::atBlockEnd(entryBlock);
-    termBuilder.create<IREE::Util::ReturnOp>(funcOp.getLoc(), returns);
+    IREE::Util::ReturnOp::create(termBuilder, funcOp.getLoc(), returns);
     funcOp.setType(termBuilder.getFunctionType(argumentTypes, returnTypes));
 
     jitFunctions.push_back(std::move(desc));
@@ -606,7 +595,7 @@ private:
   SymbolTable sourceSymbolTable;
   SymbolTable targetSymbolTable;
   llvm::SmallVector<JitFunctionDesc> jitFunctions;
-  const SupportedFeatures &supportedFeatures;
+  const IREE::HAL::TargetBackend::SupportedTypes supportedTypes;
   const IREE::Util::ConstExprAnalysis &constExprAnalysis;
   InitializationAnalysis initializationAnalysis;
 };
@@ -621,18 +610,14 @@ public:
     targetRegistry = options.targetRegistry;
 
     // Detect backend.
-    requestedTargetDevice = resolveTargetDevice(*targetRegistry.value);
-    hasRequestedTargetDevice =
-        targetRegistry->getTargetDevice(requestedTargetDevice) != nullptr;
-    compileOptions->executableOptions.legacyTargetBackends.push_back(
-        requestedTargetDevice);
     compileOptions->targetOptions.f32Extension = true;
     compileOptions->targetOptions.f64Extension = true;
     compileOptions->targetOptions.indexBits = 64;
     compileOptions->targetOptions.truncateUnsupportedFloats = false;
     compileOptions->inputOptions.demoteF64ToF32 = false;
-    if (requestedTargetDevice == "vmvx" || !hasRequestedTargetDevice) {
-      targetDevice = targetRegistry->getTargetDevice("vmvx");
+    requestedTargetDevice = resolveTargetDevice(*targetRegistry.value);
+    if (targetRegistry->getTargetDevice(requestedTargetDevice) == nullptr) {
+      targetDevice = targetRegistry->getTargetDevice("local");
     } else {
       targetDevice = targetRegistry->getTargetDevice(requestedTargetDevice);
     }
@@ -640,13 +625,15 @@ public:
     // Disable constant evaluation for our Jit compilation pipeline.
     // It would make no sense to recursively do constant evaluation, and since
     // we omit the necessary hooks, it is unsupported anyway.
-    compileOptions->globalOptimizationOptions.constExprHoisting = false;
+    compileOptions->pipelineOptions.constExprHoisting = false;
     compileOptions->globalOptimizationOptions.constEval = false;
 
     buildIREEVMTransformPassPipeline(
-        *targetRegistry.value, compileOptions->bindingOptions,
-        compileOptions->inputOptions, compileOptions->preprocessingOptions,
+        *targetRegistry.value, compileOptions->pipelineOptions,
+        compileOptions->bindingOptions, compileOptions->inputOptions,
+        compileOptions->preprocessingOptions,
         compileOptions->globalOptimizationOptions,
+        compileOptions->dispatchCreationOptions,
         compileOptions->schedulingOptions, compileOptions->executableOptions,
         compileOptions->targetOptions, compileOptions->hooks, compilePipeline);
   }
@@ -658,46 +645,9 @@ public:
   static std::string
   resolveTargetDevice(const IREE::HAL::TargetRegistry &targetRegistry) {
     if (clJitTargetDevice.empty()) {
-      // Default - choose something we have.
-      // First llvm-cpu then vmvx.
-      if (targetRegistry.getTargetDevice("llvm-cpu")) {
-        return std::string("llvm-cpu");
-      } else {
-        return std::string("vmvx");
-      }
+      return std::string("local");
     }
-
     return clJitTargetDevice;
-  }
-
-  const SupportedFeatures getSupportedFeatures(MLIRContext *context) {
-    SupportedFeatures s;
-    Builder b(context);
-
-    s.addScalarType(b.getIntegerType(8));
-    s.addScalarType(b.getIntegerType(16));
-    s.addScalarType(b.getIntegerType(32));
-    s.addScalarType(b.getIntegerType(64));
-    s.addScalarType(b.getIndexType());
-    s.addScalarType(b.getF32Type());
-
-    s.addElementType(b.getIntegerType(1));
-    s.addElementType(b.getIntegerType(8));
-    s.addElementType(b.getIntegerType(16));
-    s.addElementType(b.getIntegerType(32));
-    s.addElementType(b.getIntegerType(64));
-    s.addElementType(b.getIndexType());
-    s.addElementType(b.getF32Type());
-    if (requestedTargetDevice != "vmvx" && hasRequestedTargetDevice) {
-      // The full compilers support additional types.
-      // TODO: Enable support for i4 once it is worked out how to
-      // transfer to and from ElementsAttr.
-      s.addScalarType(b.getF64Type());
-      s.addElementType(b.getF16Type());
-      s.addElementType(b.getBF16Type());
-      s.addElementType(b.getF64Type());
-    }
-    return s;
   }
 
   LogicalResult
@@ -738,7 +688,8 @@ public:
           }
           if (failed(call.addArgument(arg.getGlobalOp().getLoc(), globalValue)))
             return failure();
-        } break;
+          break;
+        }
         }
       }
 
@@ -772,17 +723,9 @@ public:
 
   void runOnOperation() override {
     llvm::TimerGroup tg("iree-consteval-jit", "Consteval Jit");
-    auto outerModule = getOperation();
+    mlir::ModuleOp outerModuleOp = getOperation();
 
-    auto supportedFeatures = getSupportedFeatures(&getContext());
-    if (!hasRequestedTargetDevice) {
-      emitDebugWarning(
-          UnknownLoc::get(&getContext()), [&](InFlightDiagnostic &diagnostic) {
-            diagnostic
-                << "consteval jit requested with " << requestedTargetDevice
-                << " backend, but it is not available; falling back to vmvx";
-          });
-    }
+    // Set the target.
     if (!targetDevice) {
       emitError(UnknownLoc::get(&getContext()))
           << "consteval jit could not find a usable backend (requested '"
@@ -790,35 +733,43 @@ public:
       signalPassFailure();
       return;
     }
-
-    llvm::SmallVector<IREE::Util::InitializerOp> initializerOps;
-    llvm::SmallVector<IREE::Util::InitializerOp> deadInitOps;
-    for (auto childOp : outerModule.getOps<IREE::Util::InitializerOp>()) {
-      initializerOps.push_back(childOp);
-    }
-
-    // Build the program.
-    ProgramBuilder programBuilder(outerModule, supportedFeatures,
-                                  getAnalysis<IREE::Util::ConstExprAnalysis>());
-
-    // Set the target.
-    std::optional<IREE::HAL::DeviceTargetAttr> targetAttr =
+    auto deviceTargetAttr =
         targetDevice->getHostDeviceTarget(&getContext(), *targetRegistry.value);
-    {
-      if (!targetAttr) {
+    if (!deviceTargetAttr) {
+      emitError(UnknownLoc::get(&getContext()))
+          << "consteval requested device " << requestedTargetDevice
+          << " cannot target the host";
+      signalPassFailure();
+      return;
+    }
+    IREE::HAL::TargetBackend::SupportedTypes supportedTypes;
+    for (auto executableTargetAttr : deviceTargetAttr->getExecutableTargets()) {
+      auto targetBackend = targetRegistry->getTargetBackend(
+          executableTargetAttr.getBackend().getValue());
+      if (targetBackend) {
+        supportedTypes = targetBackend->getSupportedTypes(&getContext());
+        break;
+      } else {
         emitError(UnknownLoc::get(&getContext()))
-            << "consteval requested backend " << requestedTargetDevice
-            << " cannot target the host";
+            << "consteval requested device " << requestedTargetDevice
+            << " compilation backend " << executableTargetAttr.getBackend()
+            << " not registered with the TargetRegistry";
         signalPassFailure();
         return;
       }
-      SmallVector<Attribute> targetAttrs;
-      targetAttrs.push_back(*targetAttr);
-      programBuilder.getTargetModule()->setAttr(
-          "hal.device.targets", ArrayAttr::get(&getContext(), targetAttrs));
     }
 
+    // Build the program.
+    ProgramBuilder programBuilder(outerModuleOp, *deviceTargetAttr,
+                                  supportedTypes,
+                                  getAnalysis<IREE::Util::ConstExprAnalysis>());
+
     // Iterate over initializers.
+    llvm::SmallVector<IREE::Util::InitializerOp> initializerOps;
+    llvm::SmallVector<IREE::Util::InitializerOp> deadInitOps;
+    for (auto childOp : outerModuleOp.getOps<IREE::Util::InitializerOp>()) {
+      initializerOps.push_back(childOp);
+    }
     for (auto initializerOp : initializerOps) {
       if (succeeded(programBuilder.importInitializer(initializerOp))) {
         deadInitOps.push_back(initializerOp);
@@ -857,7 +808,7 @@ public:
 
     // Process the functions.
     if (failed(processFunctions(binary, programBuilder.getJitFunctions(),
-                                outerModule, tg))) {
+                                outerModuleOp, tg))) {
       signalPassFailure();
       return;
     }
@@ -876,7 +827,6 @@ private:
   OpPassManager compilePipeline;
   std::string requestedTargetDevice;
   std::shared_ptr<IREE::HAL::TargetDevice> targetDevice;
-  bool hasRequestedTargetDevice;
   bool debugEnabled = isDebugEnabled();
 };
 

@@ -29,6 +29,10 @@ util.func public @device_queue_alloca(
     // CHECK-SAME:  %[[SIZE:.+]]: index)
     %size: index) -> !hal.buffer {
   %c100_i64 = arith.constant 100 : i64
+  // CHECK: %[[MEMORY_TYPE:.+]] = hal.memory_type<{{.+}}> : i32
+  %memory_type = hal.memory_type<"DeviceLocal"> : i32
+  // CHECK: %[[BUFFER_USAGE:.+]] = hal.buffer_usage<"{{.+}}Transfer"> : i32
+  %buffer_usage = hal.buffer_usage<"Transfer"> : i32
   // CHECK: = hal.device.queue.alloca<%[[DEVICE]] : !hal.device>
   %buffer = hal.device.queue.alloca<%device : !hal.device>
       // CHECK-SAME: affinity(%[[AFFINITY]])
@@ -37,8 +41,10 @@ util.func public @device_queue_alloca(
       wait(%wait_fence) signal(%signal_fence)
       // CHECK-SAME: pool(%c100_i64)
       pool(%c100_i64)
-      // CHECK-SAME: type({{.+}}) usage({{.+}})
-      type(DeviceLocal) usage(Transfer)
+      // CHECK-SAME: type(%[[MEMORY_TYPE]]) usage(%[[BUFFER_USAGE]])
+      type(%memory_type) usage(%buffer_usage)
+      // CHECK-SAME: flags("None")
+      flags("None")
       // CHECK-SAME: : !hal.buffer{%[[SIZE]]}
       : !hal.buffer{%size}
   util.return %buffer : !hal.buffer
@@ -62,6 +68,8 @@ util.func public @device_queue_dealloca(
       wait(%wait_fence) signal(%signal_fence)
       // CHECK-SAME: buffer(%[[BUFFER]] : !hal.buffer)
       buffer(%buffer : !hal.buffer)
+      // CHECK-SAME: flags(PreferOrigin)
+      flags(PreferOrigin)
   util.return
 }
 
@@ -93,8 +101,8 @@ util.func public @device_queue_fill(
       length(%length)
       // CHECK-SAME: pattern(%[[PATTERN_I8]] : i8)
       pattern(%pattern_i8 : i8)
-      // CHECK-SAME: flags(0)
-      flags(0)
+      // CHECK-SAME: flags("None")
+      flags("None")
   util.return
 }
 
@@ -128,8 +136,8 @@ util.func public @device_queue_update(
       target(%target_buffer : !hal.buffer)[%target_offset]
       // CHECK-SAME: length(%[[LENGTH]])
       length(%length)
-      // CHECK-SAME: flags(0)
-      flags(0)
+      // CHECK-SAME: flags("None")
+      flags("None")
   util.return
 }
 
@@ -163,8 +171,8 @@ util.func public @device_queue_copy(
       target(%target_buffer : !hal.buffer)[%target_offset]
       // CHECK-SAME: length(%[[LENGTH]])
       length(%length)
-      // CHECK-SAME: flags(0)
-      flags(0)
+      // CHECK-SAME: flags("None")
+      flags("None")
   util.return
 }
 
@@ -198,8 +206,8 @@ util.func public @device_queue_read(
       target(%target_buffer : !hal.buffer)[%target_offset]
       // CHECK-SAME: length(%[[LENGTH]])
       length(%length)
-      // CHECK-SAME: flags(0)
-      flags(0)
+      // CHECK-SAME: flags("None")
+      flags("None")
   util.return
 }
 
@@ -233,8 +241,27 @@ util.func public @device_queue_write(
       target(%target_file : !hal.file)[%target_offset]
       // CHECK-SAME: length(%[[LENGTH]])
       length(%length)
-      // CHECK-SAME: flags(0)
-      flags(0)
+      // CHECK-SAME: flags("None")
+      flags("None")
+  util.return
+}
+
+// -----
+
+// CHECK-LABEL: @device_queue_barrier
+util.func public @device_queue_barrier(
+    // CHECK-SAME: (%[[DEVICE:.+]]: !hal.device, %[[AFFINITY:.+]]: i64,
+    %device: !hal.device, %affinity: i64,
+    // CHECK-SAME:  %[[WAIT_FENCE:.+]]: !hal.fence, %[[SIGNAL_FENCE:.+]]: !hal.fence)
+    %wait_fence: !hal.fence, %signal_fence: !hal.fence) {
+  // CHECK: hal.device.queue.barrier<%[[DEVICE]] : !hal.device>
+  hal.device.queue.barrier<%device : !hal.device>
+      // CHECK-SAME: affinity(%[[AFFINITY]])
+      affinity(%affinity)
+      // CHECK-SAME: wait(%[[WAIT_FENCE]]) signal(%[[SIGNAL_FENCE]])
+      wait(%wait_fence) signal(%signal_fence)
+      // CHECK-SAME: flags("None")
+      flags("None")
   util.return
 }
 
@@ -246,16 +273,18 @@ util.func public @device_queue_execute(
     %device: !hal.device, %affinity: i64,
     // CHECK-SAME:  %[[WAIT_FENCE:.+]]: !hal.fence, %[[SIGNAL_FENCE:.+]]: !hal.fence,
     %wait_fence: !hal.fence, %signal_fence: !hal.fence,
-    // CHECK-SAME:  %[[CMD0:.+]]: !hal.command_buffer, %[[CMD1:.+]]: !hal.command_buffer)
-    %cmd0: !hal.command_buffer, %cmd1: !hal.command_buffer) {
+    // CHECK-SAME:  %[[CMD:.+]]: !hal.command_buffer)
+    %cmd: !hal.command_buffer) {
   // CHECK: hal.device.queue.execute<%[[DEVICE]] : !hal.device>
   hal.device.queue.execute<%device : !hal.device>
       // CHECK-SAME: affinity(%[[AFFINITY]])
       affinity(%affinity)
       // CHECK-SAME: wait(%[[WAIT_FENCE]]) signal(%[[SIGNAL_FENCE]])
       wait(%wait_fence) signal(%signal_fence)
-      // CHECK-SAME: commands([%[[CMD0]], %[[CMD1]]])
-      commands([%cmd0, %cmd1])
+      // CHECK-SAME: commands(%[[CMD]])
+      commands(%cmd)
+      // CHECK-SAME: flags("None")
+      flags("None")
   util.return
 }
 
@@ -290,6 +319,8 @@ util.func public @device_queue_execute_indirect(
         // CHECK-NEXT: (%[[BUFFER1]] : !hal.buffer)[%c200, %c2000]
         (%buffer1 : !hal.buffer)[%c200, %c2000]
       ])
+      // CHECK-NEXT: flags("None")
+      flags("None")
   util.return
 }
 

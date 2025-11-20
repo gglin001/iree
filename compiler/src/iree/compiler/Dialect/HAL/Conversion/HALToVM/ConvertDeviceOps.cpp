@@ -4,6 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "iree/compiler/Dialect/HAL/Conversion/HALToVM/Patterns.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/VM/Conversion/ImportUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -34,32 +35,33 @@ public:
     // ourselves instead of allowing the i64 do the same. We could let it handle
     // things but then we are generating more IR that may prevent other
     // canonicalizations (a select of i1 to i1 is easier to handle).
-    auto queryOp = rewriter.create<IREE::HAL::DeviceQueryOp>(
-        op.getLoc(), rewriter.getI1Type(), rewriter.getI64Type(),
+    auto queryOp = IREE::HAL::DeviceQueryOp::create(
+        rewriter, op.getLoc(), rewriter.getI1Type(), rewriter.getI64Type(),
         adaptor.getDevice(), op.getCategoryAttr(), op.getKeyAttr(),
         TypedAttr{});
-    auto ok = llvm::cast<Value>(queryOp.getOk());
+    auto ok = cast<Value>(queryOp.getOk());
     auto value = queryOp.getValue();
 
     // Truncate or extend based on the target type.
     if (targetType.isIndex()) {
       // i64 -> index cast.
       value =
-          rewriter.create<arith::IndexCastOp>(op.getLoc(), targetType, value);
+          arith::IndexCastOp::create(rewriter, op.getLoc(), targetType, value);
     } else if (targetType.isInteger(1)) {
       // i64 -> i1 cast.
-      value = rewriter.create<IREE::VM::CmpNZI64Op>(
-          op.getLoc(), rewriter.getI32Type(), value);
+      value = IREE::VM::CmpNZI64Op::create(rewriter, op.getLoc(),
+                                           rewriter.getI32Type(), value);
     } else {
       // i64 -> {integer} cast.
       if (targetType.getIntOrFloatBitWidth() <
           value.getType().getIntOrFloatBitWidth()) {
         // i64 -> narrowing cast.
         value =
-            rewriter.create<arith::TruncIOp>(op.getLoc(), targetType, value);
+            arith::TruncIOp::create(rewriter, op.getLoc(), targetType, value);
       } else {
         // i64 -> widening cast.
-        value = rewriter.create<arith::ExtUIOp>(op.getLoc(), targetType, value);
+        value =
+            arith::ExtUIOp::create(rewriter, op.getLoc(), targetType, value);
       }
     }
 
@@ -67,11 +69,11 @@ public:
       // Select the default value based on the converted type as that's the type
       // of the attribute we have is in. 'ok' result is set to true as we've
       // already handled the error case.
-      value = rewriter.create<arith::SelectOp>(
-          op.getLoc(), ok, value,
-          rewriter.create<arith::ConstantOp>(op.getLoc(),
-                                             op.getDefaultValueAttr()));
-      ok = rewriter.create<IREE::VM::ConstI32Op>(op.getLoc(), 1);
+      value = arith::SelectOp::create(
+          rewriter, op.getLoc(), ok, value,
+          arith::ConstantOp::create(rewriter, op.getLoc(),
+                                    op.getDefaultValueAttr()));
+      ok = IREE::VM::ConstI32Op::create(rewriter, op.getLoc(), 1);
     }
 
     rewriter.replaceOp(op, {ok, value});
@@ -131,11 +133,9 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto importType = importOp.getFunctionType();
     auto i64Type = rewriter.getI64Type();
-    auto patternLength = rewriter.create<IREE::VM::ConstI32Op>(
-        op.getLoc(),
+    auto patternLength = IREE::VM::ConstI32Op::create(
+        rewriter, op.getLoc(),
         llvm::divideCeil(op.getPattern().getType().getIntOrFloatBitWidth(), 8));
-    auto flags =
-        rewriter.create<IREE::VM::ConstI64Op>(op.getLoc(), op.getFlags());
     std::array<Value, 10> callOperands = {
         adaptor.getDevice(),
         castToImportType(adaptor.getQueueAffinity(), i64Type, rewriter),
@@ -146,7 +146,7 @@ public:
         castToImportType(adaptor.getLength(), i64Type, rewriter),
         castToImportType(adaptor.getPattern(), i64Type, rewriter),
         patternLength,
-        flags,
+        getFlagsI64(op.getLoc(), adaptor.getFlagsAttr(), rewriter),
     };
     auto callOp = rewriter.replaceOpWithNewOp<IREE::VM::CallOp>(
         op, SymbolRefAttr::get(importOp), importType.getResults(),
@@ -177,12 +177,15 @@ public:
     auto importType = importOp.getFunctionType();
     auto i64Type = rewriter.getI64Type();
 
+    Value queueAffinity =
+        castToImportType(adaptor.getQueueAffinity(), i64Type, rewriter);
     SmallVector<Value, 8> callOperands = {
         adaptor.getDevice(),
-        castToImportType(adaptor.getQueueAffinity(), i64Type, rewriter),
+        queueAffinity,
         adaptor.getWaitFence(),
         adaptor.getSignalFence(),
         adaptor.getCommandBuffer(),
+        getFlagsI64(op.getLoc(), adaptor.getFlagsAttr(), rewriter),
     };
     SmallVector<int16_t, 5> segmentSizes = {
         /*device=*/-1,
@@ -190,6 +193,7 @@ public:
         /*wait_fence=*/-1,
         /*signal_fence=*/-1,
         /*command_buffer=*/-1,
+        /*flags=*/-1,
         /*bindings=*/
         static_cast<int16_t>(adaptor.getBindingBuffers().size()),
     };
@@ -239,6 +243,8 @@ void populateHALDeviceToVMPatterns(MLIRContext *context,
       context, importSymbols, typeConverter, "hal.device.queue.read");
   patterns.insert<VMImportOpConversion<IREE::HAL::DeviceQueueWriteOp>>(
       context, importSymbols, typeConverter, "hal.device.queue.write");
+  patterns.insert<VMImportOpConversion<IREE::HAL::DeviceQueueBarrierOp>>(
+      context, importSymbols, typeConverter, "hal.device.queue.barrier");
   patterns.insert<VMImportOpConversion<IREE::HAL::DeviceQueueExecuteOp>>(
       context, importSymbols, typeConverter, "hal.device.queue.execute");
   patterns.insert<DeviceQueueExecuteIndirectOpConversion>(

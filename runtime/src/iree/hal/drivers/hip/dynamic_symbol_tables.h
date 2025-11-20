@@ -12,6 +12,7 @@ IREE_HAL_HIP_REQUIRED_PFN_DECL(hipCtxSetCurrent, hipCtx_t)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipCtxGetCurrent, hipCtx_t *)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipCtxPushCurrent, hipCtx_t)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipCtxPopCurrent, hipCtx_t *)
+IREE_HAL_HIP_REQUIRED_PFN_DECL(hipDeviceCanAccessPeer, int *, int, int)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipDeviceEnablePeerAccess, int, unsigned int)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipDeviceGet, hipDevice_t *, int)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipDeviceGetAttribute, int *,
@@ -35,6 +36,8 @@ IREE_HAL_HIP_REQUIRED_PFN_DECL(hipEventRecord, hipEvent_t, hipStream_t)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipEventSynchronize, hipEvent_t)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipFree, void *)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipFreeAsync, void *, hipStream_t)
+IREE_HAL_HIP_REQUIRED_PFN_DECL(hipFuncGetAttribute, int *, hipFuncAttribute,
+                               const void *)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipFuncSetAttribute, const void *,
                                hipFuncAttribute, int)
 IREE_HAL_HIP_REQUIRED_PFN_DECL(hipGetDeviceCount, int *)

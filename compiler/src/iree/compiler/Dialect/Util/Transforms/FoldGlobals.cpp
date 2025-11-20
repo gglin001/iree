@@ -13,6 +13,7 @@
 #include "iree/compiler/Dialect/Util/IR/UtilTraits.h"
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
 #include "iree/compiler/Dialect/Util/Transforms/Passes.h"
+#include "iree/compiler/Utils/PassUtils.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SmallVector.h"
@@ -119,8 +120,8 @@ static bool renameChainedGlobals(GlobalTable &globalTable) {
     for (auto storeOp : global.storeOps) {
       // Check to see if the stored value comes from another global.
       auto *definingOp = storeOp.getStoredGlobalValue().getDefiningOp();
-      if (auto loadOp =
-              dyn_cast_or_null<IREE::Util::GlobalLoadOpInterface>(definingOp)) {
+      if (auto loadOp = dyn_cast_if_present<IREE::Util::GlobalLoadOpInterface>(
+              definingOp)) {
         if (!aliasName) {
           aliasName = loadOp.getGlobalAttr();
         } else if (aliasName != loadOp.getGlobalAttr()) {
@@ -186,10 +187,10 @@ static Value tryMaterializeConstant(Location loc, Type type, Attribute attr,
                                     OpBuilder &builder) {
   if (arith::ConstantOp::isBuildableWith(attr, type)) {
     // Common case fast-path.
-    return builder.create<arith::ConstantOp>(loc, type, cast<TypedAttr>(attr));
+    return arith::ConstantOp::create(builder, loc, type, cast<TypedAttr>(attr));
   } else if (mlir::func::ConstantOp::isBuildableWith(attr, type)) {
-    return builder.create<mlir::func::ConstantOp>(
-        loc, type, llvm::cast<FlatSymbolRefAttr>(attr));
+    return mlir::func::ConstantOp::create(builder, loc, type,
+                                          cast<FlatSymbolRefAttr>(attr));
   }
   // Fallback that asks a dialect to materialize things. This may fail!
   auto *op = attr.getDialect().materializeConstant(builder, attr, type, loc);
@@ -212,8 +213,20 @@ static bool inlineConstantGlobalLoads(GlobalTable &globalTable) {
       return GlobalAction::PRESERVE;
     }
 
-    if (llvm::isa<IREE::Util::ReferenceTypeInterface>(
-            global.op.getGlobalType())) {
+    // We currently don't support inlining globals with non-util dialect
+    // attributes as the constant materialization machinery in MLIR does not
+    // have a way to preserve them. We could add an attr interface that allows
+    // attrs to be carried along as a way around this but today don't need it.
+    const bool hasAnyNonUtilAttrs =
+        llvm::any_of(global.op->getDialectAttrs(), [](NamedAttribute attr) {
+          auto *dialect = attr.getNameDialect();
+          return !dialect || dialect->getNamespace() != "util";
+        });
+    if (hasAnyNonUtilAttrs) {
+      return GlobalAction::PRESERVE;
+    }
+
+    if (isa<IREE::Util::ReferenceTypeInterface>(global.op.getGlobalType())) {
       // We only inline value types; reference types have meaning as globals.
       return GlobalAction::PRESERVE;
     }
@@ -311,17 +324,17 @@ static bool deduplicateConstantGlobals(GlobalTable &globalTable) {
 
   SmallVector<StringRef> deadGlobalNames;
   for (auto it = ec.begin(), end = ec.end(); it != end; ++it) {
-    if (!it->isLeader()) {
+    if (!(*it)->isLeader()) {
       // Ignore non-leader sets.
       continue;
-    } else if (++ec.member_begin(it) == ec.member_end()) {
+    } else if (++ec.member_begin(**it) == ec.member_end()) {
       continue;
     }
-    auto *baseGlobal = &globalTable.lookup(it->getData());
+    auto *baseGlobal = &globalTable.lookup((*it)->getData());
 
     // Build fused location from all of the globals.
     SmallVector<Location> locs;
-    for (auto mi = ec.member_begin(it); mi != ec.member_end(); ++mi) {
+    for (auto mi = ec.member_begin(**it); mi != ec.member_end(); ++mi) {
       Global &global = globalTable.lookup(*mi);
       locs.push_back(global.op.getLoc());
       if (global.ordinal < baseGlobal->ordinal) {
@@ -335,7 +348,7 @@ static bool deduplicateConstantGlobals(GlobalTable &globalTable) {
     baseGlobalOp->setLoc(fusedLoc);
 
     // Replace all other globals to point at the new one.
-    for (auto mi = ec.member_begin(it); mi != ec.member_end(); ++mi) {
+    for (auto mi = ec.member_begin(**it); mi != ec.member_end(); ++mi) {
       Global &global = globalTable.lookup(*mi);
       if (global.op == baseGlobalOp) {
         continue;
@@ -354,8 +367,7 @@ static bool deduplicateConstantGlobals(GlobalTable &globalTable) {
   return true; // did change
 }
 
-class FoldGlobalsPass : public impl::FoldGlobalsPassBase<FoldGlobalsPass> {
-public:
+struct FoldGlobalsPass : public impl::FoldGlobalsPassBase<FoldGlobalsPass> {
   void runOnOperation() override {
     auto *context = &getContext();
     RewritePatternSet patterns(context);
@@ -367,9 +379,10 @@ public:
     }
     FrozenRewritePatternSet frozenPatterns(std::move(patterns));
 
-    auto moduleOp = getOperation();
+    mlir::ModuleOp moduleOp = getOperation();
     GlobalTable globalTable(moduleOp);
     beforeFoldingGlobals = globalTable.size();
+    bool didChangeAny = false;
     for (int i = 0; i < 10; ++i) {
       // TODO(benvanik): determine if we need this expensive folding.
       if (failed(applyPatternsGreedily(moduleOp, frozenPatterns))) {
@@ -422,10 +435,15 @@ public:
         // No changes; complete fixed-point iteration.
         break;
       }
+      didChangeAny = true;
     }
 
     afterFoldingGlobals =
         count(moduleOp.getOps<IREE::Util::GlobalOpInterface>());
+
+    if (didChangeAny) {
+      signalFixedPointModified(moduleOp);
+    }
   }
 };
 

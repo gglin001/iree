@@ -104,7 +104,7 @@ namespace {
 /// function.
 struct ConvertHALInterfaceWorkgroupIDOp
     : public OpConversionPattern<IREE::HAL::InterfaceWorkgroupIDOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::InterfaceWorkgroupIDOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -117,8 +117,8 @@ struct ConvertHALInterfaceWorkgroupIDOp
     Value workgroupDimI32 =
         op->getParentOfType<mlir::FunctionOpInterface>().getArgument(
             kEntryArgWorkgroupX + dim);
-    Value workgroupDim = rewriter.create<arith::IndexCastOp>(
-        op.getLoc(), rewriter.getIndexType(), workgroupDimI32);
+    Value workgroupDim = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), workgroupDimI32);
     rewriter.replaceOp(op, workgroupDim);
     return success();
   }
@@ -128,7 +128,7 @@ struct ConvertHALInterfaceWorkgroupIDOp
 /// function.
 struct ConvertHALInterfaceWorkgroupSizeOp
     : public OpConversionPattern<IREE::HAL::InterfaceWorkgroupSizeOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::InterfaceWorkgroupSizeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -141,8 +141,8 @@ struct ConvertHALInterfaceWorkgroupSizeOp
     Value workgroupDimI32 =
         op->getParentOfType<mlir::FunctionOpInterface>().getArgument(
             kEntryArgWorkgroupSizeX + dim);
-    Value workgroupDim = rewriter.create<arith::IndexCastOp>(
-        op.getLoc(), rewriter.getIndexType(), workgroupDimI32);
+    Value workgroupDim = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), workgroupDimI32);
     rewriter.replaceOp(op, workgroupDim);
     return success();
   }
@@ -152,7 +152,7 @@ struct ConvertHALInterfaceWorkgroupSizeOp
 /// the function.
 struct ConvertHALInterfaceWorkgroupCountOp
     : public OpConversionPattern<IREE::HAL::InterfaceWorkgroupCountOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::InterfaceWorkgroupCountOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -165,8 +165,8 @@ struct ConvertHALInterfaceWorkgroupCountOp
     Value workgroupDimI32 =
         op->getParentOfType<mlir::FunctionOpInterface>().getArgument(
             kEntryArgWorkgroupCountX + dim);
-    Value workgroupDim = rewriter.create<arith::IndexCastOp>(
-        op.getLoc(), rewriter.getIndexType(), workgroupDimI32);
+    Value workgroupDim = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), workgroupDimI32);
     rewriter.replaceOp(op, workgroupDim);
     return success();
   }
@@ -175,7 +175,7 @@ struct ConvertHALInterfaceWorkgroupCountOp
 /// Rewrites hal.interface.constant.load to ops loading from the ABI structs.
 struct ConvertHALInterfaceConstantLoadOp
     : public OpConversionPattern<IREE::HAL::InterfaceConstantLoadOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::InterfaceConstantLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -187,7 +187,7 @@ struct ConvertHALInterfaceConstantLoadOp
     // HACK: we could find the total push constant count and avoid this size op
     // but it'd require walking all the way up to the hal.executable export.
     auto constantsSize =
-        rewriter.create<IREE::Util::BufferSizeOp>(op.getLoc(), constantsArg);
+        IREE::Util::BufferSizeOp::create(rewriter, op.getLoc(), constantsArg);
     auto resultType = getTypeConverter()->convertType(op.getResult().getType());
 
     // Index -> byte offset.
@@ -205,7 +205,7 @@ struct ConvertHALInterfaceConstantLoadOp
 
 struct ConvertGetRawInterfaceBindingBufferOp
     : public OpConversionPattern<IREE::VMVX::GetRawInterfaceBindingBufferOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::VMVX::GetRawInterfaceBindingBufferOp op,
                   OpAdaptor adaptor,
@@ -218,8 +218,8 @@ struct ConvertGetRawInterfaceBindingBufferOp
            "entry point not conforming to requirements");
 
     IndexSet indexSet(op.getLoc(), rewriter);
-    auto bindingType = llvm::cast<IREE::Util::ListType>(bindingsArg.getType())
-                           .getElementType();
+    auto bindingType =
+        cast<IREE::Util::ListType>(bindingsArg.getType()).getElementType();
     rewriter
         .replaceOpWithNewOp<IREE::Util::ListGetOp>(
             op, bindingType, bindingsArg,
@@ -233,7 +233,7 @@ struct ConvertGetRawInterfaceBindingBufferOp
 /// Rewrites hal.interface.binding.subspan to ops loading from the ABI structs.
 struct ConvertHALInterfaceBindingSubspanOp
     : public OpConversionPattern<IREE::HAL::InterfaceBindingSubspanOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::InterfaceBindingSubspanOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -245,15 +245,13 @@ struct ConvertHALInterfaceBindingSubspanOp
            "entry point not conforming to requirements");
 
     IndexSet indexSet(op.getLoc(), rewriter);
-    auto bindingType = llvm::cast<IREE::Util::ListType>(bindingsArg.getType())
-                           .getElementType();
-    auto sourceBuffer =
-        rewriter
-            .create<IREE::Util::ListGetOp>(
-                op.getLoc(), bindingType, bindingsArg,
-                rewriter.createOrFold<arith::ConstantIndexOp>(
-                    op.getLoc(), op.getBinding().getSExtValue()))
-            .getResult();
+    auto bindingType =
+        cast<IREE::Util::ListType>(bindingsArg.getType()).getElementType();
+    auto sourceBuffer = IREE::Util::ListGetOp::create(
+                            rewriter, op.getLoc(), bindingType, bindingsArg,
+                            rewriter.createOrFold<arith::ConstantIndexOp>(
+                                op.getLoc(), op.getBinding().getSExtValue()))
+                            .getResult();
 
     if (op.getByteOffset() && !matchPattern(op.getByteOffset(), m_Zero())) {
       // Offsetted binding: replace with a BufferSubspanOp.
@@ -262,7 +260,7 @@ struct ConvertHALInterfaceBindingSubspanOp
 
       // Compute the dest size by multiplying the element size by all extents
       // (static and dynamic).
-      auto memRefType = llvm::cast<MemRefType>(op.getResult().getType());
+      auto memRefType = cast<MemRefType>(op.getResult().getType());
       Value destSize = rewriter.createOrFold<IREE::Util::SizeOfOp>(
           op.getLoc(), memRefType.getElementType());
       auto dynamicExtentIt = adaptor.getDynamicDims().begin();

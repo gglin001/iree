@@ -28,7 +28,7 @@ int getNextPotBitWidth(int bitWidth, int minBitWidth = 8) {
 }
 
 Type withNewElementType(Type originalType, Type elementType) {
-  if (auto st = llvm::dyn_cast<ShapedType>(originalType)) {
+  if (auto st = dyn_cast<ShapedType>(originalType)) {
     return st.clone(elementType);
   } else {
     return elementType;
@@ -47,19 +47,18 @@ Value castNumeric(Value origValue, Type toType, bool isSigned,
   Type origElementType = getElementTypeOrSelf(origValue.getType());
   Type toElementType = getElementTypeOrSelf(toType);
 
-  if (llvm::isa<FloatType>(origElementType) &&
-      llvm::isa<IntegerType>(toElementType)) {
+  if (isa<FloatType>(origElementType) && isa<IntegerType>(toElementType)) {
     if (isSigned) {
-      return builder.create<arith::FPToSIOp>(loc, toType, origValue);
+      return arith::FPToSIOp::create(builder, loc, toType, origValue);
     } else {
-      return builder.create<arith::FPToUIOp>(loc, toType, origValue);
+      return arith::FPToUIOp::create(builder, loc, toType, origValue);
     }
-  } else if (llvm::isa<IntegerType>(origElementType) &&
-             llvm::isa<FloatType>(toElementType)) {
+  } else if (isa<IntegerType>(origElementType) &&
+             isa<FloatType>(toElementType)) {
     if (isSigned) {
-      return builder.create<arith::SIToFPOp>(loc, toType, origValue);
+      return arith::SIToFPOp::create(builder, loc, toType, origValue);
     } else {
-      return builder.create<arith::UIToFPOp>(loc, toType, origValue);
+      return arith::UIToFPOp::create(builder, loc, toType, origValue);
     }
   } else {
     // If we need int<->int and float<->float, implement those cases. Since
@@ -73,7 +72,7 @@ Value castNumeric(Value origValue, Type toType, bool isSigned,
 struct NarrowParams {
   static std::optional<NarrowParams> forValue(Value value) {
     if (auto narrowOp =
-            llvm::dyn_cast_or_null<IREE::Util::NumericOptionalNarrowOp>(
+            dyn_cast_if_present<IREE::Util::NumericOptionalNarrowOp>(
                 value.getDefiningOp())) {
       NarrowParams params;
       params.producer = narrowOp.getOperand();
@@ -86,19 +85,13 @@ struct NarrowParams {
     return {};
   }
 
-  bool isFromFloat() {
-    return llvm::isa<FloatType>(getElementTypeOrSelf(fromType));
-  }
+  bool isFromFloat() { return isa<FloatType>(getElementTypeOrSelf(fromType)); }
 
-  bool isToInteger() { return llvm::isa<IntegerType>(toElementType); }
+  bool isToInteger() { return isa<IntegerType>(toElementType); }
 
-  bool isToSigned() {
-    return llvm::cast<IntegerType>(toElementType).isSigned();
-  }
+  bool isToSigned() { return cast<IntegerType>(toElementType).isSigned(); }
 
-  int getToBitWidth() {
-    return llvm::cast<IntegerType>(toElementType).getWidth();
-  }
+  int getToBitWidth() { return cast<IntegerType>(toElementType).getWidth(); }
 
   Value producer;
   Type fromType;
@@ -153,7 +146,7 @@ struct LinalgFillCast
                 fillInit)
             .getCasted();
     Value fillResult =
-        rewriter.create<linalg::FillOp>(loc, fillInput, fillInit).result();
+        linalg::FillOp::create(rewriter, loc, fillInput, fillInit).result();
     rewriter.replaceOp(castOp, fillResult);
     return success();
   }
@@ -161,7 +154,7 @@ struct LinalgFillCast
 
 // For narrowable inputs, selects
 struct LinalgFpMatmulToLowP : public OpRewritePattern<linalg::MatmulOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(linalg::MatmulOp matmulOp,
                                 PatternRewriter &rewriter) const override {
@@ -242,8 +235,8 @@ struct LinalgFpMatmulToLowP : public OpRewritePattern<linalg::MatmulOp> {
     Value newAccum =
         castNumeric(accumParams->producer, accumLowPType, isSigned, rewriter);
 
-    auto newMatmulOp = rewriter.create<linalg::MatmulOp>(
-        loc, ValueRange{newLhs, newRhs}, ValueRange{newAccum});
+    auto newMatmulOp = linalg::MatmulOp::create(
+        rewriter, loc, ValueRange{newLhs, newRhs}, ValueRange{newAccum});
     if (!isSigned) {
       newMatmulOp.setCast(linalg::TypeFn::cast_unsigned);
     }

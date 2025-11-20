@@ -16,6 +16,7 @@
 void iree_hal_executable_params_initialize(
     iree_hal_executable_params_t* out_executable_params) {
   memset(out_executable_params, 0, sizeof(*out_executable_params));
+  out_executable_params->queue_affinity = IREE_HAL_QUEUE_AFFINITY_ANY;
   out_executable_params->caching_mode =
       IREE_HAL_EXECUTABLE_CACHING_MODE_ALLOW_PERSISTENT_CACHING |
       IREE_HAL_EXECUTABLE_CACHING_MODE_ALLOW_OPTIMIZATION;
@@ -37,6 +38,28 @@ IREE_API_EXPORT iree_status_t iree_hal_executable_cache_create(
   iree_status_t status = IREE_HAL_VTABLE_DISPATCH(device, iree_hal_device,
                                                   create_executable_cache)(
       device, identifier, loop, out_executable_cache);
+  IREE_TRACE_ZONE_END(z0);
+  return status;
+}
+
+IREE_API_EXPORT iree_status_t iree_hal_executable_cache_infer_format(
+    iree_hal_executable_cache_t* executable_cache,
+    iree_hal_executable_caching_mode_t caching_mode,
+    iree_const_byte_span_t executable_data,
+    iree_host_size_t executable_format_capacity, char* executable_format,
+    iree_host_size_t* out_inferred_size) {
+  IREE_ASSERT_ARGUMENT(executable_cache);
+  IREE_ASSERT_ARGUMENT(executable_format);
+  IREE_ASSERT_ARGUMENT(out_inferred_size);
+  *out_inferred_size = 0;
+  if (executable_format_capacity == 0) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "executable_format_capacity must be > 0");
+  }
+  IREE_TRACE_ZONE_BEGIN(z0);
+  iree_status_t status = _VTABLE_DISPATCH(executable_cache, infer_format)(
+      executable_cache, caching_mode, executable_data,
+      executable_format_capacity, executable_format, out_inferred_size);
   IREE_TRACE_ZONE_END(z0);
   return status;
 }

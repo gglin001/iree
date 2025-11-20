@@ -58,7 +58,7 @@ struct StripLinalgOpCompilationInfo final
 
 struct StripAttentionOpCompilationInfo final
     : OpRewritePattern<IREE::LinalgExt::AttentionOp> {
-  using OpRewritePattern::OpRewritePattern;
+  using Base::Base;
   LogicalResult matchAndRewrite(IREE::LinalgExt::AttentionOp attentionOp,
                                 PatternRewriter &rewriter) const override {
     if (getCompilationInfo(attentionOp)) {
@@ -79,7 +79,11 @@ struct StripAttentionOpCompilationInfo final
                    attr.getName() !=
                        IREE::LinalgExt::AttentionOp::getPVAttrStr();
           }));
-      attentionOp.setDecompositionConfigAttr(newConfig);
+      if (newConfig.empty()) {
+        attentionOp.removeDecompositionConfigAttr();
+      } else {
+        attentionOp.setDecompositionConfigAttr(newConfig);
+      }
     }
     return success();
   }

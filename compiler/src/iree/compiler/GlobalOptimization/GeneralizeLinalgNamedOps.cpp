@@ -17,7 +17,17 @@
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Pass/Pass.h"
 
+#define DEBUG_TYPE "iree-global-opt-generalize-linalg-named-ops"
+
 namespace mlir::iree_compiler::GlobalOptimization {
+
+// TODO(#21955): Adapts the convolution transformations to work with generalized
+// linalg.generic form, but not only when they are named ops. E.g.,
+// DownscaleSizeOneWindowed2DConvolution patterns.
+static llvm::cl::opt<bool> clDisableConvGeneralization(
+    "iree-global-opt-experimental-disable-conv-generalization",
+    llvm::cl::desc("Disable generalization for some conv ops (experimental)."),
+    llvm::cl::init(false));
 
 #define GEN_PASS_DEF_GENERALIZELINALGNAMEDOPSPASS
 #include "iree/compiler/GlobalOptimization/Passes.h.inc"
@@ -31,36 +41,8 @@ struct GeneralizeLinalgNamedOpsPass
 };
 } // namespace
 
-/// Returns true of `linalgOp` is a Conv2DNchwFchwOp or Conv2DNhwcHwcfOp with
-/// all strides equal to 1 and with a kernel height and width of 1
-static bool isConvFoldableToContraction(linalg::LinalgOp linalgOp) {
-  auto NCHWOp = dyn_cast<linalg::Conv2DNchwFchwOp>(linalgOp.getOperation());
-  auto NHWCOp = dyn_cast<linalg::Conv2DNhwcHwcfOp>(linalgOp.getOperation());
-
-  if (!NCHWOp && !NHWCOp)
-    return false;
-
-  DenseIntElementsAttr strides =
-      NCHWOp ? NCHWOp.getStrides() : NHWCOp.getStrides();
-  if (!llvm::all_of(
-          strides, [](APInt element) { return element.getSExtValue() == 1; })) {
-    return false;
-  }
-
-  auto filterShapeType = llvm::dyn_cast<RankedTensorType>(
-      linalgOp.getDpsInputOperand(1)->get().getType());
-  if (!filterShapeType)
-    return false;
-
-  // Adjusting dimension indices based on Conv2DOpType.
-  const int khIndex = NHWCOp ? 0 : 2;
-  const int kwIndex = NHWCOp ? 1 : 3;
-  auto filterShape = filterShapeType.getShape();
-  return filterShape[khIndex] == 1 && filterShape[kwIndex] == 1;
-}
-
 void GeneralizeLinalgNamedOpsPass::runOnOperation() {
-  auto funcOp = getOperation();
+  mlir::FunctionOpInterface funcOp = getOperation();
   SmallVector<linalg::LinalgOp> namedOpCandidates;
   funcOp.walk([&](linalg::LinalgOp linalgOp) {
     if (!IREE::Flow::isNonNullAndOutsideDispatch(linalgOp) ||
@@ -71,15 +53,24 @@ void GeneralizeLinalgNamedOpsPass::runOnOperation() {
       namedOpCandidates.push_back(linalgOp);
       return;
     }
+    bool generalizeConvOps = linalg::isaConvolutionOpInterface(linalgOp);
+    if (clDisableConvGeneralization &&
+        isa<linalg::Conv2DNhwcHwcfOp, linalg::Conv2DNchwFchwOp,
+            linalg::PoolingNhwcSumOp, linalg::PoolingNhwcMaxOp,
+            linalg::PoolingNhwcMaxUnsignedOp, linalg::PoolingNhwcMinOp,
+            linalg::PoolingNhwcMinUnsignedOp, linalg::PoolingNchwSumOp,
+            linalg::PoolingNchwMaxOp, linalg::DepthwiseConv2DNhwcHwcOp>(
+            linalgOp)) {
+      generalizeConvOps = false;
+    }
     if (isa_and_nonnull<linalg::AbsOp, linalg::AddOp, linalg::BroadcastOp,
                         linalg::CeilOp, linalg::CopyOp, linalg::DivOp,
-                        linalg::DivUnsignedOp, linalg::ElemwiseBinaryOp,
-                        linalg::ElemwiseUnaryOp, linalg::ExpOp, linalg::FloorOp,
+                        linalg::DivUnsignedOp, linalg::ExpOp, linalg::FloorOp,
                         linalg::LogOp, linalg::MapOp, linalg::MaxOp,
                         linalg::MulOp, linalg::NegFOp, linalg::ReduceOp,
                         linalg::SubOp, linalg::TransposeOp>(
             linalgOp.getOperation()) ||
-        isConvFoldableToContraction(linalgOp)) {
+        generalizeConvOps) {
       namedOpCandidates.push_back(linalgOp);
     }
   });

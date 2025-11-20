@@ -7,7 +7,9 @@ func.func @ukernel_generic(
   %0:2 = iree_codegen.ukernel.generic "foo"
       ins(%in0, %in1: tensor<?x?xf32>, tensor<?xf32>)
       outs(%out0, %out1 : tensor<?xf32>, tensor<?x?xf32>)
-      (%b0, %b1 : f32, i64) -> tensor<?xf32>, tensor<?x?xf32>
+      (%b0, %b1 : f32, i64)
+      strided_dims([[0, 1], [], [1]])
+      -> tensor<?xf32>, tensor<?x?xf32>
   return %0#0, %0#1 : tensor<?xf32>, tensor<?x?xf32>
 }
 //      CHECK: func @ukernel_generic(
@@ -22,6 +24,7 @@ func.func @ukernel_generic(
 // CHECK-SAME:       ins(%[[IN0]], %[[IN1]] :
 // CHECK-SAME:       outs(%[[OUT0]], %[[OUT1]] :
 // CHECK-SAME:       (%[[B0]], %[[B1]] :
+// CHECK-SAME:       strided_dims({{\[}}[0, 1], [], [1]])
 //      CHECK:   return %[[RESULT]]#0, %[[RESULT]]#1
 
 // -----
@@ -96,7 +99,7 @@ func.func @ukernel_generic_optional_other_operands(
 
 func.func @ukernel_generic_non_tensor_memref_outs(
    %out0 : f32) -> f32 {
-  // expected-error @+1 {{operand #0 must be variadic of ranked tensor of any type values or memref of any type values, but got 'f32'}}
+  // expected-error @+1 {{'iree_codegen.ukernel.generic' op operand #0 must be variadic of ranked tensor or memref of any type, but got 'f32'}}
   %0 = iree_codegen.ukernel.generic "foo"
       outs(%out0 : f32) -> f32
   return %0 : f32

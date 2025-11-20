@@ -160,7 +160,6 @@ using FunctionLikeNest =
 //===----------------------------------------------------------------------===//
 
 static void addCleanupPatterns(OpPassManager &passManager) {
-
   FunctionLikeNest(passManager)
       // Standard MLIR cleanup.
       .addPass(mlir::createCanonicalizerPass)
@@ -316,6 +315,18 @@ void buildHALTransformPassPipeline(OpPassManager &passManager,
                                    PipelinePhase compileFrom,
                                    PipelinePhase compileTo) {
   //----------------------------------------------------------------------------
+  // Precondition verification and IR normalization
+  //----------------------------------------------------------------------------
+
+  // Verify module initialization order - subsequent passes rely on it being
+  // correct (and we maintain it as correct from this point on, so this is our
+  // gate).
+  passManager.addPass(IREE::Util::createVerifyInitializationOrderPass());
+
+  // Propagate attributes from callees to call sites for local analysis.
+  passManager.addPass(IREE::Util::createAttributeCallGraphPass());
+
+  //----------------------------------------------------------------------------
   // Device assignment and interface materialization
   //----------------------------------------------------------------------------
 
@@ -466,10 +477,12 @@ void buildHALTransformPassPipeline(OpPassManager &passManager,
     passManager.addPass(IREE::HAL::createOutlineMemoizeRegionsPass());
   }
 
-  // Prune unused executables and their contents.
-  passManager.addPass(IREE::HAL::createPruneExecutablesPass());
-
   addCleanupPatterns(passManager);
+
+  // Prune unused executables and their contents.
+  // After conversion any unused exports will be dropped allowing for
+  // serialization to drop their contents.
+  passManager.addPass(IREE::HAL::createPruneExecutablesPass());
 
   //----------------------------------------------------------------------------
   // Executable packing and runtime loading
@@ -504,12 +517,18 @@ void buildHALTransformPassPipeline(OpPassManager &passManager,
   // cache them at initialization-time.
   passManager.addPass(IREE::HAL::createMaterializeResourceCachesPass());
 
+  // Try to resolve hal.allocator.resolve_memory_properties using topology
+  // information if available.
+  // TODO: This should also try to resolve the hal.allocator.select op.
+  passManager.addPass(IREE::HAL::createResolveTopologyQueriesPass());
+
   //----------------------------------------------------------------------------
   // Device management and specialization
   //----------------------------------------------------------------------------
 
-  // Memoize device queries such that we don't need to repeatedly ask the same
-  // information at runtime.
+  // Memoize device queries and selection such that we don't need to repeatedly
+  // ask the same information at runtime.
+  passManager.addPass(IREE::HAL::createMemoizeDeviceSelectionPass());
   passManager.addPass(IREE::HAL::createMemoizeDeviceQueriesPass());
 
   // Big cleanup after all our conversion and materialization.
@@ -616,16 +635,6 @@ void registerHALPasses() {
   // Force the flags to be bound.
   // TODO(benvanik): remove the global flags and only rely on pipeline flags.
   (void)IREE::HAL::TargetOptions::FromFlags::get();
-  // TODO(multi-device): move the local device registration somewhere more
-  // centralized. For now we piggy-back on the pass registration as that's where
-  // the local device is used.
-  (void)IREE::HAL::LocalDevice::Options::FromFlags::get();
-  IREE::HAL::TargetDeviceList deviceList;
-  deviceList.add("local", [=]() {
-    return std::make_shared<LocalDevice>(
-        IREE::HAL::LocalDevice::Options::FromFlags::get());
-  });
-  IREE::HAL::TargetRegistry::getMutableTargetRegistry().mergeFrom(deviceList);
 
   // Generated.
   registerPasses();

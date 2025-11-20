@@ -16,7 +16,23 @@ iree_cc_test(
   SRCS
     "UtilsTest.cpp"
   DEPS
+    LLVMPasses
     LLVMSupport
+    gmock
+    gtest
+    iree::compiler::Utils
+    iree::testing::gtest_main
+)
+
+iree_cc_test(
+  NAME
+    IndexingTest
+  SRCS
+    "IndexingTest.cpp"
+  DEPS
+    LLVMPasses
+    LLVMSupport
+    MLIRIR
     gmock
     gtest
     iree::compiler::Utils

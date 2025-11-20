@@ -31,6 +31,33 @@ util.func private @resourceDealloca(%arg0: index, %arg1: !stream.resource<stagin
 
 // -----
 
+// CHECK-LABEL: @resourceRetain
+util.func private @resourceRetain(%arg0: !stream.resource<*>, %arg1: index) {
+  // CHECK: stream.resource.retain %arg0 : !stream.resource<*>{%arg1}
+  stream.resource.retain %arg0 : !stream.resource<*>{%arg1}
+  util.return
+}
+
+// -----
+
+// CHECK-LABEL: @resourceRelease
+util.func private @resourceRelease(%arg0: !stream.resource<*>, %arg1: index) -> i1 {
+  // CHECK: = stream.resource.release %arg0 : !stream.resource<*>{%arg1}
+  %0 = stream.resource.release %arg0 : !stream.resource<*>{%arg1}
+  util.return %0 : i1
+}
+
+// -----
+
+// CHECK-LABEL: @resourceIsTerminal
+util.func private @resourceIsTerminal(%arg0: !stream.resource<*>, %arg1: index) -> i1 {
+  // CHECK: = stream.resource.is_terminal %arg0 : !stream.resource<*>{%arg1}
+  %0 = stream.resource.is_terminal %arg0 : !stream.resource<*>{%arg1}
+  util.return %0 : i1
+}
+
+// -----
+
 // CHECK-LABEL: @resourceSize
 util.func private @resourceSize(%arg0: !stream.resource<*>) -> index {
   // CHECK: = stream.resource.size %arg0 : !stream.resource<*>
@@ -112,4 +139,22 @@ util.func private @resourceSubview(%arg0: !stream.resource<*>, %arg1: index) -> 
   // CHECK: = stream.resource.subview %arg0[%c128] : !stream.resource<*>{%arg1} -> !stream.resource<*>{%c256}
   %0 = stream.resource.subview %arg0[%c128] : !stream.resource<*>{%arg1} -> !stream.resource<*>{%c256}
   util.return %0 : !stream.resource<*>
+}
+
+// -----
+
+// CHECK-LABEL: @resourceTransients
+util.func private @resourceTransients(%arg0: !stream.resource<*>, %arg1: index, %arg2: !stream.resource<transient>, %arg3: index) -> (!stream.resource<*>, !stream.timepoint) {
+  // CHECK: = stream.resource.transients %arg0 : !stream.resource<*>{%arg1} from %arg2 : !stream.resource<transient>{%arg3} => !stream.timepoint
+  %0, %1 = stream.resource.transients %arg0 : !stream.resource<*>{%arg1} from %arg2 : !stream.resource<transient>{%arg3} => !stream.timepoint
+  util.return %0, %1 : !stream.resource<*>, !stream.timepoint
+}
+
+// -----
+
+// CHECK-LABEL: @resourceTransientsAffinity
+util.func private @resourceTransientsAffinity(%arg0: !stream.resource<*>, %arg1: index, %arg2: !stream.resource<transient>, %arg3: index) -> (!stream.resource<*>, !stream.timepoint) {
+  // CHECK: = stream.resource.transients on(#hal.device.affinity<@dev>) %arg0 : !stream.resource<*>{%arg1} from %arg2 : !stream.resource<transient>{%arg3} => !stream.timepoint
+  %0, %1 = stream.resource.transients on(#hal.device.affinity<@dev>) %arg0 : !stream.resource<*>{%arg1} from %arg2 : !stream.resource<transient>{%arg3} => !stream.timepoint
+  util.return %0, %1 : !stream.resource<*>, !stream.timepoint
 }

@@ -1,4 +1,4 @@
-// RUN: iree-opt --split-input-file --canonicalize %s | iree-opt --split-input-file | FileCheck %s
+// RUN: iree-opt --split-input-file --canonicalize %s | FileCheck %s
 
 // CHECK-LABEL: @FoldTensorImportOp
 util.func private @FoldTensorImportOp(%arg0: !stream.resource<external>, %arg1: index) -> !stream.resource<external> {
@@ -174,6 +174,17 @@ util.func private @NarrowSplatPatternF32() -> !stream.resource<*> {
 
 // -----
 
+// CHECK-LABEL: @NoNarrowSplatPatternI1
+util.func private @NoNarrowSplatPatternI1() -> !stream.resource<*> {
+  %c100 = arith.constant 100 : index
+  %pattern = arith.constant true
+  // CHECK: stream.tensor.splat %true : i1
+  %0 = stream.tensor.splat %pattern : i1 -> tensor<2x2xi1> in !stream.resource<*>{%c100}
+  util.return %0 : !stream.resource<*>
+}
+
+// -----
+
 // CHECK-LABEL: @FoldTensorCloneOp
 util.func private @FoldTensorCloneOp(%arg0: !stream.resource<*>, %arg1: index) -> !stream.resource<*> {
   // CHECK-NOT: stream.tensor.clone
@@ -205,4 +216,63 @@ util.func private @ElideUnneededTensorClones(%arg0: !stream.resource<*>, %arg1: 
   %2 = stream.tensor.load %1[%c0, %c0] : tensor<2x2xf32> in !stream.resource<staging>{%arg1} -> f32
   // CHECK: util.return %[[T1]]
   util.return %2 : f32
+}
+
+// -----
+
+#encoding = #iree_encoding.padding<[0, 0]>
+// CHECK-LABEL: @FoldTensorEncodeOpWithIdentitySource(
+// CHECK-SAME:    %[[SRC:[a-zA-Z0-9]+]]
+util.func private @FoldTensorEncodeOpWithIdentitySource(%arg0: !stream.resource<*>, %arg1: index) -> !stream.resource<*> {
+  %0 = stream.tensor.encode %arg0 : tensor<2x2xf32, #encoding> in !stream.resource<*>{%arg1} -> tensor<2x2xf32> in !stream.resource<*>{%arg1}
+  // CHECK:         util.return %[[SRC]]
+  util.return %0 : !stream.resource<*>
+}
+
+// -----
+
+#encoding = #iree_encoding.padding<[0, 0]>
+// CHECK-LABEL: @FoldTensorEncodeOpWithIdentityResult(
+// CHECK-SAME:    %[[SRC:[a-zA-Z0-9]+]]
+util.func private @FoldTensorEncodeOpWithIdentityResult(%arg0: !stream.resource<*>, %arg1: index) -> !stream.resource<*> {
+  %0 = stream.tensor.encode %arg0 : tensor<2x2xf32> in !stream.resource<*>{%arg1} -> tensor<2x2xf32, #encoding> in !stream.resource<*>{%arg1}
+  // CHECK:         util.return %[[SRC]]
+  util.return %0 : !stream.resource<*>
+}
+
+// -----
+
+#encoding = #iree_encoding.unknown
+// CHECK-LABEL: @FoldTensorEncodeOpWithSameSourceResultEncodings(
+// CHECK-SAME:    %[[SRC:[a-zA-Z0-9]+]]
+util.func private @FoldTensorEncodeOpWithSameSourceResultEncodings(%arg0: !stream.resource<*>, %arg1: index) -> !stream.resource<*> {
+  %0 = stream.tensor.encode %arg0 : tensor<2x2xf32, #encoding> in !stream.resource<*>{%arg1} -> tensor<2x2xf32, #encoding> in !stream.resource<*>{%arg1}
+  // CHECK:         util.return %[[SRC]]
+  util.return %0 : !stream.resource<*>
+}
+
+// -----
+
+#encoding = #iree_encoding.unknown
+// CHECK-LABEL:  @NofoldTensorEncodingOpWithUnknownSourceEncoding
+util.func public @NofoldTensorEncodingOpWithUnknownSourceEncoding(%arg0: !stream.resource<*>, %arg1: index, %arg2: index, %arg3: index) -> !stream.resource<*> {
+  // CHECK: %[[RESULT:.+]] = stream.tensor.encode
+  // CHECK: util.return %[[RESULT]]
+  %0 = stream.tensor.encode on(#hal.device.affinity<@device_a>)
+    %arg0 : tensor<?x?xf32, #encoding>{%arg2, %arg3} in !stream.resource<*>{%arg1}
+    -> tensor<?x?xf32>{%arg2, %arg3} in !stream.resource<*>{%arg1}
+  util.return %0 : !stream.resource<*>
+}
+
+// -----
+
+#encoding = #iree_encoding.unknown
+// CHECK-LABEL:  @NofoldTensorEncodingOpWithUnknownResultEncoding
+util.func public @NofoldTensorEncodingOpWithUnknownResultEncoding(%arg0: !stream.resource<*>, %arg1: index, %arg2: index, %arg3: index) -> !stream.resource<*> {
+  // CHECK: %[[RESULT:.+]] = stream.tensor.encode
+  // CHECK: util.return %[[RESULT]]
+  %0 = stream.tensor.encode on(#hal.device.affinity<@device_a>)
+    %arg0 : tensor<?x?xf32>{%arg2, %arg3} in !stream.resource<*>{%arg1}
+    -> tensor<?x?xf32, #encoding>{%arg2, %arg3} in !stream.resource<*>{%arg1}
+  util.return %0 : !stream.resource<*>
 }

@@ -25,15 +25,12 @@
 //===---------------------------------------------------------------------===//
 
 #include "iree/compiler/Codegen/Common/Passes.h"
-#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
+#include "iree/compiler/Dialect/Encoding/Utils/ElementPackingUtils.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
-#include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
-#include "iree/compiler/Utils/ElementPackingUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -48,14 +45,13 @@ static Value convertElementType(OpBuilder &b, Location loc, Type targetType,
   Type sourceType = source.getType();
   if (sourceType == targetType)
     return source;
-  if (llvm::isa<IntegerType>(sourceType) &&
-      llvm::isa<IntegerType>(targetType)) {
+  if (isa<IntegerType>(sourceType) && isa<IntegerType>(targetType)) {
     unsigned sourceBitWidth = sourceType.getIntOrFloatBitWidth();
     unsigned destBitWidth = targetType.getIntOrFloatBitWidth();
     if (sourceBitWidth > destBitWidth) {
-      return b.create<arith::TruncIOp>(loc, targetType, source);
+      return arith::TruncIOp::create(b, loc, targetType, source);
     } else {
-      return b.create<arith::ExtUIOp>(loc, targetType, source);
+      return arith::ExtUIOp::create(b, loc, targetType, source);
     }
   }
   return nullptr;
@@ -64,7 +60,7 @@ static Value convertElementType(OpBuilder &b, Location loc, Type targetType,
 /// Legalizes the given type. If the type is already legal, returns
 /// std::nullopt.
 static std::optional<Type> getLegalizedType(Type t) {
-  if (auto shapedType = llvm::dyn_cast<RankedTensorType>(t)) {
+  if (auto shapedType = dyn_cast<RankedTensorType>(t)) {
     Type elementType = shapedType.getElementType();
     std::optional<Type> legalizedElementType =
         legalizeStorageElementType(elementType);
@@ -114,8 +110,8 @@ struct ConstantOpTypeConversion
   LogicalResult
   matchAndRewrite(arith::ConstantOp constantOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    auto attr = llvm::cast<ElementsAttr>(constantOp.getValue());
-    auto attrType = llvm::dyn_cast<ShapedType>(attr.getType());
+    auto attr = cast<ElementsAttr>(constantOp.getValue());
+    auto attrType = dyn_cast<ShapedType>(attr.getType());
     if (!attrType) {
       return rewriter.notifyMatchFailure(
           constantOp, "expected attribute type to be shaped type");
@@ -310,8 +306,8 @@ struct TensorExtractTypePropagation
   matchAndRewrite(tensor::ExtractOp extractOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     Location loc = extractOp.getLoc();
-    Value newExtract = rewriter.create<tensor::ExtractOp>(
-        loc, adaptor.getTensor(), adaptor.getIndices());
+    Value newExtract = tensor::ExtractOp::create(
+        rewriter, loc, adaptor.getTensor(), adaptor.getIndices());
     Value replacement = convertElementType(
         rewriter, loc, extractOp.getResult().getType(), newExtract);
     rewriter.replaceOp(extractOp, replacement);
@@ -533,7 +529,6 @@ struct TypePropagationPass final
     RewritePatternSet patterns(context);
 
     TypePropagationTypeConverter typeConverter;
-    typeConverter.addArgumentMaterialization(materializeAsConvertElementType);
     typeConverter.addSourceMaterialization(materializeAsConvertElementType);
     typeConverter.addTargetMaterialization(materializeAsConvertElementType);
 

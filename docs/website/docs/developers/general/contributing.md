@@ -56,7 +56,7 @@ The DCO check requires that all commits included in pull requests _either_
 are cryptographically signed by a member of the repository's organization _or_
 include a `Signed-off-by` message as a git trailer.
 
-#### Crypographically signing commits
+#### Cryptographically signing commits
 
 _This is the recommended approach for frequent contributors!_
 
@@ -152,10 +152,36 @@ documents official maintainers for project components.
 
 ### :octicons-pencil-16: Coding style guidelines
 
+Our formatting rules are enforced by language-specific formatters like
+`clang-format` for C++ and `black` for Python. In addition to formatting, we
+follow these coding standards:
+
+#### Compiler
+
+The C++ compiler portion of the project follows the
+[MLIR style guide](https://mlir.llvm.org/getting_started/DeveloperGuide/#style-guide)
+based on the [LLVM coding standards](https://llvm.org/docs/CodingStandards.html).
+We also follow the recommendations of the
+[LLVM Programmer's Manual](https://llvm.org/docs/ProgrammersManual.html).
+
+IREE deviates from the MLIR style guide in the following ways:
+
+* We use braces with single-line `if` statements and loops.
+* We allow for `static` functions in anonymous namespaces to avoid repeatedly
+  reopening/closing namespaces.
+
+#### Runtime
+
 Most of the code style is derived from the
 [Google Style Guides](http://google.github.io/styleguide/) for the appropriate
-language. The C++ compiler portion of the project follows the
-[MLIR/LLVM style guide](https://mlir.llvm.org/getting_started/DeveloperGuide/#style-guide).
+language.
+
+#### Other
+
+For code outside of the `compiler/` and `runtime/` subdirectories, follow the
+style used in existing files.
+
+#### Formatting and Linting
 
 We use [pre-commit](https://pre-commit.com/) to run assorted formatters and lint
 checks. The configuration file at
@@ -234,22 +260,48 @@ yet).
 
 ### :octicons-git-merge-16: Obtaining commit access
 
-Access to affiliated repositories is divided into tiers:
+Access to repositories is divided into tiers following the
+[GitHub organization permissions model](https://docs.github.com/en/organizations/managing-user-access-to-your-organizations-repositories/managing-repository-roles/repository-roles-for-an-organization):
 
-| Tier | Description | Team link |
+| Tier | Description | Team links |
 | ---- | ----------- | --------- |
-Triage | **New project members should typically start here**<br>:material-check: Can be [assigned issues](https://docs.github.com/en/issues/tracking-your-work-with-issues/assigning-issues-and-pull-requests-to-other-github-users)<br>:material-check: Can apply labels to issues / PRs<br>:material-check: Can run workflows [without approval](https://docs.github.com/en/actions/managing-workflow-runs/approving-workflow-runs-from-public-forks) | [iree-triage](https://github.com/orgs/iree-org/teams/iree-triage)
-Write | **Established project contributors should request this access**<br>:material-check: Can [merge approved pull requests](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/merging-a-pull-request)<br>:material-check: Can create branches | [iree-write](https://github.com/orgs/iree-org/teams/iree-write)
+Triage | **New project members should typically start here**<br>:material-check: Can be [assigned issues](https://docs.github.com/en/issues/tracking-your-work-with-issues/assigning-issues-and-pull-requests-to-other-github-users)<br>:material-check: Can apply labels to issues / PRs<br>:material-check: Can run workflows [without approval](https://docs.github.com/en/actions/managing-workflow-runs/approving-workflow-runs-from-public-forks) | <ul><li>[iree-triage](https://github.com/orgs/iree-org/teams/iree-triage)<br>(access to most repositories)</li></ul>
+Write | **Established contributors can request this access**<br>:material-check: Can [merge approved pull requests](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/merging-a-pull-request)<br>:material-check: Can create branches<br>:material-check: Can [re-run workflows](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/re-running-workflows-and-jobs) | <ul><li>[iree-write](https://github.com/orgs/iree-org/teams/iree-write)<br>(access to most repositories)</li><li>[iree-turbine-write](https://github.com/orgs/iree-org/teams/iree-turbine-write)<br>(access to <a href="https://github.com/iree-org/iree-turbine">iree-turbine</a>)</li></ul>
 Maintain/Admin | :material-check: Can [edit repository settings](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features)<br>:material-check: Can push to [protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) | Added case-by-case
 
 All access tiers first require joining the
-[iree-org GitHub organization](https://github.com/iree-org/).
+[iree-org GitHub organization](https://github.com/iree-org/). To request
+membership in iree-org, send an email to
+<iree-github-requests@lists.lfaidata.foundation> with this template:
+
+```text
+GitHub username:
+
+Company/organization you are associated with:
+
+Reason for requesting access:
+```
 
 <!-- markdownlint-disable-next-line -->
-[Fill out this form to request access :fontawesome-solid-paper-plane:](https://docs.google.com/forms/d/e/1FAIpQLSfEwANtMvLJWq-ED4lub_xsMch0MgNY02VxgtXE61FqNvNVUg/viewform){ .md-button .md-button--primary }
+[Send this email template to request access :fontawesome-solid-paper-plane:](mailto:iree-github-requests@lists.lfaidata.foundation?&subject=Requesting%20membership%20in%20iree-org&body=GitHub%20username:%0D%0A%0D%0ACompany/organization%20you%20are%20associated%20with:%0D%0A%0D%0AReason%20for%20requesting access:){ .md-button .md-button--primary }
 
-Once you are a member of the iree-org GitHub organization, you can request to
-join any of the teams on <https://github.com/orgs/iree-org/teams>.
+If approved, an invitation will be sent to your GitHub account. You can also
+view the [invitation link](https://github.com/orgs/iree-org/invitation)
+directly. Then, once you are a member of the organization, you can request to
+join any of the teams on <https://github.com/orgs/iree-org/teams> (note that
+some teams are nested under iree-triage, so click the caret to expand the list).
+
+Write access is reserved for "established contributors" who have a track record
+of multiple high quality pull requests or reviews and have demonstrated
+familiarity with the contributing guidelines.
+
+!!! question "Questions about access"
+
+    For questions about access policies, feel free to reach out on the
+    [`#github` channel](https://discord.com/channels/689900678990135345/1166024193599615006)
+    on IREE's Discord server, the <iree-github-requests@lists.lfaidata.foundation>
+    email list, or another of our
+    [communication channels](../../index.md#communication-channels) to discuss.
 
 ### :octicons-git-branch-16: Branch naming
 
@@ -317,7 +369,6 @@ ci-skip: jobs,to,skip
 ci-extra: extra,jobs,to,run
 ci-exactly: exact,set,of,jobs,to,run
 skip-ci: free form reason
-runner-env: [testing|prod]
 ```
 
 ??? info - "Using `skip-ci`"
@@ -355,17 +406,6 @@ runner-env: [testing|prod]
     `build_packages` job, all the jobs that depend on it will fail, not be
     skipped.
 
-??? info - "Using `runner-env`"
-
-    The `runner-env` option controls which runner environment to target for our
-    self-hosted runners. We maintain a test environment to allow testing out new
-    configurations prior to rolling them out. This trailer is for advanced users
-    who are working on the CI infrastructure itself.
-
-    ``` text
-    runner-env: [testing|prod]
-    ```
-
 ##### CI configuration recipes
 
 Copy/paste any of these at the bottom of a PR description to change what the CI
@@ -395,7 +435,14 @@ runs.
     ci-exactly: linux_x64_bazel
     ```
 
-For example, this PR opted in to running the `build_test_all_windows` job:
+* Opt in to the Windows compiler build and test workflow:
+
+    ``` text
+    ci-extra: windows_x64_msvc
+    ```
+
+For example, this PR opted in to running the `build_test_all_windows` job
+(which was renamed to `windows_x64_msvc`):
 
 ![ci-extra](./contributing-ci-extra.png)
 

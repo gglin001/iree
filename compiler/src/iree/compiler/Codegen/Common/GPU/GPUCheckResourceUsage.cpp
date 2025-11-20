@@ -33,8 +33,7 @@ static int shapedTypeStaticSize(
       continue;
     allocSize *= dimSize;
   }
-  if (auto elementType =
-          llvm::dyn_cast<ShapedType>(shapedType.getElementType())) {
+  if (auto elementType = dyn_cast<ShapedType>(shapedType.getElementType())) {
     allocSize *= shapedTypeStaticSize(allocOp, elementType, getIndexBitwidth);
   } else {
     auto eltTy = shapedType.getElementType();
@@ -64,7 +63,7 @@ static LogicalResult checkGPUAllocationSize(
 
   int cumSize = 0;
   for (auto allocOp : allocOps) {
-    auto allocType = llvm::cast<MemRefType>(allocOp.getType());
+    auto allocType = cast<MemRefType>(allocOp.getType());
     if (!hasSharedMemoryAddressSpace(allocType))
       continue;
 
@@ -82,9 +81,10 @@ static LogicalResult checkGPUAllocationSize(
     cumSize += allocSize / 8;
   }
   if (cumSize > limit) {
-    return funcOp.emitOpError("uses ")
-           << cumSize << " bytes of shared memory; exceeded the limit of "
-           << limit << " bytes";
+    return emitError(funcOp->getLoc())
+           << "function '" << funcOp.getName() << "' uses " << cumSize
+           << " bytes of shared memory; exceeded the limit of " << limit
+           << " bytes";
   }
   return success();
 }

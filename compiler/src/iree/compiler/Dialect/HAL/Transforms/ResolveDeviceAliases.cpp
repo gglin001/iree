@@ -75,6 +75,13 @@ resolveAliasAttr(Operation *forOp, IREE::HAL::DeviceAliasAttr aliasAttr,
         defaultAttr.getExecutableTargets());
   }
 
+  if (defaultAttr.getExecutableTargets().empty()) {
+    return forOp->emitError()
+           << "device alias " << aliasAttr.getDeviceID()
+           << " does not provide any executable targets; ensure "
+              "device-specific compilation backends have been specified";
+  }
+
   return defaultAttr;
 }
 
@@ -110,7 +117,7 @@ struct ResolveDeviceAliasesPass
       ResolveDeviceAliasesPass>::ResolveDeviceAliasesPassBase;
   void runOnOperation() override {
     // Walks all device globals and resolve any aliases found.
-    auto moduleOp = getOperation();
+    mlir::ModuleOp moduleOp = getOperation();
     for (auto globalOp : moduleOp.getOps<IREE::Util::GlobalOpInterface>()) {
       if (!isa<IREE::HAL::DeviceType>(globalOp.getGlobalType())) {
         continue;

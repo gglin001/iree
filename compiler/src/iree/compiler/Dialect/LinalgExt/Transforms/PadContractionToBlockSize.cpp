@@ -4,9 +4,9 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "iree-dialects/Dialect/Input/InputDialect.h"
-#include "iree-dialects/Dialect/Input/InputOps.h"
 #include "iree/compiler/Dialect/LinalgExt/Transforms/Passes.h"
+#include "iree/compiler/Dialect/Util/IR/UtilDialect.h"
+#include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -26,8 +26,8 @@ static Operation *sliceTensor(Location loc, Value expanded, Value original,
       tensor::getMixedSizes(builder, loc, original);
   SmallVector<OpFoldResult> offsets(sizes.size(), builder.getI64IntegerAttr(0));
   SmallVector<OpFoldResult> strides(sizes.size(), builder.getI64IntegerAttr(1));
-  return builder.create<tensor::ExtractSliceOp>(loc, expanded, offsets, sizes,
-                                                strides);
+  return tensor::ExtractSliceOp::create(builder, loc, expanded, offsets, sizes,
+                                        strides);
 }
 
 static bool padTensor(Location loc, OpOperand *operand,
@@ -61,9 +61,9 @@ static bool padTensor(Location loc, OpOperand *operand,
       needsPad = true;
     } else {
       // Dynamic dim.
-      Value inputDimValue = builder.create<tensor::DimOp>(loc, original, i);
+      Value inputDimValue = tensor::DimOp::create(builder, loc, original, i);
       Value alignedDim =
-          builder.create<IREE::Input::AlignOp>(loc, inputDimValue, alignment);
+          IREE::Util::AlignOp::create(builder, loc, inputDimValue, alignment);
       newPaddingSizes[i] = alignedDim;
       needsPad = true;
     }
@@ -73,14 +73,14 @@ static bool padTensor(Location loc, OpOperand *operand,
   }
 
   auto resultType = RankedTensorType::get(newStaticDims, type.getElementType());
-  Value zeroConstant = builder.create<arith::ConstantOp>(
-      loc, builder.getZeroAttr(type.getElementType()));
+  Value zeroConstant = arith::ConstantOp::create(
+      builder, loc, builder.getZeroAttr(type.getElementType()));
   SmallVector<OpFoldResult> zeroStaticLow(shape.size(),
                                           builder.getI64IntegerAttr(0));
   SmallVector<Value> nullLow;
-  Value padded = builder.create<tensor::PadOp>(loc, resultType, operand->get(),
-                                               zeroStaticLow, newPaddingSizes,
-                                               zeroConstant);
+  Value padded =
+      tensor::PadOp::create(builder, loc, resultType, operand->get(),
+                            zeroStaticLow, newPaddingSizes, zeroConstant);
   operand->set(padded);
   return true;
 }
@@ -89,16 +89,15 @@ namespace {
 
 struct PadContractionToBlockSizePass final
     : impl::PadContractionToBlockSizePassBase<PadContractionToBlockSizePass> {
-  using impl::PadContractionToBlockSizePassBase<
-      PadContractionToBlockSizePass>::PadContractionToBlockSizePassBase;
+  using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<IREE::Input::IREEInputDialect>();
+    registry.insert<IREE::Util::UtilDialect>();
   }
 
   void runOnOperation() override {
     getOperation()->walk([&](linalg::ContractionOpInterface op) {
-      auto linalgOp = llvm::cast<linalg::LinalgOp>(op.getOperation());
+      auto linalgOp = cast<linalg::LinalgOp>(op.getOperation());
       Location loc = op.getLoc();
       OpOperand *lhs = linalgOp.getDpsInputOperand(0);
       OpOperand *rhs = linalgOp.getDpsInputOperand(1);

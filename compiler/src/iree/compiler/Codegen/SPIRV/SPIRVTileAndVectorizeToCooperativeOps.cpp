@@ -25,6 +25,7 @@
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/InterleavedRange.h"
 #include "mlir/Conversion/VectorToGPU/VectorToGPU.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -116,11 +117,8 @@ static SmallVector<int64_t> deduceSubgroupCounts(linalg::LinalgOp op) {
     assert(workgroupTileSizes[i] % subgroupTileSizes[i] == 0);
     subgroupCounts.push_back(workgroupTileSizes[i] / subgroupTileSizes[i]);
   }
-  LLVM_DEBUG({
-    llvm::dbgs() << "deduced subgroup counts (X, Y, Z) = [";
-    llvm::interleaveComma(subgroupCounts, llvm::dbgs());
-    llvm::dbgs() << "]\n";
-  });
+  LLVM_DEBUG(llvm::dbgs() << "deduced subgroup counts (X, Y, Z) = "
+                          << llvm::interleaved_array(subgroupCounts) << "\n");
   return subgroupCounts;
 }
 
@@ -152,7 +150,7 @@ static LogicalResult tileToSubgroup(mlir::FunctionOpInterface funcOp,
     tileSizes.resize(
         std::min(cast<linalg::LinalgOp>(op).getNumParallelLoops(), 3u));
     return llvm::map_to_vector(tileSizes, [&](int64_t v) -> Value {
-      return builder.create<arith::ConstantIndexOp>(op->getLoc(), v);
+      return arith::ConstantIndexOp::create(builder, op->getLoc(), v);
     });
   };
   auto tilingOptions = linalg::LinalgTilingOptions()
@@ -184,7 +182,7 @@ getExtOpVectorShape(ExtOpTy op, ArrayRef<int64_t> nativeShape) {
     auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
     if (!extract)
       return std::nullopt;
-    auto vecType = llvm::cast<VectorType>(extract.getResult().getType());
+    auto vecType = cast<VectorType>(extract.getResult().getType());
     if (!llvm::equal(sliceType.getShape(), vecType.getShape()))
       return std::nullopt;
   }
@@ -203,7 +201,7 @@ getCooperativeOpVectorShape(Operation *op, ArrayRef<int64_t> nativeShape) {
 
   // Unroll elementwise ops according to native cooperative matrix size.
   if (OpTrait::hasElementwiseMappableTraits(op) && op->getNumResults() == 1) {
-    if (auto vecType = llvm::dyn_cast<VectorType>(op->getResultTypes()[0]))
+    if (auto vecType = dyn_cast<VectorType>(op->getResultTypes()[0]))
       return llvm::to_vector(nativeShape.drop_back()); // Drop K dim size
   }
 
@@ -242,7 +240,7 @@ getCooperativeOpVectorShape(Operation *op, ArrayRef<int64_t> nativeShape) {
       auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
       if (!extract)
         return std::nullopt;
-      auto vecType = llvm::cast<VectorType>(extract.getResult().getType());
+      auto vecType = cast<VectorType>(extract.getResult().getType());
       if (sliceType && sliceType != vecType)
         return std::nullopt;
       sliceType = vecType;
@@ -281,7 +279,7 @@ void populateVectorUnrollPatterns(ArrayRef<int64_t> cooperativeOpSize,
 class CombineContractTranspose final
     : public OpRewritePattern<vector::ContractionOp> {
 public:
-  using OpRewritePattern<vector::ContractionOp>::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(vector::ContractionOp op,
                                 PatternRewriter &rewriter) const override {
@@ -295,27 +293,27 @@ public:
     SmallVector<Value> newSources;
     for (auto [srcIdx, source] : llvm::enumerate(sources)) {
       auto map = op.getIndexingMapsArray()[srcIdx];
-      auto tranposeOp = source.getDefiningOp<vector::TransposeOp>();
-      if (!tranposeOp) {
+      auto transposeOp = source.getDefiningOp<vector::TransposeOp>();
+      if (!transposeOp) {
         newSources.push_back(source);
         newMaps.push_back(map);
         continue;
       }
-      ArrayRef<int64_t> perm = tranposeOp.getPermutation();
+      ArrayRef<int64_t> perm = transposeOp.getPermutation();
       SmallVector<AffineExpr> exprs(perm.size());
       for (auto [remapIdx, remap] : llvm::enumerate(perm)) {
         exprs[remap] = map.getResult(remapIdx);
       }
       newMaps.push_back(
           AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs, ctx));
-      newSources.push_back(tranposeOp.getVector());
+      newSources.push_back(transposeOp.getVector());
       foundTranspose = true;
     }
     if (!foundTranspose)
       return failure();
 
-    Value res = rewriter.create<vector::ContractionOp>(
-        loc, newSources[0], newSources[1], newSources[2],
+    Value res = vector::ContractionOp::create(
+        rewriter, loc, newSources[0], newSources[1], newSources[2],
         rewriter.getAffineMapArrayAttr(newMaps), op.getIteratorTypes());
     rewriter.replaceOp(op, res);
     return success();
@@ -337,7 +335,7 @@ public:
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
-    auto funcOp = getOperation();
+    mlir::FunctionOpInterface funcOp = getOperation();
 
     // First we need to discover the CodeGen lowering configuration. It was
     // decided earlier and attached to a linalg op as an attribute.
@@ -404,7 +402,7 @@ public:
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
-    auto funcOp = getOperation();
+    mlir::FunctionOpInterface funcOp = getOperation();
 
     // First discover the chosen cooperative matrix shape. It was decided
     // earlier and attached to the export op as an attribute.

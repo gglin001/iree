@@ -5,11 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "iree/compiler/Codegen/Dialect/Codegen/Utils/Utils.h"
-#include "llvm/ADT/STLExtras.h"
+#include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h"
+#include "iree/compiler/Dialect/Encoding/Utils/Utils.h"
+#include "iree/compiler/Dialect/LinalgExt/Utils/MatchUtils.h"
 #include "llvm/Support/Debug.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "llvm/Support/InterleavedRange.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
@@ -46,24 +46,37 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
 }
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &os, TileSwizzle::Dim dim) {
+  if (dim.size != dim.distributionSize &&
+      dim.kind == TileSwizzle::Dim::Kind::CrossThread) {
+    return os << dim.size << "|" << dim.distributionSize << "(" << dim.kind
+              << ")";
+  }
   return os << dim.size << "(" << dim.kind << ")";
 }
 
 static llvm::raw_ostream &
 operator<<(llvm::raw_ostream &os,
            const TileSwizzle::ExpandShapeDimVectorType &expandShapeDimVector) {
-  os << "[";
-  llvm::interleaveComma(expandShapeDimVector, os);
-  return os << "]";
+  return os << llvm::interleaved_array(expandShapeDimVector);
 }
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
                               const TileSwizzle &swizzle) {
-  os << "{expandShape = [";
-  llvm::interleaveComma(swizzle.expandShape, os);
-  os << "], permutation = [";
-  llvm::interleaveComma(swizzle.permutation, os);
-  os << "]}";
+  return os << "{expandShape = " << llvm::interleaved_array(swizzle.expandShape)
+            << ", permutation = "
+            << llvm::interleaved_array(swizzle.permutation) << "}";
+}
+
+static llvm::raw_ostream &
+operator<<(llvm::raw_ostream &os, const ScalableTileFlags &scalableTileFlags) {
+  if (scalableTileFlags.empty())
+    return os;
+  os << "scalableTiles = [";
+  for (unsigned i = 0; i < scalableTileFlags.size(); ++i) {
+    os << (scalableTileFlags[i] ? "true" : "false");
+    if (i + 1 < scalableTileFlags.size())
+      os << ", ";
+  }
   return os;
 }
 
@@ -71,7 +84,8 @@ bool operator==(const MaterializeEncodingInfo &lhs,
                 const MaterializeEncodingInfo &rhs) {
   return lhs.innerDimsPos == rhs.innerDimsPos &&
          lhs.innerTileSizes == rhs.innerTileSizes &&
-         lhs.outerDimsPerm == rhs.outerDimsPerm && lhs.swizzle == rhs.swizzle;
+         lhs.outerDimsPerm == rhs.outerDimsPerm && lhs.swizzle == rhs.swizzle &&
+         lhs.scalableTiles == rhs.scalableTiles;
 }
 
 bool operator!=(const MaterializeEncodingInfo &lhs,
@@ -81,14 +95,16 @@ bool operator!=(const MaterializeEncodingInfo &lhs,
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
                               const MaterializeEncodingInfo &encodingInfo) {
-  os << "{innerDimsPos = [";
-  llvm::interleaveComma(encodingInfo.innerDimsPos, os);
-  os << "], innerTileSizes = [";
-  llvm::interleaveComma(encodingInfo.innerTileSizes, os);
-  os << "], outerDimsPerm = [";
-  llvm::interleaveComma(encodingInfo.outerDimsPerm, os);
+  os << "{innerDimsPos = [" << llvm::interleaved(encodingInfo.innerDimsPos)
+     << "], innerTileSizes = ["
+     << llvm::interleaved(encodingInfo.innerTileSizes) << "], outerDimsPerm = ["
+     << llvm::interleaved(encodingInfo.outerDimsPerm);
+
   if (encodingInfo.swizzle) {
     os << "], swizzle = " << encodingInfo.swizzle.value();
+  }
+  if (encodingInfo.scalableTiles) {
+    os << "], " << encodingInfo.scalableTiles.value();
   }
   os << "]}";
   return os;
@@ -224,6 +240,10 @@ DictionaryAttr serializeEncodingInfo(MLIRContext *ctx,
     items.emplace_back(b.getStringAttr("swizzle"),
                        serializeTileSwizzle(ctx, info.swizzle.value()));
   }
+  if (info.scalableTiles) {
+    items.emplace_back(b.getStringAttr("scalableTiles"),
+                       b.getBoolArrayAttr(info.scalableTiles.value()));
+  }
 
   return b.getDictionaryAttr(items);
 }
@@ -257,16 +277,25 @@ deserializeEncodingInfo(DictionaryAttr attr) {
       return std::nullopt;
     }
   }
+  if (attr.contains("scalableTiles")) {
+    auto value = attr.getNamed("scalableTiles");
+    if (!value || !isa<ArrayAttr>(value->getValue()))
+      return std::nullopt;
+    ScalableTileFlags res = llvm::map_to_vector(
+        cast<ArrayAttr>(value->getValue()),
+        [](Attribute a) { return cast<BoolAttr>(a).getValue(); });
+    info.scalableTiles = std::move(res);
+  }
 
   return info;
 }
 
 bool isIdentityLayout(const MaterializeEncodingInfo &info) {
-  // It is not an identity layout if swizzle is present. The swizzle is an
-  // optional variable. User should not set the field when they do not need
-  // swizzle.
+  // It is not an identity layout if swizzle is present. The swizzle and
+  // scalableTiles are optional variables. User should not set the fields when
+  // they do not need them.
   return info.innerDimsPos.empty() && info.innerTileSizes.empty() &&
-         info.outerDimsPerm.empty() && !info.swizzle;
+         info.outerDimsPerm.empty() && !info.swizzle && !info.scalableTiles;
 }
 
 SmallVector<int64_t>
@@ -280,45 +309,137 @@ getExpandedTileShape(const TileSwizzle::ExpandShapeType &expandShape) {
   return result;
 }
 
-FailureOr<MaterializeEncodingInfo>
-getEncodingInfoForMatmul(Encoding::EncodingAttr encoding, TileMxNxK tileMxNxK) {
-  MaterializeEncodingInfo encodingInfo;
-  FailureOr<linalg::ContractionDimensions> cDims =
-      getEncodingContractionDims(encoding);
-  if (failed(cDims)) {
+/// Returns the EncodingContractionLikeDimInfo for an encoding with scaled
+/// contraction user_indexing_maps, or failure if the scaled contraction
+/// dimensions can not be inferred.
+static FailureOr<EncodingContractionLikeDimInfo>
+getScaledContractionLikeDimInfo(Encoding::EncodingAttr encoding) {
+  FailureOr<IREE::LinalgExt::ScaledContractionDimensions> maybeScaledCDims =
+      Encoding::getEncodingScaledContractionDims(encoding);
+  if (failed(maybeScaledCDims)) {
     return failure();
   }
-  // The following expects M, N, K, and Batch sizes of at most 1 for now
-  assert(cDims->m.size() <= 1 && cDims->n.size() <= 1 && cDims->k.size() == 1 &&
-         cDims->batch.size() <= 1 &&
+  IREE::LinalgExt::ScaledContractionDimensions scaledCDims =
+      maybeScaledCDims.value();
+  EncodingContractionLikeDimInfo dimInfo;
+  assert(scaledCDims.m.size() <= 1 && scaledCDims.n.size() <= 1 &&
+         scaledCDims.k.size() == 1 && scaledCDims.batch.size() <= 1 &&
+         scaledCDims.kB.size() == 1 &&
+         "Expected at most one M, N, K, Kb, and Batch dimension");
+  int64_t operandIdx = encoding.getOperandIndex().getInt();
+  bool isLhs = operandIdx == IREE::Encoding::SCALED_MATMUL_LHS;
+  bool isRhs = operandIdx == IREE::Encoding::SCALED_MATMUL_RHS;
+  bool isLhsScales = operandIdx == IREE::Encoding::SCALED_MATMUL_LHS_SCALES;
+  bool isRhsScales = operandIdx == IREE::Encoding::SCALED_MATMUL_RHS_SCALES;
+  bool isResult = operandIdx == IREE::Encoding::SCALED_MATMUL_RESULT;
+  if (!scaledCDims.batch.empty()) {
+    dimInfo.batchDim = {/*shouldHaveDim=*/true,
+                        encoding.mapDimToOperandIndex(scaledCDims.batch[0])};
+  }
+  if (!scaledCDims.m.empty()) {
+    dimInfo.mDim = {/*shouldHaveDim=*/isLhs || isResult,
+                    encoding.mapDimToOperandIndex(scaledCDims.m[0])};
+  }
+  if (!scaledCDims.n.empty()) {
+    dimInfo.nDim = {/*shouldHaveDim=*/isRhs || isResult,
+                    encoding.mapDimToOperandIndex(scaledCDims.n[0])};
+  }
+  dimInfo.kDim = {/*shouldHaveDim=*/isLhs || isRhs || isLhsScales ||
+                      isRhsScales,
+                  encoding.mapDimToOperandIndex(scaledCDims.k[0])};
+  dimInfo.kBDim = {/*shouldHaveDim=*/isLhs || isRhs,
+                   encoding.mapDimToOperandIndex(scaledCDims.kB[0])};
+  return dimInfo;
+}
+
+/// Returns the EncodingContractionLikeDimInfo for an encoding with contraction
+/// user_indexing_maps, or failure if the contraction dimensions can not be
+/// inferred.
+static FailureOr<EncodingContractionLikeDimInfo>
+getContractionLikeDimInfo(Encoding::EncodingAttr encoding) {
+  FailureOr<linalg::ContractionDimensions> maybeCDims =
+      Encoding::getEncodingContractionDims(encoding);
+  if (failed(maybeCDims)) {
+    return failure();
+  }
+  linalg::ContractionDimensions cDims = maybeCDims.value();
+  EncodingContractionLikeDimInfo dimInfo;
+  assert(cDims.m.size() <= 1 && cDims.n.size() <= 1 && cDims.k.size() == 1 &&
+         cDims.batch.size() <= 1 &&
          "Expected at most one M, N, K, and Batch dimension");
-  std::optional<unsigned> batchDim =
-      cDims->batch.empty() ? std::nullopt
-                           : encoding.mapDimToOperandIndex(cDims->batch[0]);
-  std::optional<unsigned> mDim =
-      cDims->m.empty() ? std::nullopt
-                       : encoding.mapDimToOperandIndex(cDims->m[0]);
-  std::optional<unsigned> nDim =
-      cDims->n.empty() ? std::nullopt
-                       : encoding.mapDimToOperandIndex(cDims->n[0]);
-  std::optional<unsigned> kDim = encoding.mapDimToOperandIndex(cDims->k[0]);
+  int64_t operandIdx = encoding.getOperandIndex().getInt();
+  bool isLhs = operandIdx == IREE::Encoding::MATMUL_LHS;
+  bool isRhs = operandIdx == IREE::Encoding::MATMUL_RHS;
+  bool isResult = operandIdx == IREE::Encoding::MATMUL_RESULT;
+  if (!cDims.batch.empty()) {
+    dimInfo.batchDim = {/*shouldHaveDim=*/true,
+                        encoding.mapDimToOperandIndex(cDims.batch[0])};
+  }
+  if (!cDims.m.empty()) {
+    dimInfo.mDim = {/*shouldHaveDim=*/isLhs || isResult,
+                    encoding.mapDimToOperandIndex(cDims.m[0])};
+  }
+  if (!cDims.n.empty()) {
+    dimInfo.nDim = {/*shouldHaveDim=*/isRhs || isResult,
+                    encoding.mapDimToOperandIndex(cDims.n[0])};
+  }
+  dimInfo.kDim = {/*shouldHaveDim=*/isLhs || isRhs,
+                  encoding.mapDimToOperandIndex(cDims.k[0])};
+  return dimInfo;
+}
+
+FailureOr<EncodingContractionLikeDimInfo>
+getEncodingContractionLikeDims(Encoding::EncodingAttr encoding) {
+  FailureOr<EncodingContractionLikeDimInfo> maybeDimInfo =
+      getContractionLikeDimInfo(encoding);
+  if (succeeded(maybeDimInfo)) {
+    return maybeDimInfo.value();
+  }
+  return getScaledContractionLikeDimInfo(encoding);
+}
+
+FailureOr<MaterializeEncodingInfo>
+getEncodingInfoForMatmul(Encoding::EncodingAttr encoding, TileMxNxK tileMxNxK) {
+  return getEncodingInfoForMatmul(
+      encoding, TileMxNxKxKb{tileMxNxK.M, tileMxNxK.N, tileMxNxK.K});
+}
+
+FailureOr<MaterializeEncodingInfo>
+getEncodingInfoForMatmul(Encoding::EncodingAttr encoding,
+                         TileMxNxKxKb tileMxNxKxKb) {
+  FailureOr<EncodingContractionLikeDimInfo> maybeDimInfo =
+      getEncodingContractionLikeDims(encoding);
+  if (failed(maybeDimInfo)) {
+    return failure();
+  }
+  std::optional<unsigned> batchDim = maybeDimInfo->batchDim.operandIdx;
+  std::optional<unsigned> mDim = maybeDimInfo->mDim.operandIdx;
+  std::optional<unsigned> nDim = maybeDimInfo->nDim.operandIdx;
+  std::optional<unsigned> kDim = maybeDimInfo->kDim.operandIdx;
+  std::optional<unsigned> kBDim = maybeDimInfo->kBDim.operandIdx;
+  MaterializeEncodingInfo encodingInfo;
   if (batchDim.has_value()) {
     encodingInfo.outerDimsPerm.push_back(batchDim.value());
   }
   if (mDim.has_value()) {
     encodingInfo.outerDimsPerm.push_back(mDim.value());
     encodingInfo.innerDimsPos.push_back(mDim.value());
-    encodingInfo.innerTileSizes.push_back(tileMxNxK.M);
+    encodingInfo.innerTileSizes.push_back(tileMxNxKxKb.M);
   }
   if (nDim.has_value()) {
     encodingInfo.outerDimsPerm.push_back(nDim.value());
     encodingInfo.innerDimsPos.push_back(nDim.value());
-    encodingInfo.innerTileSizes.push_back(tileMxNxK.N);
+    encodingInfo.innerTileSizes.push_back(tileMxNxKxKb.N);
   }
   if (kDim.has_value()) {
     encodingInfo.outerDimsPerm.push_back(kDim.value());
     encodingInfo.innerDimsPos.push_back(kDim.value());
-    encodingInfo.innerTileSizes.push_back(tileMxNxK.K);
+    encodingInfo.innerTileSizes.push_back(tileMxNxKxKb.K);
+  }
+  if (kBDim.has_value()) {
+    encodingInfo.outerDimsPerm.push_back(kBDim.value());
+    encodingInfo.innerDimsPos.push_back(kBDim.value());
+    encodingInfo.innerTileSizes.push_back(tileMxNxKxKb.KB);
   }
   return encodingInfo;
 }

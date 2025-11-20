@@ -26,7 +26,7 @@ class StripAndSplatConstantsPass
     : public impl::StripAndSplatConstantsPassBase<StripAndSplatConstantsPass> {
 public:
   void runOnOperation() override {
-    auto moduleOp = getOperation();
+    mlir::ModuleOp moduleOp = getOperation();
 
     // Give each splatted value a module-unique byte value so that it's easier
     // to track back to where it came from in the final output.
@@ -36,15 +36,17 @@ public:
                                               replaceIndex++);
     };
 
-    moduleOp.walk([&](Operation *op) {
-      if (auto globalOp = dyn_cast<Util::GlobalOp>(op)) {
-        if (auto initialValue = globalOp.getInitialValueAttr()) {
-          if (auto shapedType = dyn_cast<ShapedType>(initialValue.getType())) {
-            globalOp.setInitialValueAttr(getSplatAttr(shapedType));
-          }
-        }
+    for (auto globalOp : moduleOp.getOps<Util::GlobalOp>()) {
+      auto initialValue = globalOp.getInitialValueAttr();
+      if (!initialValue) {
+        continue;
       }
-    });
+      auto shapedType = dyn_cast<ShapedType>(initialValue.getType());
+      if (!shapedType) {
+        continue;
+      }
+      globalOp.setInitialValueAttr(getSplatAttr(shapedType));
+    }
   }
 };
 

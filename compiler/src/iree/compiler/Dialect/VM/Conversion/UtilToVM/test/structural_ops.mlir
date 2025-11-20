@@ -1,4 +1,4 @@
-// RUN: iree-opt --split-input-file --iree-vm-conversion --iree-vm-target-index-bits=32 --allow-unregistered-dialect %s | FileCheck %s
+// RUN: iree-opt --split-input-file --pass-pipeline='builtin.module(iree-vm-conversion{index-bits=32})' --allow-unregistered-dialect %s | FileCheck %s
 
 //      CHECK: vm.initializer {
 // CHECK-NEXT:  vm.return
@@ -175,4 +175,32 @@ util.func @my_fn() -> !some.type<foo> {
   %0 = util.call @opaque.import() : () -> !some.type<foo>
   // CHECK: vm.return %[[RET]]
   util.return %0 : !some.type<foo>
+}
+
+// -----
+
+// CHECK-LABEL: vm.func private @unreachable_fn
+util.func @unreachable_fn(%arg0: i1) {
+  cf.cond_br %arg0, ^bb1, ^bb2
+^bb1:
+  // CHECK: vm.return
+  util.return
+^bb2:
+  // CHECK: %[[STATUS:.+]] = vm.const.i32 13
+  // CHECK: vm.fail %[[STATUS]], "unreachable code detected"
+  util.unreachable "unreachable code detected"
+}
+
+// -----
+
+// CHECK-LABEL: vm.func private @unreachable_no_message
+util.func @unreachable_no_message(%arg0: i1) {
+  cf.cond_br %arg0, ^bb1, ^bb2
+^bb1:
+  // CHECK: vm.return
+  util.return
+^bb2:
+  // CHECK: %[[STATUS:.+]] = vm.const.i32 13
+  // CHECK: vm.fail %[[STATUS]]{{$}}
+  util.unreachable
 }

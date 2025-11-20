@@ -6,6 +6,7 @@
 
 #include "iree/compiler/Dialect/Encoding/IR/EncodingDialect.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h"
+#include "iree/compiler/Dialect/Encoding/Utils/Utils.h"
 #include "iree/compiler/Dialect/Stream/Analysis/Affinity.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamInterfaces.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
@@ -51,7 +52,7 @@ SmallVector<const T *> gatherUsedDialectInterfaces(mlir::ModuleOp moduleOp) {
 
   // NOTE: to ensure deterministic output we sort the result so that imports are
   // always added in a consistent order.
-  SmallVector<const T *> results = {resultSet.begin(), resultSet.end()};
+  auto results = llvm::to_vector_of<const T *>(resultSet);
   llvm::sort(
       results, +[](const T *a, const T *b) {
         return a->getDialect()->getNamespace().compare(
@@ -62,15 +63,8 @@ SmallVector<const T *> gatherUsedDialectInterfaces(mlir::ModuleOp moduleOp) {
 
 } // namespace
 
-// TODO(hanchung): Add "cloneWithEncoding" method to RankedTensorType.
-static RankedTensorType cloneWithEncoding(RankedTensorType type,
-                                          Attribute encodingAttr) {
-  return RankedTensorType::get(type.getShape(), type.getElementType(),
-                               encodingAttr);
-}
-
 /// Returns true iff the type is a RankedTensorType and it has an encoding that
-/// implements SerializableEncodingAttrInterface.
+/// implements SerializableAttr.
 static bool isRecognizedEncodingType(Type type) {
   auto rankedTensorType = dyn_cast<RankedTensorType>(type);
   if (!rankedTensorType) {
@@ -80,55 +74,47 @@ static bool isRecognizedEncodingType(Type type) {
   if (!encoding) {
     return false;
   }
-  return isa<IREE::Encoding::SerializableEncodingAttrInterface>(encoding);
+  return isa<IREE::Encoding::SerializableAttr>(encoding);
 }
 
 /// Returns the type with updated encoding, if any. Returns the original type if
-/// the the encoding type is not recognized or it is already serialized.
+/// the the encoding type is not recognized or it is already serialized. If it
+/// fails to resolve the layout, returns nullptr.
 /// The method uses `layoutResolvers` to resolve the layouts of the given
 /// `type`; returns the new encoding with the resolved layouts.
 ///
 /// There are requirements to get the resolved layouts. Otherwise, the encodings
-/// are dropped unconditionally.
+/// are dropped.
 ///   - All attributes in the `layoutResolvers` must implement
-///     EncodingLayoutResolverAttrInterface. Otherwise, there is no way to query
-///     layouts.
-///   - The encoding on the type must implement
-///     SerializableEncodingAttrInterface. Otherwise, there is no way to update
-///     encodings.
+///     LayoutResolverAttr. Otherwise, there is no way to query layouts.
+///   - The encoding on the type must implement SerializableAttr. Otherwise,
+///     there is no way to update encodings.
 static Type getTypeWithResolvedEncodingLayouts(
     Type type, const SetVector<Attribute> &layoutResolvers) {
   if (!isRecognizedEncodingType(type)) {
     return type;
   }
   auto rankedTensorType = dyn_cast<RankedTensorType>(type);
-  auto encodingAttr =
-      IREE::Encoding::getSerializableEncodingAttrInterface(rankedTensorType);
+  auto encodingAttr = IREE::Encoding::getSerializableAttr(rankedTensorType);
   if (encodingAttr.isSerialized()) {
     return type;
   }
-  if (!llvm::all_of(
-          layoutResolvers,
-          llvm::IsaPred<IREE::Encoding::EncodingLayoutResolverAttrInterface>)) {
-    return IREE::Encoding::dropEncoding(rankedTensorType);
+  if (!llvm::all_of(layoutResolvers,
+                    llvm::IsaPred<IREE::Encoding::LayoutResolverAttr>)) {
+    return rankedTensorType.dropEncoding();
   }
   SmallVector<Attribute> layouts;
   for (auto attr : layoutResolvers) {
-    auto encodingLayoutAttr =
-        cast<IREE::Encoding::EncodingLayoutResolverAttrInterface>(attr);
+    auto encodingLayoutAttr = cast<IREE::Encoding::LayoutResolverAttr>(attr);
     Attribute layout = encodingLayoutAttr.getLayout(rankedTensorType);
     if (!layout) {
-      // Drop the encoding if the layout is not resolved.
-      // TODO(hanchung): return a failure if we can't convert it to serialized
-      // encoding. We need to replace the `UnsupportedEncoding` resolver with
-      // `DiscardEncoding` resolver.
-      return IREE::Encoding::dropEncoding(rankedTensorType);
+      return nullptr;
     }
     layouts.push_back(layout);
   }
   Attribute newEncoding = encodingAttr.cloneWithLayouts(layouts);
-  assert(isa<IREE::Encoding::SerializableEncodingAttrInterface>(newEncoding));
-  return cloneWithEncoding(rankedTensorType, newEncoding);
+  assert(isa<IREE::Encoding::SerializableAttr>(newEncoding));
+  return rankedTensorType.cloneWithEncoding(newEncoding);
 };
 
 /// Updates the bindings of function arguments with encoding layouts. It only
@@ -154,14 +140,11 @@ updateBindingEncodings(FunctionOpInterface funcOp,
                  << "Skip, the new type is not RankedTensorType.\n");
       continue;
     }
-    auto encodingAttr =
-        IREE::Encoding::getSerializableEncodingAttrInterface(newType);
+    auto encodingAttr = IREE::Encoding::getSerializableAttr(newType);
     if (!encodingAttr) {
-      LLVM_DEBUG(
-          llvm::dbgs()
-          << "Skip, the binding layout attribute is not "
-             "SerializableEncodingAttrInterface, which means that the type "
-             "does not have a valid encoding.\n");
+      LLVM_DEBUG(llvm::dbgs() << "Skip, the binding layout attribute is not "
+                                 "SerializableAttr, which means that the type "
+                                 "does not have a valid encoding.\n");
       continue;
     }
     for (auto user : arg.getUsers()) {
@@ -206,7 +189,7 @@ getBindingLayoutAttrs(IREE::Stream::TensorDispatchOp dispatchOp) {
           dispatchOp.getTiedOperands()) {
     tiedOperands =
         llvm::map_to_vector(tiedOperandsAttr.value(), [](Attribute intAttr) {
-          return llvm::cast<IntegerAttr>(intAttr).getInt();
+          return cast<IntegerAttr>(intAttr).getInt();
         });
   }
 
@@ -356,8 +339,12 @@ static bool recognizeEntryPoints(ModuleOp moduleOp, SymbolTable symbolTable,
     if (!result) {
       return;
     }
-    auto exportOp = cast<IREE::Stream::ExecutableExportOp>(
+    auto exportOp = dyn_cast_if_present<IREE::Stream::ExecutableExportOp>(
         symbolTable.lookupSymbolIn(moduleOp, entryPoint));
+    if (!exportOp) {
+      result = false;
+      return;
+    }
     auto executableOp = exportOp->getParentOfType<IREE::Stream::ExecutableOp>();
     if (!executableOp) {
       result = false;
@@ -431,6 +418,10 @@ static bool hasRecognizedEncoding(ModuleOp moduleOp, SymbolTable symbolTable,
         return isRecognizedEncodingType(op.getTargetEncoding()) ||
                isRecognizedEncodingType(op.getUpdateEncoding());
       })
+      .Case<IREE::Stream::TensorEncodeOp>([&](auto op) {
+        return isRecognizedEncodingType(op.getSourceEncoding()) ||
+               isRecognizedEncodingType(op.getResultEncoding());
+      })
       .Default([](Operation *op) { return false; });
 }
 
@@ -467,7 +458,7 @@ namespace {
 // Adds the resolved layouts to all tensor types on stream tensor ops, if
 // encodings are present. Most of stream tensor ops implement
 // AffinityOpInterface, where a stream affinity indicates the kind of
-// enviroment the ops are expected run in. When an encoding is present in the
+// environment the ops are expected run in. When an encoding is present in the
 // tensor type, the method resolves the layouts, strips outdated information,
 // and adds the resolved layouts to the encodings. The updated encodings should
 // have enough information for other lowering transformations.
@@ -492,7 +483,7 @@ public:
     return llvm::map_to_vector(
         llvm::filter_to_vector(streamOps,
                                llvm::IsaPred<IREE::Stream::TensorDispatchOp>),
-        [](Operation *op) { return cast<IREE::Stream::TensorDispatchOp>(op); });
+        llvm::CastTo<IREE::Stream::TensorDispatchOp>);
   }
 
 private:
@@ -513,7 +504,7 @@ private:
       cachedLayoutAttrs;
 
   // Input moduleOp. The op is not expected to be updated during the query.
-  // Because data flow analaysis can be involved. Modifying the IR invalidates
+  // Because data flow analysis can be involved. Modifying the IR invalidates
   // the state and may lead to crashes as pointer references into the IR
   // structure are retained.
   ModuleOp moduleOp;
@@ -608,6 +599,9 @@ static LogicalResult updateTensorDispatchOp(
 
     Type newEncodingType =
         getTypeWithResolvedEncodingLayouts(type, layoutResolvers);
+    if (!newEncodingType) {
+      return dispatchOp.emitOpError("failed to resolve recognized layout");
+    }
     newOperandEncodings.push_back(newEncodingType);
   }
   dispatchOp.setOperandEncodingsAttr(
@@ -623,6 +617,9 @@ static LogicalResult updateTensorDispatchOp(
     }
     Type newEncodingType =
         getTypeWithResolvedEncodingLayouts(type, resLayoutResolvers);
+    if (!newEncodingType) {
+      return dispatchOp.emitOpError("failed to resolve recognized layout");
+    }
     newResultEncodings.push_back(newEncodingType);
   }
   dispatchOp.setResultEncodingsAttr(
@@ -639,6 +636,9 @@ updateTensorSizeOfOp(RewriterBase &rewriter,
   auto encodingType = dyn_cast<RankedTensorType>(sizeOfOp.getEncoding());
   Type newEncodingType =
       getTypeWithResolvedEncodingLayouts(encodingType, layoutResolvers);
+  if (!newEncodingType) {
+    return sizeOfOp.emitOpError("failed to resolve recognized layout");
+  }
   rewriter.modifyOpInPlace(sizeOfOp,
                            [&] { sizeOfOp.setEncoding(newEncodingType); });
   return success();
@@ -649,8 +649,7 @@ static bool isUnrecognizedOrSerializedEncodingType(Type type) {
     return true;
   }
   auto rankedTensorType = cast<RankedTensorType>(type);
-  return IREE::Encoding::getSerializableEncodingAttrInterface(rankedTensorType)
-      .isSerialized();
+  return IREE::Encoding::getSerializableAttr(rankedTensorType).isSerialized();
 }
 
 /// Updates the target encoding of `op` with resolved layouts.
@@ -660,6 +659,9 @@ updateTensorFillOp(RewriterBase &rewriter, IREE::Stream::TensorFillOp op,
   auto encodingType = dyn_cast<RankedTensorType>(op.getTargetEncoding());
   Type newEncodingType =
       getTypeWithResolvedEncodingLayouts(encodingType, layoutResolvers);
+  if (!newEncodingType) {
+    return op.emitOpError("failed to resolve recognized layout");
+  }
   rewriter.modifyOpInPlace(op, [&] { op.setTargetEncoding(newEncodingType); });
   return success();
 }
@@ -710,7 +712,38 @@ updateResultEncoding(RewriterBase &rewriter, OpTy op,
   auto encodingType = dyn_cast<RankedTensorType>(op.getResultEncoding());
   Type newEncodingType =
       getTypeWithResolvedEncodingLayouts(encodingType, layoutResolvers);
+  if (!newEncodingType) {
+    return op.emitOpError("failed to resolve recognized layout");
+  }
   rewriter.modifyOpInPlace(op, [&] { op.setResultEncoding(newEncodingType); });
+  return success();
+}
+
+/// Updates the source_encoding for `op`. The op has to define a
+/// `source_encoding` parameter.
+template <typename OpTy>
+static LogicalResult
+updateSourceEncoding(RewriterBase &rewriter, OpTy op,
+                     const SetVector<Attribute> &layoutResolvers) {
+  auto encodingType = dyn_cast<RankedTensorType>(op.getSourceEncoding());
+  Type newEncodingType =
+      getTypeWithResolvedEncodingLayouts(encodingType, layoutResolvers);
+  if (!newEncodingType) {
+    return op.emitOpError("failed to resolve recognized layout");
+  }
+  rewriter.modifyOpInPlace(op, [&] { op.setSourceEncoding(newEncodingType); });
+  return success();
+}
+
+/// Updates the source encoding and the result encoding of `op` with resolved
+/// layouts.
+static LogicalResult
+updateTensorEncodeOp(RewriterBase &rewriter, IREE::Stream::TensorEncodeOp op,
+                     const SetVector<Attribute> &layoutResolvers) {
+  if (failed(updateResultEncoding(rewriter, op, layoutResolvers)) ||
+      failed(updateSourceEncoding(rewriter, op, layoutResolvers))) {
+    return failure();
+  }
   return success();
 }
 
@@ -757,6 +790,9 @@ LogicalResult StreamTensorOpUpdater::run() {
             })
             .Case<IREE::Stream::TensorFillOp>([&](auto op) {
               return updateTensorFillOp(rewriter, op, layoutResolvers);
+            })
+            .Case<IREE::Stream::TensorEncodeOp>([&](auto op) {
+              return updateTensorEncodeOp(rewriter, op, layoutResolvers);
             })
             .Case<IREE::Stream::TensorCloneOp>(
                 [&](auto op) { return updateTensorCloneOp(rewriter, op); })

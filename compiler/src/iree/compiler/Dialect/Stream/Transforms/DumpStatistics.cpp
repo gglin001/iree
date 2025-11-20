@@ -60,7 +60,7 @@ struct UsageInfo {
   void analyze(mlir::ModuleOp moduleOp) {
     SymbolTable symbolTable(moduleOp);
     for (auto globalOp : moduleOp.getOps<IREE::Util::GlobalOp>()) {
-      if (llvm::isa<IREE::Stream::ResourceType>(globalOp.getType())) {
+      if (isa<IREE::Stream::ResourceType>(globalOp.getType())) {
         resourceGlobalOps[globalOp.getName()] = globalOp;
       }
     }
@@ -126,7 +126,7 @@ struct Statistics {
     // Globals:
     for (auto [name, globalOp] : usageInfo.resourceGlobalOps) {
       auto globalType =
-          llvm::dyn_cast<IREE::Stream::ResourceType>(globalOp.getType());
+          dyn_cast<IREE::Stream::ResourceType>(globalOp.getType());
       if (!globalType)
         continue;
       // TODO(benvanik): analyze size in UsageInfo where possible.
@@ -596,7 +596,7 @@ struct DumpStatisticsPass
     auto os = openOutputFile(outputFile);
 
     // Walk the module once to accumulate everything we care about.
-    auto moduleOp = getOperation();
+    mlir::ModuleOp moduleOp = getOperation();
     UsageInfo usageInfo;
     usageInfo.analyze(moduleOp);
 

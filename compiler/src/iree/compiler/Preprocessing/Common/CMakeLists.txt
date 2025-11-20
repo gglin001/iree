@@ -27,6 +27,7 @@ iree_cc_library(
     "Passes.h.inc"
   SRCS
     "ApplyPDLPatterns.cpp"
+    "AttrBasedPipelinePass.cpp"
     "ConvertConv2DToImg2Col.cpp"
     "ConvertConvFilterToChannelsLast.cpp"
     "ConvertConvToChannelsLast.cpp"
@@ -37,11 +38,13 @@ iree_cc_library(
     "PadLinalgOps.cpp"
     "PadToIntrinsics.cpp"
     "Passes.cpp"
+    "SinkTransposeThroughPad.cpp"
     "TransposeMatmul.cpp"
   DEPS
     ::PassesIncGen
     LLVMSupport
     MLIRAffineDialect
+    MLIRAnalysis
     MLIRArithDialect
     MLIRFuncDialect
     MLIRFunctionInterfaces
@@ -71,8 +74,20 @@ iree_cc_library(
     iree::compiler::Dialect::LinalgExt::IR
     iree::compiler::Dialect::Stream::Analysis
     iree::compiler::Dialect::Stream::IR
+    iree::compiler::Dialect::TensorExt::IR
     iree::compiler::Dialect::Util::IR
   PUBLIC
+)
+
+iree_tablegen_doc(
+  NAME
+    PreprocessingPassesDocGen
+  CATEGORY
+    "Passes"
+  TD_FILE
+    "Passes.td"
+  OUTS
+    --gen-pass-doc PreprocessingPasses.md
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

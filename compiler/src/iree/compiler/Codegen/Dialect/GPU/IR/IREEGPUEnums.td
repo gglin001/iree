@@ -31,11 +31,20 @@ def IREEGPU_CIBW_32 : I32BitEnumAttrCaseBit<"Int32", 4, "int32">;
 def IREEGPU_CIBW_16 : I32BitEnumAttrCaseBit<"Int16", 5, "int16">;
 // Signed/unsigned 8-bit integer format in computation
 def IREEGPU_CIBW_8  : I32BitEnumAttrCaseBit<"Int8",  6, "int8">;
+// Generic 8-bit floating point format in computation
+def IREEGPU_CFBW_8  : I32BitEnumAttrCaseBit<"FP8",  7, "fp8">;
+// Generic 6-bit floating point format in computation
+def IREEGPU_CFBW_6  : I32BitEnumAttrCaseBit<"FP6",  8, "fp6">;
+// Generic 4-bit floating point format in computation
+def IREEGPU_CFBW_4  : I32BitEnumAttrCaseBit<"FP4",  9, "fp4">;
+
 
 def IREEGPU_ComputeBitwidths : I32BitEnumAttr<
   "ComputeBitwidths", "Supported bitwidths for compute",
   [IREEGPU_CFBW_64, IREEGPU_CFBW_32, IREEGPU_CFBW_16,
-   IREEGPU_CIBW_64, IREEGPU_CIBW_32, IREEGPU_CIBW_16, IREEGPU_CIBW_8]> {
+   IREEGPU_CIBW_64, IREEGPU_CIBW_32, IREEGPU_CIBW_16,
+   IREEGPU_CIBW_8, IREEGPU_CFBW_8, IREEGPU_CFBW_6,
+   IREEGPU_CFBW_4]> {
   let cppNamespace = "::mlir::iree_compiler::IREE::GPU";
   let genSpecializedAttr = 0;
 }
@@ -98,6 +107,11 @@ class IREEGPU_I32EnumAttr<string name, string summary, list<I32EnumAttrCase> cas
   let genSpecializedAttr = 0;
 }
 
+class IREEGPU_I32Enum<string name, string summary, list<EnumCase> cases>
+    : I32Enum<name, summary, cases> {
+  let cppNamespace = "::mlir::iree_compiler::IREE::GPU";
+}
+
 // These enum values are loosely named to match the target intrinsics that they
 // lower to, with wiggle room. The general name format used here is, similar to
 // typical target intrinsics:
@@ -131,30 +145,32 @@ class IREEGPU_I32EnumAttr<string name, string summary, list<I32EnumAttrCase> cas
 //     * 0 = CDNA1
 //     * 1 = CDNA2
 //     * 2 = CDNA3
+//     * 3 = CDNA4
 //     * 8 = RDNA3
 //     * 9 = RDNA4
+//     * A = gfx1250
 // * C = element type of A-matrix:
 //   * 0 = 64-bit float (e.g. IEEE754 double precision)
 //   * 1 = 32-bit float (e.g. IEEE754 single precision, and "xf32" fast variants)
 //   * 2 = 16-bit float (incl. IREE754 half and bf16)
-//   * 3 = 8-bit float (incl. f8E5M2, f8E4M3, and "FNUZ" variants)
+//   * 3 = 8-bit float (incl. f8E5M2, f8E4M3FN and "FNUZ" variants)
 //   * C = 8-bit integer (any signedness)
 // * D enumerates intrinsics that share the same 0xABC* bits.
 //
 
-// Introduced in CDNA1
+// Introduced in CDNA1.
 def MFMA_F32_16x16x4_F32 : I32EnumAttrCase<"MFMA_F32_16x16x4_F32", 0x1010>;
 def MFMA_F32_16x16x16_F16 : I32EnumAttrCase<"MFMA_F32_16x16x16_F16", 0x1020>;
 def MFMA_F32_32x32x8_F16 : I32EnumAttrCase<"MFMA_F32_32x32x8_F16", 0x1021>;
 def MFMA_I32_16x16x16_I8 : I32EnumAttrCase<"MFMA_I32_16x16x16_I8", 0x10C0>;
 def MFMA_I32_32x32x8_I8 : I32EnumAttrCase<"MFMA_I32_32x32x8_I8", 0x10C1>;
 
-// Introduced in CDNA2
+// Introduced in CDNA2.
 def MFMA_F32_16x16x8_BF16 : I32EnumAttrCase<"MFMA_F32_16x16x8_BF16", 0x1120>;
 def MFMA_F32_32x32x4_BF16 : I32EnumAttrCase<"MFMA_F32_32x32x4_BF16", 0x1121>;
 def MFMA_F64_16x16x4_F64 : I32EnumAttrCase<"MFMA_F64_16x16x4_F64", 0x1100>;
 
-// Introduced in CDNA3
+// Introduced in CDNA3.
 def MFMA_F32_16x16x16_BF16 : I32EnumAttrCase<"MFMA_F32_16x16x16_BF16", 0x1220>;
 def MFMA_F32_32x32x8_BF16 : I32EnumAttrCase<"MFMA_F32_32x32x8_BF16", 0x1221>;
 def MFMA_F32_16x16x32_F8E5M2FNUZ : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E5M2FNUZ", 0x1230>;
@@ -168,14 +184,39 @@ def MFMA_F32_32x32x16_F8E4M3FNUZ_F8E5M2FNUZ : I32EnumAttrCase<"MFMA_F32_32x32x16
 def MFMA_I32_16x16x32_I8 : I32EnumAttrCase<"MFMA_I32_16x16x32_I8", 0x12C0>;
 def MFMA_I32_32x32x16_I8 : I32EnumAttrCase<"MFMA_I32_32x32x16_I8", 0x12C1>;
 
-// Introduced in RDNA3
+// Introduced in CDNA4.
+def MFMA_F32_16x16x32_F16 : I32EnumAttrCase<"MFMA_F32_16x16x32_F16", 0x1320>;
+def MFMA_F32_32x32x16_F16 : I32EnumAttrCase<"MFMA_F32_32x32x16_F16", 0x1321>;
+def MFMA_F32_16x16x32_BF16 : I32EnumAttrCase<"MFMA_F32_16x16x32_BF16", 0x1322>;
+def MFMA_F32_32x32x16_BF16 : I32EnumAttrCase<"MFMA_F32_32x32x16_BF16", 0x1323>;
+def MFMA_F32_16x16x32_F8E5M2 : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E5M2", 0x1330>;
+def MFMA_F32_16x16x32_F8E5M2_F8E4M3FN : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E5M2_F8E4M3FN", 0x1331>;
+def MFMA_F32_16x16x32_F8E4M3FN : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E4M3FN", 0x1332>;
+def MFMA_F32_16x16x32_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"MFMA_F32_16x16x32_F8E4M3FN_F8E5M2", 0x1333>;
+def MFMA_F32_32x32x16_F8E5M2 : I32EnumAttrCase<"MFMA_F32_32x32x16_F8E5M2", 0x1334>;
+def MFMA_F32_32x32x16_F8E5M2_F8E4M3FN : I32EnumAttrCase<"MFMA_F32_32x32x16_F8E5M2_F8E4M3FN", 0x1335>;
+def MFMA_F32_32x32x16_F8E4M3FN : I32EnumAttrCase<"MFMA_F32_32x32x16_F8E4M3FN", 0x1336>;
+def MFMA_F32_32x32x16_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"MFMA_F32_32x32x16_F8E4M3FN_F8E5M2", 0x1337>;
+def MFMA_F32_16x16x128_F8E5M2 : I32EnumAttrCase<"MFMA_F32_16x16x128_F8E5M2", 0x1338>;
+def MFMA_F32_16x16x128_F8E5M2_F8E4M3FN : I32EnumAttrCase<"MFMA_F32_16x16x128_F8E5M2_F8E4M3FN", 0x1339>;
+def MFMA_F32_16x16x128_F8E4M3FN : I32EnumAttrCase<"MFMA_F32_16x16x128_F8E4M3FN", 0x133A>;
+def MFMA_F32_16x16x128_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"MFMA_F32_16x16x128_F8E4M3FN_F8E5M2", 0x133B>;
+def MFMA_F32_32x32x64_F8E5M2 : I32EnumAttrCase<"MFMA_F32_32x32x64_F8E5M2", 0x133C>;
+def MFMA_F32_32x32x64_F8E5M2_F8E4M3FN : I32EnumAttrCase<"MFMA_F32_32x32x64_F8E5M2_F8E4M3FN", 0x133D>;
+def MFMA_F32_32x32x64_F8E4M3FN : I32EnumAttrCase<"MFMA_F32_32x32x64_F8E4M3FN", 0x133E>;
+def MFMA_F32_32x32x64_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"MFMA_F32_32x32x64_F8E4M3FN_F8E5M2", 0x133F>;
+// TODO: add fp4, fp6, and their mixed-type variants.
+def MFMA_I32_16x16x64_I8 : I32EnumAttrCase<"MFMA_I32_16x16x64_I8", 0x13C0>;
+def MFMA_I32_32x32x32_I8 : I32EnumAttrCase<"MFMA_I32_32x32x32_I8", 0x13C1>;
+
+// Introduced in RDNA3.
 def WMMAR3_F32_16x16x16_F16 : I32EnumAttrCase<"WMMAR3_F32_16x16x16_F16", 0x1820>;
 def WMMAR3_F16_16x16x16_F16 : I32EnumAttrCase<"WMMAR3_F16_16x16x16_F16", 0x1821>;
 def WMMAR3_F32_16x16x16_BF16 : I32EnumAttrCase<"WMMAR3_F32_16x16x16_BF16", 0x1822>;
 def WMMAR3_BF16_16x16x16_BF16 : I32EnumAttrCase<"WMMAR3_BF16_16x16x16_BF16", 0x1823>;
 def WMMAR3_I32_16x16x16_I8 : I32EnumAttrCase<"WMMAR3_I32_16x16x16_I8", 0x18C0>;
 
-// Introduced in RDNA4
+// Introduced in RDNA4.
 def WMMAR4_F32_16x16x16_F16 : I32EnumAttrCase<"WMMAR4_F32_16x16x16_F16", 0x1920>;
 def WMMAR4_F16_16x16x16_F16 : I32EnumAttrCase<"WMMAR4_F16_16x16x16_F16", 0x1921>;
 def WMMAR4_F32_16x16x16_BF16 : I32EnumAttrCase<"WMMAR4_F32_16x16x16_BF16", 0x1922>;
@@ -186,25 +227,53 @@ def WMMAR4_F32_16x16x16_F8E4M3FN : I32EnumAttrCase<"WMMAR4_F32_16x16x16_F8E4M3FN
 def WMMAR4_F32_16x16x16_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"WMMAR4_F32_16x16x16_F8E4M3FN_F8E5M2", 0x1933>;
 def WMMAR4_I32_16x16x16_I8 : I32EnumAttrCase<"WMMAR4_I32_16x16x16_I8", 0x19C0>;
 
-// NV intrinsics
+// Introduced in gfx1250.
+// K=4.
+def WMMA_F32_16x16x4_F32 : I32EnumAttrCase<"WMMA_F32_16x16x4_F32", 0x1A10>;
+// K=32.
+def WMMA_F32_16x16x32_F16 : I32EnumAttrCase<"WMMA_F32_16x16x32_F16", 0x1A20>;
+def WMMA_F32_16x16x32_BF16 : I32EnumAttrCase<"WMMA_F32_16x16x32_BF16", 0x1A21>;
+def WMMA_F16_16x16x32_F16 : I32EnumAttrCase<"WMMA_F16_16x16x32_F16", 0x1A22>;
+def WMMA_BF16_16x16x32_BF16 : I32EnumAttrCase<"WMMA_BF16_16x16x32_BF16", 0x1A23>;
+// K=64.
+def WMMA_F32_16x16x64_F8E4M3FN : I32EnumAttrCase<"WMMA_F32_16x16x64_F8E4M3FN", 0x1A30>;
+def WMMA_F32_16x16x64_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"WMMA_F32_16x16x64_F8E4M3FN_F8E5M2", 0x1A31>;
+def WMMA_F32_16x16x64_F8E5M2 : I32EnumAttrCase<"WMMA_F32_16x16x64_F8E5M2", 0x1A32>;
+def WMMA_F32_16x16x64_F8E5M2_F8E4M3FN : I32EnumAttrCase<"WMMA_F32_16x16x64_F8E5M2_F8E4M3FN", 0x1A33>;
+def WMMA_F16_16x16x64_F8E4M3FN : I32EnumAttrCase<"WMMA_F16_16x16x64_F8E4M3FN", 0x1A34>;
+def WMMA_F16_16x16x64_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"WMMA_F16_16x16x64_F8E4M3FN_F8E5M2", 0x1A35>;
+def WMMA_F16_16x16x64_F8E5M2 : I32EnumAttrCase<"WMMA_F16_16x16x64_F8E5M2", 0x1A36>;
+def WMMA_F16_16x16x64_F8E5M2_F8E4M3FN : I32EnumAttrCase<"WMMA_F16_16x16x64_F8E5M2_F8E4M3FN", 0x1A37>;
+def WMMA_I32_16x16x64_I8 : I32EnumAttrCase<"WMMA_I32_16x16x64_I8", 0x1AC0>;
+// K=128.
+def WMMA_F32_16x16x128_F8E5M2 : I32EnumAttrCase<"WMMA_F32_16x16x128_F8E5M2", 0x1A38>;
+def WMMA_F32_16x16x128_F8E5M2_F8E4M3FN : I32EnumAttrCase<"WMMA_F32_16x16x128_F8E5M2_F8E4M3FN", 0x1A39>;
+def WMMA_F32_16x16x128_F8E4M3FN : I32EnumAttrCase<"WMMA_F32_16x16x128_F8E4M3FN", 0x1A3A>;
+def WMMA_F32_16x16x128_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"WMMA_F32_16x16x128_F8E4M3FN_F8E5M2", 0x1A3B>;
+def WMMA_F16_16x16x128_F8E5M2 : I32EnumAttrCase<"WMMA_F16_16x16x128_F8E5M2", 0x1A3C>;
+def WMMA_F16_16x16x128_F8E5M2_F8E4M3FN : I32EnumAttrCase<"WMMA_F16_16x16x128_F8E5M2_F8E4M3FN", 0x1A3D>;
+def WMMA_F16_16x16x128_F8E4M3FN : I32EnumAttrCase<"WMMA_F16_16x16x128_F8E4M3FN", 0x1A3E>;
+def WMMA_F16_16x16x128_F8E4M3FN_F8E5M2 : I32EnumAttrCase<"WMMA_F16_16x16x128_F8E4M3FN_F8E5M2", 0x1A3F>;
+
+// NV intrinsics.
 def NV_WMMA_F32_16x16x16_F16 : I32EnumAttrCase<"NV_WMMA_F32_16x16x16_F16", 0x2020>;
 def NV_WMMA_F16_16x16x16_F16 : I32EnumAttrCase<"NV_WMMA_F16_16x16x16_F16", 0x2021>;
 
 def IREEGPU_MMAIntrinsic : IREEGPU_I32EnumAttr<"MMAIntrinsic",
     "Descriptor for different MMA intrinsics", [
-      // Introduced in CDNA1
+      // Introduced in CDNA1.
       MFMA_F32_16x16x4_F32,
       MFMA_F32_16x16x16_F16,
       MFMA_F32_32x32x8_F16,
       MFMA_I32_16x16x16_I8,
       MFMA_I32_32x32x8_I8,
 
-      // Introduced in CDNA2
+      // Introduced in CDNA2.
       MFMA_F32_16x16x8_BF16,
       MFMA_F32_32x32x4_BF16,
       MFMA_F64_16x16x4_F64,
 
-      // Introduced in CDNA3
+      // Introduced in CDNA3.
       MFMA_F32_16x16x16_BF16,
       MFMA_F32_32x32x8_BF16,
       MFMA_F32_16x16x32_F8E5M2FNUZ,
@@ -218,7 +287,31 @@ def IREEGPU_MMAIntrinsic : IREEGPU_I32EnumAttr<"MMAIntrinsic",
       MFMA_I32_16x16x32_I8,
       MFMA_I32_32x32x16_I8,
 
-      // RDNA3 intrinsics
+      // Introduced in CDNA4.
+      MFMA_F32_16x16x32_F16,
+      MFMA_F32_32x32x16_F16,
+      MFMA_F32_16x16x32_BF16,
+      MFMA_F32_32x32x16_BF16,
+      MFMA_F32_16x16x32_F8E5M2,
+      MFMA_F32_16x16x32_F8E5M2_F8E4M3FN,
+      MFMA_F32_16x16x32_F8E4M3FN,
+      MFMA_F32_16x16x32_F8E4M3FN_F8E5M2,
+      MFMA_F32_32x32x16_F8E5M2,
+      MFMA_F32_32x32x16_F8E5M2_F8E4M3FN,
+      MFMA_F32_32x32x16_F8E4M3FN,
+      MFMA_F32_32x32x16_F8E4M3FN_F8E5M2,
+      MFMA_F32_16x16x128_F8E5M2,
+      MFMA_F32_16x16x128_F8E5M2_F8E4M3FN,
+      MFMA_F32_16x16x128_F8E4M3FN,
+      MFMA_F32_16x16x128_F8E4M3FN_F8E5M2,
+      MFMA_F32_32x32x64_F8E5M2,
+      MFMA_F32_32x32x64_F8E5M2_F8E4M3FN,
+      MFMA_F32_32x32x64_F8E4M3FN,
+      MFMA_F32_32x32x64_F8E4M3FN_F8E5M2,
+      MFMA_I32_16x16x64_I8,
+      MFMA_I32_32x32x32_I8,
+
+      // RDNA3 intrinsics.
       WMMAR3_F32_16x16x16_F16,
       WMMAR3_F16_16x16x16_F16,
       WMMAR3_F32_16x16x16_BF16,
@@ -235,6 +328,34 @@ def IREEGPU_MMAIntrinsic : IREEGPU_I32EnumAttr<"MMAIntrinsic",
       WMMAR4_F32_16x16x16_F8E4M3FN,
       WMMAR4_F32_16x16x16_F8E4M3FN_F8E5M2,
       WMMAR4_I32_16x16x16_I8,
+
+      // gfx1250 intrinsics.
+      // K=4.
+      WMMA_F32_16x16x4_F32,
+      // K=32.
+      WMMA_F32_16x16x32_F16,
+      WMMA_F32_16x16x32_BF16,
+      WMMA_F16_16x16x32_F16,
+      WMMA_BF16_16x16x32_BF16,
+      // K=64.
+      WMMA_F32_16x16x64_F8E4M3FN,
+      WMMA_F32_16x16x64_F8E4M3FN_F8E5M2,
+      WMMA_F32_16x16x64_F8E5M2,
+      WMMA_F32_16x16x64_F8E5M2_F8E4M3FN,
+      WMMA_F16_16x16x64_F8E4M3FN,
+      WMMA_F16_16x16x64_F8E4M3FN_F8E5M2,
+      WMMA_F16_16x16x64_F8E5M2,
+      WMMA_F16_16x16x64_F8E5M2_F8E4M3FN,
+      WMMA_I32_16x16x64_I8,
+      // K=128.
+      WMMA_F32_16x16x128_F8E5M2,
+      WMMA_F32_16x16x128_F8E5M2_F8E4M3FN,
+      WMMA_F32_16x16x128_F8E4M3FN,
+      WMMA_F32_16x16x128_F8E4M3FN_F8E5M2,
+      WMMA_F16_16x16x128_F8E5M2,
+      WMMA_F16_16x16x128_F8E5M2_F8E4M3FN,
+      WMMA_F16_16x16x128_F8E4M3FN,
+      WMMA_F16_16x16x128_F8E4M3FN_F8E5M2,
 
       // NV intrinsics
       NV_WMMA_F32_16x16x16_F16,
@@ -254,24 +375,36 @@ def IREEGPU_VirtualMMAIntrinsic : IREEGPU_I32EnumAttr<"VirtualMMAIntrinsic",
       VMFMA_F32_32x32x16_F8E4M3FNUZ,
     ]>;
 
-def MMA_LHS : I32EnumAttrCase<"Lhs", 0>;
-def MMA_RHS : I32EnumAttrCase<"Rhs", 1>;
-def MMA_ACC : I32EnumAttrCase<"Acc", 2>;
+// Enum for scaled mma intrinsic, loosely matching the MMAIntrinsic enum above
+// but not including the input types.
+//
+// The main variation from intrinsic names is that, after the K dimension, we
+// include the block size (that is, how many elements along the K dimension
+// the shared scale applies to), which is given as "_Bxx"
+//
+// Values: 0xABCD where:
+// * A = vendor:
+//   * 1 = AMD
+//   * 2 = NVIDIA
+// * B = architecture. When an intrinsic exists in multiple architectures, this
+//       should be the architecture it was introduced in, as long as it still
+//       has the same semantics. If a new architecture breaks an existing
+//       intrinsic's semantics, we can use that field for versioning.
+//   * For AMD:
+//     * 0 = CDNA4
+// * C = element type of output/accumulator matrix and scale block size:
+//   * 0 = IEEE 32-bit float output, 32 elems/scale
+// * D enumerates intrinsics that share the same 0xABC* bits.
+//
 
-def IREEGPU_MMAFragment : IREEGPU_I32EnumAttr<"MMAFragment",
-    "Descriptor for a particular fragment of an MMA operation", [
-      MMA_LHS,
-      MMA_RHS,
-      MMA_ACC
-    ]>;
-
-def MMA_Workgroup : I32EnumAttrCase<"Workgroup", 0>;
-def MMA_Subgroup : I32EnumAttrCase<"Subgroup", 1>;
-
-def IREEGPU_MMAScope : IREEGPU_I32EnumAttr<"MMAScope",
-    "Descriptor for a particular scope of an MMA operation", [
-      MMA_Workgroup,
-      MMA_Subgroup
+// Introduced in CDNA4
+def MFMA_SCALE_F32_16x16x128_B32 : I32EnumCase<"MFMA_SCALE_F32_16x16x128_B32", 0x1000>;
+def MFMA_SCALE_F32_32x32x64_B32 : I32EnumCase<"MFMA_SCALE_F32_32x32x64_B32", 0x1001>;
+def IREEGPU_ScaledMMAIntrinsic : IREEGPU_I32Enum<"ScaledMMAIntrinsic",
+    "Descriptor for different scaled MMA intrinsics", [
+      // Introduced in CDNA4.
+      MFMA_SCALE_F32_16x16x128_B32,
+      MFMA_SCALE_F32_32x32x64_B32
     ]>;
 
 //===----------------------------------------------------------------------===//
@@ -280,9 +413,10 @@ def IREEGPU_MMAScope : IREEGPU_I32EnumAttr<"MMAScope",
 def Workgroup : I32EnumAttrCase<"Workgroup", 0>;
 def Reduction : I32EnumAttrCase<"Reduction", 1>;
 def PartialReduction : I32EnumAttrCase<"PartialReduction", 2>;
-def Thread : I32EnumAttrCase<"Thread", 3>;
-def Subgroup : I32EnumAttrCase<"Subgroup", 4>;
-def Lane : I32EnumAttrCase<"Lane", 5>;
+def Serial : I32EnumAttrCase<"Serial", 3>;
+def Thread : I32EnumAttrCase<"Thread", 4>;
+def Subgroup : I32EnumAttrCase<"Subgroup", 5>;
+def Lane : I32EnumAttrCase<"Lane", 6>;
 
 /// Enum descriptor for the set of tiling levels for GPU pass pipelines.
 /// Note that `Thread` tiling is mutually exclusive with `Subgroup` and
@@ -293,6 +427,7 @@ def IREEGPU_TilingLevel : IREEGPU_I32EnumAttr<"TilingLevel",
       Workgroup,
       Reduction,
       PartialReduction,
+      Serial,
       Thread,
       Subgroup,
       Lane

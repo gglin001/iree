@@ -63,10 +63,10 @@ static LogicalResult tileCopyToWorkgroupMem(mlir::FunctionOpInterface funcOp,
         // distribution.
         SmallVector<Value> tileSizesVal;
         MemRefType dstMemRefType =
-            llvm::cast<MemRefType>(cast<linalg::GenericOp>(operation)
-                                       .getDpsInitOperand(0)
-                                       ->get()
-                                       .getType());
+            cast<MemRefType>(cast<linalg::GenericOp>(operation)
+                                 .getDpsInitOperand(0)
+                                 ->get()
+                                 .getType());
 
         unsigned rank = dstMemRefType.getRank();
         // Return empty tile size for zero dim tensor.
@@ -77,10 +77,10 @@ static LogicalResult tileCopyToWorkgroupMem(mlir::FunctionOpInterface funcOp,
         for (unsigned i = 0; i < rank - 1; i++) {
           int64_t t = (rank - i) <= kNumGPUDims ? 1 : 0;
           tileSizesVal.push_back(
-              builder.create<arith::ConstantIndexOp>(operation->getLoc(), t));
+              arith::ConstantIndexOp::create(builder, operation->getLoc(), t));
         }
-        tileSizesVal.push_back(builder.create<arith::ConstantIndexOp>(
-            operation->getLoc(), copyTileSize));
+        tileSizesVal.push_back(arith::ConstantIndexOp::create(
+            builder, operation->getLoc(), copyTileSize));
         return tileSizesVal;
       };
   auto getCopyThreadProcInfoFn =
@@ -109,7 +109,7 @@ static LogicalResult tileCopyToWorkgroupMem(mlir::FunctionOpInterface funcOp,
 static int getBaseVectorSize(linalg::GenericOp genericOp) {
   assert(genericOp.getNumDpsInits() == 1);
   unsigned resultBW =
-      llvm::cast<MemRefType>(genericOp.getDpsInitOperand(0)->get().getType())
+      cast<MemRefType>(genericOp.getDpsInitOperand(0)->get().getType())
           .getElementTypeBitWidth();
   // Check the operand element types. If we have some sub-byte types there, make
   // sure we at least read a full byte for the sub-byte-element operands.
@@ -167,8 +167,8 @@ static LogicalResult tileToUnroll(mlir::FunctionOpInterface funcOp,
         std::optional<SmallVector<int64_t>> staticSize =
             getTileToDistributableSize(copyOp, flatWorkgroupSize);
         for (int64_t dim : *staticSize) {
-          tileSizesVal.push_back(
-              builder.create<arith::ConstantIndexOp>(operation->getLoc(), dim));
+          tileSizesVal.push_back(arith::ConstantIndexOp::create(
+              builder, operation->getLoc(), dim));
         }
         return tileSizesVal;
       };
@@ -195,19 +195,19 @@ SmallVector<linalg::ProcInfo> getIds(OpBuilder &b, Location loc,
     auto stride = dyn_cast<Attribute>(r.stride);
     auto size = dyn_cast<Attribute>(r.size);
     assert(offset && stride && size);
-    int64_t numThreadsDim = (llvm::cast<IntegerAttr>(size).getInt() -
-                             llvm::cast<IntegerAttr>(offset).getInt()) /
-                            llvm::cast<IntegerAttr>(stride).getInt();
+    int64_t numThreadsDim = (cast<IntegerAttr>(size).getInt() -
+                             cast<IntegerAttr>(offset).getInt()) /
+                            cast<IntegerAttr>(stride).getInt();
     delinSizes.push_back(numThreadsDim);
   }
   ValueRange dims =
-      b.create<affine::AffineDelinearizeIndexOp>(loc, flatThreadId, delinSizes)
+      affine::AffineDelinearizeIndexOp::create(b, loc, flatThreadId, delinSizes)
           .getResults();
 
   for (auto [dimId, numThreadsDim] : llvm::zip_equal(dims, delinSizes)) {
     linalg::ProcInfo info;
     info.procId = dimId;
-    info.nprocs = b.create<arith::ConstantIndexOp>(loc, numThreadsDim);
+    info.nprocs = arith::ConstantIndexOp::create(b, loc, numThreadsDim);
     info.distributionMethod =
         linalg::DistributionMethod::CyclicNumProcsEqNumIters;
     infos.push_back(info);
@@ -239,8 +239,8 @@ static LogicalResult tileAndDistribute(mlir::FunctionOpInterface funcOp,
           return tileSizesVal;
         SmallVector<int64_t> staticSize = getNativeDstShape(copyOp);
         for (int64_t dim : staticSize) {
-          tileSizesVal.push_back(
-              builder.create<arith::ConstantIndexOp>(operation->getLoc(), dim));
+          tileSizesVal.push_back(arith::ConstantIndexOp::create(
+              builder, operation->getLoc(), dim));
         }
         return tileSizesVal;
       };
@@ -277,7 +277,11 @@ vectorizeCopyToWorkgroupMemoryOps(mlir::FunctionOpInterface funcOp) {
 
   funcOp.walk([&](linalg::GenericOp op) {
     if (succeeded(filter.checkAndNotify(rewriter, op))) {
-      (void)linalg::vectorize(rewriter, op);
+      FailureOr<linalg::VectorizationResult> result =
+          linalg::vectorize(rewriter, op);
+      if (succeeded(result)) {
+        rewriter.replaceOp(op, result->replacements);
+      }
     }
   });
 }
@@ -288,13 +292,13 @@ static Value createFlatId(mlir::FunctionOpInterface funcOp,
   OpBuilder b(funcOp.getFunctionBody());
   Type indexType = b.getIndexType();
   Value threadX =
-      b.create<gpu::ThreadIdOp>(funcOp.getLoc(), indexType, gpu::Dimension::x);
+      gpu::ThreadIdOp::create(b, funcOp.getLoc(), indexType, gpu::Dimension::x);
   Value threadY =
-      b.create<gpu::ThreadIdOp>(funcOp.getLoc(), indexType, gpu::Dimension::y);
+      gpu::ThreadIdOp::create(b, funcOp.getLoc(), indexType, gpu::Dimension::y);
   Value threadZ =
-      b.create<gpu::ThreadIdOp>(funcOp.getLoc(), indexType, gpu::Dimension::z);
-  Value flatThreadId = b.create<affine::AffineLinearizeIndexOp>(
-      funcOp.getLoc(), ValueRange{threadZ, threadY, threadX},
+      gpu::ThreadIdOp::create(b, funcOp.getLoc(), indexType, gpu::Dimension::z);
+  Value flatThreadId = affine::AffineLinearizeIndexOp::create(
+      b, funcOp.getLoc(), ValueRange{threadZ, threadY, threadX},
       ArrayRef<int64_t>{workgroupSize[2], workgroupSize[1], workgroupSize[0]},
       /*disjoint=*/true);
   return flatThreadId;
@@ -388,8 +392,8 @@ LogicalResult gpuDistributeSharedMemoryCopy(mlir::FunctionOpInterface funcOp) {
       workgroupSize[0] * workgroupSize[1] * workgroupSize[2];
   bool isAligned = llvm::all_of(
       copiesToWorkgroupMem, [flatWorkgroupSize](linalg::GenericOp copyOp) {
-        MemRefType dstMemRefType = llvm::cast<MemRefType>(
-            copyOp.getDpsInitOperand(0)->get().getType());
+        MemRefType dstMemRefType =
+            cast<MemRefType>(copyOp.getDpsInitOperand(0)->get().getType());
         auto shape = dstMemRefType.getShape();
         int targetVectorSize =
             copyVectorNumBits / dstMemRefType.getElementTypeBitWidth();
@@ -454,7 +458,7 @@ struct GPUDistributeSharedMemoryCopyPass final
     : impl::GPUDistributeSharedMemoryCopyPassBase<
           GPUDistributeSharedMemoryCopyPass> {
   void runOnOperation() override {
-    auto funcOp = getOperation();
+    mlir::FunctionOpInterface funcOp = getOperation();
     if (failed(gpuDistributeSharedMemoryCopy(funcOp))) {
       return signalPassFailure();
     }

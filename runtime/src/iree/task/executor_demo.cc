@@ -37,7 +37,9 @@ static void simulate_work(const iree_task_tile_context_t* tile_context) {
   }
 }
 
-extern "C" int main(int argc, char* argv[]) {
+}  // namespace
+
+int main(int argc, char* argv[]) {
   IREE_TRACE_APP_ENTER();
   IREE_TRACE_SCOPE_NAMED("ExecutorTest::Any");
 
@@ -47,6 +49,7 @@ extern "C" int main(int argc, char* argv[]) {
 #if 1
   IREE_CHECK_OK(iree_task_topology_initialize_from_physical_cores(
       IREE_TASK_TOPOLOGY_NODE_ID_ANY, IREE_TASK_TOPOLOGY_PERFORMANCE_LEVEL_ANY,
+      IREE_TASK_TOPOLOGY_DISTRIBUTION_SCATTER,
       /*max_core_count=*/6, &topology));
 #else
   iree_task_topology_initialize_from_group_count(/*group_count=*/6, &topology);
@@ -168,5 +171,3 @@ extern "C" int main(int argc, char* argv[]) {
   IREE_TRACE_APP_EXIT(0);
   return 0;
 }
-
-}  // namespace

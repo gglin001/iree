@@ -4,7 +4,6 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include <memory>
 #include <unordered_map>
 #include <utility>
 
@@ -111,7 +110,7 @@ replaceExecutableOpWithMLIR(IREE::HAL::ExecutableOp executableOp,
   if (auto moduleOp = dyn_cast<mlir::ModuleOp>(rootOpRef.get())) {
     // We expect a `hal.executable` with the same name as the one we are
     // replacing.
-    replacementOp = dyn_cast_or_null<IREE::HAL::ExecutableOp>(
+    replacementOp = dyn_cast_if_present<IREE::HAL::ExecutableOp>(
         SymbolTable::lookupSymbolIn(moduleOp, executableOp.getNameAttr()));
   } else {
     // Verify the name matches.
@@ -216,7 +215,7 @@ struct SubstituteExecutablesPass
   using IREE::HAL::impl::SubstituteExecutablesPassBase<
       SubstituteExecutablesPass>::SubstituteExecutablesPassBase;
   void runOnOperation() override {
-    auto moduleOp = getOperation();
+    mlir::ModuleOp moduleOp = getOperation();
     auto moduleName = moduleOp.getName().value_or("module");
     SymbolTable symbolTable(moduleOp);
 

@@ -11,6 +11,30 @@
 
 namespace mlir::iree_compiler {
 
+struct GlobalPipelineOptions {
+  llvm::OptimizationLevel optLevel = llvm::OptimizationLevel::O0;
+
+  // Maximum byte size increase allowed for constant expr hoisting policy to
+  // allow hoisting. The threshold is 1MB by default.
+  int64_t constExprMaxSizeIncreaseThreshold = 1024 * 1024;
+
+  // Enables const-expr hoisting into globals.
+  bool constExprHoisting = true;
+
+  // Enables data tiling.
+  // There are two data-tiling paths. One starts from GlobalOptimization phase
+  // and the other starts from DispatchCreation phase. They are mutually
+  // exclusive. Only one of them can be enabled at a time. The default is using
+  // the DispatchCreation data-tiling path, which enables more fusion
+  // opportunities.
+  // Note that any feature built on top of GlobalOptimization path will be
+  // deprecated eventually.
+  bool dataTiling = false;
+
+  void bindOptions(OptionsBinder &binder);
+  using FromFlags = OptionsFromFlags<GlobalPipelineOptions>;
+};
+
 struct BindingOptions {
   // Whether to include runtime support functions for the IREE native ABI.
   bool native = true;
@@ -72,6 +96,7 @@ struct InputDialectOptions {
 //   2. Through a Transform dialect spec file.
 //   3. Through a PDL spec file.
 struct PreprocessingOptions {
+  llvm::OptimizationLevel optLevel = llvm::OptimizationLevel::O0;
   std::string preprocessingPassPipeline;
   std::string preprocessingTransformSpecFilename;
   std::string preprocessingPDLSpecFilename;
@@ -82,9 +107,7 @@ struct PreprocessingOptions {
 
 // Options controlling high level optimizations.
 struct GlobalOptimizationOptions {
-  // Maximum byte size increase allowed for constant expr hoisting policy to
-  // allow hoisting. The threshold is 1MB by default.
-  int64_t constExprMaxSizeIncreaseThreshold = 1024 * 1024;
+  llvm::OptimizationLevel optLevel = llvm::OptimizationLevel::O0;
 
   // File paths to archives to import parameters from with an optional
   // `scope=` prefix.
@@ -112,11 +135,8 @@ struct GlobalOptimizationOptions {
   // Enables transposing all concatenations to the outer most dimension.
   bool outerDimConcat = false;
 
-  // Enables data tiling.
-  bool dataTiling = true;
-
-  // Enables const-expr hoisting into globals.
-  bool constExprHoisting = true;
+  // Enables data tiling in global optimization phase.
+  bool dataTiling = false;
 
   // Enables recursive evaluation of immutable globals using the compiler
   // and runtime.
@@ -203,6 +223,20 @@ struct SchedulingOptions {
 
   void bindOptions(OptionsBinder &binder);
   using FromFlags = OptionsFromFlags<SchedulingOptions>;
+};
+
+struct DispatchCreationOptions {
+  llvm::OptimizationLevel optLevel;
+
+  bool enableAggressiveFusion = false;
+  bool enableFuseMultiUse = true;
+  bool enableSplitReduction = false;
+
+  // Enables data tiling in dispatch creation phase.
+  bool dataTiling = false;
+
+  void bindOptions(OptionsBinder &binder);
+  using FromFlags = OptionsFromFlags<DispatchCreationOptions>;
 };
 
 } // namespace mlir::iree_compiler

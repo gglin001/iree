@@ -15,6 +15,7 @@
 #include "mlir/Dialect/SPIRV/IR/TargetAndABI.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir::iree_compiler {
@@ -193,6 +194,22 @@ spirv::ResourceLimitsAttr convertLimits(IREE::GPU::TargetAttr target) {
   for (IREE::GPU::MMAAttr mmaOp : wgp.getMma()) {
     auto [mSize, nSize, kSize] = mmaOp.getMNKShape();
     auto [aType, bType, cType] = mmaOp.getABCElementTypes();
+
+    // Filter out types not supported by VK_KHR_cooperative_matrix. See
+    // https://registry.khronos.org/vulkan/specs/latest/man/html/VkComponentTypeKHR.html.
+    bool isSupportedByCoopMatrix = true;
+    for (Type elemType : {aType, bType, cType}) {
+      if (auto floatType = dyn_cast<FloatType>(elemType)) {
+        if (floatType.getWidth() < 16 || isa<BFloat16Type>(floatType)) {
+          isSupportedByCoopMatrix = false;
+          break;
+        }
+      }
+    }
+    if (!isSupportedByCoopMatrix) {
+      continue;
+    }
+
     coopMatAttrs.push_back(spirv::CooperativeMatrixPropertiesKHRAttr::get(
         context, mSize, nSize, kSize, aType, bType, cType, cType,
         false /*saturatingAccumulation*/,
@@ -215,9 +232,9 @@ spirv::ResourceLimitsAttr convertLimits(IREE::GPU::TargetAttr target) {
 //===----------------------------------------------------------------------===//
 
 FailureOr<spirv::TargetEnvAttr>
-convertGPUTarget(IREE::HAL::ExecutableVariantOp variant) {
+convertGPUTarget(MLIRContext *context, IREE::HAL::ExecutableVariantOp variant) {
   IREE::HAL::ExecutableTargetAttr target = variant.getTarget();
-  IREE::GPU::TargetAttr gpuTarget = getGPUTargetAttr(target);
+  IREE::GPU::TargetAttr gpuTarget = getGPUTargetAttr(context, target);
 
   SmallVector<StringRef> features;
   llvm::SplitString(gpuTarget.getFeatures(), features, ",");
@@ -259,8 +276,10 @@ struct SPIRVConvertGPUTargetPass final
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
     auto variant = moduleOp->getParentOfType<IREE::HAL::ExecutableVariantOp>();
+    MLIRContext *context = &getContext();
 
-    FailureOr<spirv::TargetEnvAttr> spirvTarget = convertGPUTarget(variant);
+    FailureOr<spirv::TargetEnvAttr> spirvTarget =
+        convertGPUTarget(context, variant);
     if (failed(spirvTarget))
       return signalPassFailure();
 

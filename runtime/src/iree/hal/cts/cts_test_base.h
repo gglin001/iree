@@ -225,7 +225,8 @@ class CTSTestBase : public BaseType, public CTSTestResources {
     // One signal semaphore from 0 -> 1.
     iree_hal_semaphore_t* signal_semaphore = NULL;
     IREE_RETURN_IF_ERROR(iree_hal_semaphore_create(
-        device_, 0ull, IREE_HAL_SEMAPHORE_FLAG_NONE, &signal_semaphore));
+        device_, IREE_HAL_QUEUE_AFFINITY_ANY, 0ull,
+        IREE_HAL_SEMAPHORE_FLAG_DEFAULT, &signal_semaphore));
     uint64_t target_payload_value = 1ull;
     iree_hal_semaphore_list_t signal_semaphores = {
         /*count=*/1,
@@ -235,10 +236,12 @@ class CTSTestBase : public BaseType, public CTSTestResources {
 
     iree_status_t status = iree_hal_device_queue_execute(
         device_, IREE_HAL_QUEUE_AFFINITY_ANY, wait_semaphores,
-        signal_semaphores, command_buffer, binding_table);
+        signal_semaphores, command_buffer, binding_table,
+        IREE_HAL_EXECUTE_FLAG_NONE);
     if (iree_status_is_ok(status)) {
       status = iree_hal_semaphore_wait(signal_semaphore, target_payload_value,
-                                       iree_infinite_timeout());
+                                       iree_infinite_timeout(),
+                                       IREE_HAL_WAIT_FLAG_DEFAULT);
     }
 
     iree_hal_semaphore_release(signal_semaphore);
@@ -259,8 +262,9 @@ class CTSTestBase : public BaseType, public CTSTestResources {
 
   iree_hal_semaphore_t* CreateSemaphore() {
     iree_hal_semaphore_t* semaphore = NULL;
-    IREE_EXPECT_OK(iree_hal_semaphore_create(
-        device_, 0, IREE_HAL_SEMAPHORE_FLAG_NONE, &semaphore));
+    IREE_EXPECT_OK(
+        iree_hal_semaphore_create(device_, IREE_HAL_QUEUE_AFFINITY_ANY, 0ull,
+                                  IREE_HAL_SEMAPHORE_FLAG_DEFAULT, &semaphore));
     return semaphore;
   }
 

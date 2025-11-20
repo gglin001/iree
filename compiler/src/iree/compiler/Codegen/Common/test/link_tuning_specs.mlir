@@ -135,3 +135,259 @@ module @td_module_4 attributes { transform.with_named_sequence } {
     }
   }
 }
+
+// -----
+
+// make sure the inner module are flatting out and foreach_match ops are merged.
+
+module @td_module attributes { transform.with_named_sequence } {
+    module @mmt_module attributes { transform.with_named_sequence, iree_codegen.tuning_spec_with_default_entrypoint } {
+        transform.named_sequence @apply_op_config(%op: !transform.any_op {transform.readonly},
+                                                %config: !transform.any_param {transform.readonly}) {
+        transform.annotate %op "compilation_info" = %config : !transform.any_op, !transform.any_param
+        transform.yield
+        }
+
+        transform.named_sequence @match_mmt_f16_f16_f32(%matmul: !transform.any_op {transform.readonly})
+            -> (!transform.any_op, !transform.any_param) {
+        transform.match.operation_name %matmul ["linalg.generic"] : !transform.any_op
+        %config = transform.param.constant {key = "custom_config"} -> !transform.any_param
+        transform.yield %matmul, %config : !transform.any_op, !transform.any_param
+        }
+
+        transform.named_sequence
+        @__kernel_config(%variant_op: !transform.any_op {transform.consumed}) -> !transform.any_op
+        attributes { iree_codegen.tuning_spec_entrypoint } {
+        %res = transform.foreach_match in %variant_op
+            @match_mmt_f16_f16_f32 -> @apply_op_config
+            : (!transform.any_op) -> !transform.any_op
+        transform.yield %res : !transform.any_op
+        }
+    }
+
+    module @attention_module attributes { transform.with_named_sequence, iree_codegen.tuning_spec_with_default_entrypoint } {
+        transform.named_sequence @apply_attn_op_config(%attention: !transform.any_op {transform.readonly},
+                                                 %config: !transform.any_param {transform.readonly},
+                                                 %decomposition_config: !transform.any_param {transform.readonly}) {
+            transform.annotate %attention "compilation_info" = %config : !transform.any_op, !transform.any_param
+            transform.annotate %attention "decomposition_config" = %decomposition_config : !transform.any_op, !transform.any_param
+            transform.yield
+        }
+
+        transform.named_sequence @match_attention_f16(%attention: !transform.any_op {transform.readonly}) -> (!transform.any_op, !transform.any_param, !transform.any_param) {
+            transform.match.operation_name %attention ["iree_linalg_ext.attention"] : !transform.any_op
+            %config = transform.param.constant {key = "attn_config"} -> !transform.any_param
+            %decomposition_config = transform.param.constant {key = "decomp_config"} -> !transform.any_param
+            transform.yield %attention, %config, %decomposition_config : !transform.any_op, !transform.any_param, !transform.any_param
+        }
+
+        transform.named_sequence @__kernel_config(%variant_op: !transform.any_op {transform.consumed}) -> !transform.any_op
+        attributes { iree_codegen.tuning_spec_entrypoint } {
+            %res = transform.foreach_match in %variant_op
+            @match_attention_f16 -> @apply_attn_op_config
+            : (!transform.any_op) -> !transform.any_op
+            transform.yield %res : !transform.any_op
+        }
+    }
+}
+
+// CHECK-LABEL:   module @td_module
+// CHECK-SAME:    iree_codegen.tuning_spec_with_default_entrypoint
+// CHECK-NOT:     @mmt_module
+// CHECK-NOT:     @attention_module
+// CHECK:         @__kernel_config(
+// CHECK:         transform.foreach_match
+// CHECK:         @match_mmt_f16_f16_f32 -> @apply_op_config
+// CHECK-NEXT:    @match_attention_f16 -> @apply_attn_op_config
+// CHECK-NEXT:    transform.yield
+
+// -----
+
+// Make sure that all named sequence operation names in the merged foreach_match remain unique.
+
+module @td_module attributes { transform.with_named_sequence } {
+   module @inner_module_a
+    attributes { transform.with_named_sequence, iree_codegen.tuning_spec_with_default_entrypoint } {
+    transform.named_sequence @match(%arg: !transform.any_op {transform.readonly}) -> (!transform.any_op) {
+      transform.yield %arg : !transform.any_op
+    }
+
+    transform.named_sequence @apply_op_config(%op: !transform.any_op {transform.readonly}) {
+      transform.yield
+    }
+
+    transform.named_sequence @__kernel_config(%arg0: !transform.any_op {transform.consumed})
+      -> (!transform.any_op) attributes { iree_codegen.tuning_spec_entrypoint } {
+      %res = transform.foreach_match in %arg0 @match -> @apply_op_config
+        : (!transform.any_op) -> (!transform.any_op)
+      transform.yield %res : !transform.any_op
+    }
+  }
+
+  module @inner_module_b
+    attributes { transform.with_named_sequence, iree_codegen.tuning_spec_with_default_entrypoint } {
+    transform.named_sequence @match(%arg: !transform.any_op {transform.readonly}) -> (!transform.any_op) {
+      transform.yield %arg : !transform.any_op
+    }
+
+    transform.named_sequence @apply_op_config(%op: !transform.any_op {transform.readonly}) {
+      transform.yield
+    }
+
+    transform.named_sequence @__kernel_config(%arg0: !transform.any_op {transform.consumed})
+      -> (!transform.any_op) attributes { iree_codegen.tuning_spec_entrypoint } {
+      %res = transform.foreach_match in %arg0 @match -> @apply_op_config
+        : (!transform.any_op) -> (!transform.any_op)
+      transform.yield %res : !transform.any_op
+    }
+  }
+
+  module @inner_module_c
+    attributes { transform.with_named_sequence, iree_codegen.tuning_spec_with_default_entrypoint } {
+    transform.named_sequence @apply_op_config_1(%op: !transform.any_op {transform.readonly}) {
+      transform.yield
+    }
+
+    transform.named_sequence @__kernel_config(%arg0: !transform.any_op {transform.consumed})
+      -> (!transform.any_op) attributes { iree_codegen.tuning_spec_entrypoint } {
+      %res = transform.foreach_match in %arg0 @match -> @apply_op_config_1
+        : (!transform.any_op) -> (!transform.any_op)
+      transform.yield %res : !transform.any_op
+    }
+
+    transform.named_sequence @match(%arg: !transform.any_op {transform.readonly}) -> (!transform.any_op) {
+      transform.yield %arg : !transform.any_op
+    }
+  }
+}
+
+// CHECK-LABEL:   module @td_module
+// CHECK-NOT:     module @inner_module_a
+// CHECK-NOT:     module @inner_module_b
+// CHECK-NOT:     module @inner_module_c
+// CHECK:         @__kernel_config(
+// CHECK:         transform.foreach_match
+// CHECK:           @match -> @apply_op_config
+// CHECK:           @match_0 -> @apply_op_config_0
+// CHECK:           @match_1 -> @apply_op_config_1
+
+// -----
+
+// Make sure that all named sequence operation names in the merged foreach_match remain unique even when inner module names are missing.
+
+module @td_module attributes { transform.with_named_sequence } {
+   module @inner_module_a
+    attributes { transform.with_named_sequence, iree_codegen.tuning_spec_with_default_entrypoint } {
+    transform.named_sequence @match(%arg: !transform.any_op {transform.readonly}) -> (!transform.any_op) {
+      transform.yield %arg : !transform.any_op
+    }
+
+    transform.named_sequence @apply_op_config(%op: !transform.any_op {transform.readonly}) {
+      transform.yield
+    }
+
+    transform.named_sequence @__kernel_config(%arg0: !transform.any_op {transform.consumed})
+      -> (!transform.any_op) attributes { iree_codegen.tuning_spec_entrypoint } {
+      %res = transform.foreach_match in %arg0 @match -> @apply_op_config
+        : (!transform.any_op) -> (!transform.any_op)
+      transform.yield %res : !transform.any_op
+    }
+  }
+
+  module
+    attributes { transform.with_named_sequence, iree_codegen.tuning_spec_with_default_entrypoint } {
+    transform.named_sequence @match(%arg: !transform.any_op {transform.readonly}) -> (!transform.any_op) {
+      transform.yield %arg : !transform.any_op
+    }
+
+    transform.named_sequence @apply_op_config(%op: !transform.any_op {transform.readonly}) {
+      transform.yield
+    }
+
+    transform.named_sequence @__kernel_config(%arg0: !transform.any_op {transform.consumed})
+      -> (!transform.any_op) attributes { iree_codegen.tuning_spec_entrypoint } {
+      %res = transform.foreach_match in %arg0 @match -> @apply_op_config
+        : (!transform.any_op) -> (!transform.any_op)
+      transform.yield %res : !transform.any_op
+    }
+  }
+
+  module
+    attributes { transform.with_named_sequence, iree_codegen.tuning_spec_with_default_entrypoint } {
+    transform.named_sequence @match(%arg: !transform.any_op {transform.readonly}) -> (!transform.any_op) {
+      transform.yield %arg : !transform.any_op
+    }
+
+    transform.named_sequence @apply_op_config_1(%op: !transform.any_op {transform.readonly}) {
+      transform.yield
+    }
+
+    transform.named_sequence @__kernel_config(%arg0: !transform.any_op {transform.consumed})
+      -> (!transform.any_op) attributes { iree_codegen.tuning_spec_entrypoint } {
+      %res = transform.foreach_match in %arg0 @match -> @apply_op_config_1
+        : (!transform.any_op) -> (!transform.any_op)
+      transform.yield %res : !transform.any_op
+    }
+  }
+}
+
+// CHECK-LABEL:   module @td_module
+// CHECK-NOT:     module @inner_module_a
+// CHECK-NOT:     module @inner_module_b
+// CHECK-NOT:     module @inner_module_c
+// CHECK:         @__kernel_config(
+// CHECK:         transform.foreach_match
+// CHECK:           @match -> @apply_op_config
+// CHECK:           @match_0 -> @apply_op_config_0
+// CHECK:           @match_1 -> @apply_op_config_1
+
+// -----
+
+// Test secondary conflict: when @apply_op_config from the second module conflicts
+// and would be renamed to @apply_op_config_0, but @apply_op_config_0 already
+// exists in the same module, it should skip to @apply_op_config_1.
+
+module @td_module_secondary_name_conflict attributes {transform.with_named_sequence} {
+  module attributes {iree_codegen.tuning_spec_with_default_entrypoint, transform.with_named_sequence} {
+    transform.named_sequence @apply_op_config(%arg0: !transform.any_op {transform.readonly}) {
+      transform.yield
+    }
+    transform.named_sequence @match_a(%arg0: !transform.any_op {transform.readonly}) -> (!transform.any_op) {
+      transform.yield %arg0 : !transform.any_op
+    }
+    transform.named_sequence @__kernel_config(%arg0: !transform.any_op {transform.consumed}) -> !transform.any_op
+        attributes {iree_codegen.tuning_spec_entrypoint} {
+      %updated_root = transform.foreach_match in %arg0
+          @match_a -> @apply_op_config : (!transform.any_op) -> !transform.any_op
+      transform.yield %updated_root : !transform.any_op
+    }
+  }
+  module attributes {iree_codegen.tuning_spec_with_default_entrypoint, transform.with_named_sequence} {
+    transform.named_sequence @apply_op_config(%arg0: !transform.any_op {transform.readonly}) {
+      transform.yield
+    }
+    transform.named_sequence @apply_op_config_0(%arg0: !transform.any_op {transform.readonly}) {
+      transform.yield
+    }
+    transform.named_sequence @match_b(%arg0: !transform.any_op {transform.readonly}) -> (!transform.any_op) {
+      transform.yield %arg0 : !transform.any_op
+    }
+    transform.named_sequence @match_c(%arg0: !transform.any_op {transform.readonly}) -> (!transform.any_op) {
+      transform.yield %arg0 : !transform.any_op
+    }
+    transform.named_sequence @__kernel_config(%arg0: !transform.any_op {transform.consumed}) -> !transform.any_op
+        attributes {iree_codegen.tuning_spec_entrypoint} {
+      %updated_root = transform.foreach_match in %arg0
+          @match_b -> @apply_op_config,
+          @match_c -> @apply_op_config_0 : (!transform.any_op) -> !transform.any_op
+      transform.yield %updated_root : !transform.any_op
+    }
+  }
+}
+
+// CHECK-LABEL:   module @td_module_secondary_name_conflict
+// CHECK:         @__kernel_config(
+// CHECK:         transform.foreach_match
+// CHECK:           @match_a -> @apply_op_config
+// CHECK:           @match_b -> @apply_op_config_1
+// CHECK:           @match_c -> @apply_op_config_0

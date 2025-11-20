@@ -37,6 +37,36 @@ static std::unique_ptr<AsmState> getRootAsmState(Block *block) {
   return nullptr;
 }
 
+struct OpInfo {
+  // Which partitions the op is contained within.
+  llvm::BitVector membership;
+  // Which partitions transitively depend on this operation.
+  llvm::BitVector hazards;
+};
+
+struct PartitionBuilder {
+  unsigned ordinal;
+  // Affinity of the partition.
+  IREE::Stream::AffinityAttr affinity;
+  // Ops present in the partition; ops may be present in multiple partitions.
+  SetVector<Operation *> ops;
+  // Ops that were cloned and are known not to have their values escape.
+  DenseSet<Operation *> clonedOps;
+  // Which partitions transitively depend on this partition.
+  llvm::BitVector hazards;
+  void insert(Operation *op, OpInfo &opInfo) {
+    if (auto affinityOp = dyn_cast<IREE::Stream::AffinityOpInterface>(op)) {
+      affinity = affinity ? affinity.joinAND(affinityOp.getAffinityAttr())
+                          : affinityOp.getAffinityAttr();
+    }
+    opInfo.membership.set(ordinal);
+    if (opInfo.hazards.size() > ordinal)
+      opInfo.hazards.reset(ordinal);
+    ops.insert(op);
+    hazards |= opInfo.hazards;
+  }
+};
+
 // This is terrible. See Stream/Analysis/Partition.h for a description of what
 // a real implementation would do. We want cost modeling for tie breakers when
 // an op could be in multiple partitions, cloning for ops that are not worth
@@ -46,36 +76,8 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
                                 Block *block) {
   PartitionSet partitionSet;
 
-  struct OpInfo {
-    // Which partitions the op is contained within.
-    llvm::BitVector membership;
-    // Which partitions transitively depend on this operation.
-    llvm::BitVector hazards;
-  };
   DenseMap<Operation *, OpInfo> opInfos;
 
-  struct PartitionBuilder {
-    unsigned ordinal;
-    // Affinity of the partition.
-    IREE::Stream::AffinityAttr affinity;
-    // Ops present in the partition; ops may be present in multiple partitions.
-    SetVector<Operation *> ops;
-    // Ops that were cloned and are known not to have their values escape.
-    DenseSet<Operation *> clonedOps;
-    // Which partitions transitively depend on this partition.
-    llvm::BitVector hazards;
-    void insert(Operation *op, OpInfo &opInfo) {
-      if (auto affinityOp = dyn_cast<IREE::Stream::AffinityOpInterface>(op)) {
-        affinity = affinity ? affinity.joinAND(affinityOp.getAffinityAttr())
-                            : affinityOp.getAffinityAttr();
-      }
-      opInfo.membership.set(ordinal);
-      if (opInfo.hazards.size() > ordinal)
-        opInfo.hazards.reset(ordinal);
-      ops.insert(op);
-      hazards |= opInfo.hazards;
-    }
-  };
   SmallVector<std::unique_ptr<PartitionBuilder>> builders;
   llvm::BitVector usableBuilders;
 
@@ -85,25 +87,35 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
     // If we are to make partition with ordinal targetOrdinal to
     // depend on partition with ordinal sourceOrdinal,
     // will this create a circular dependency.
-    if (sourceOrdinal == targetOrdinal)
+    if (sourceOrdinal == targetOrdinal) {
       return false;
+    }
     return builders[sourceOrdinal]->hazards.size() > targetOrdinal &&
            builders[sourceOrdinal]->hazards[targetOrdinal];
   };
 
   auto canAddOpToPartition = [&](Operation &op, OpInfo &opInfo,
-                                 unsigned partitionOrdinal) {
+                                 unsigned partitionOrdinal,
+                                 bool check_for_clones = true) {
     auto streamableOp = dyn_cast<IREE::Stream::StreamableOpInterface>(op);
-    if (!streamableOp)
+    if (!streamableOp) {
       return false;
-    IREE::Stream::AffinityAttr affinityAttr;
-    if (auto affinityOp = dyn_cast<IREE::Stream::AffinityOpInterface>(op))
-      affinityAttr = affinityOp.getAffinityAttr();
-    if (!IREE::Stream::AffinityAttr::canExecuteTogether(
-            affinityAttr, builders[partitionOrdinal]->affinity))
-      return false;
+    }
 
-    bool preferCloneToConsumers = streamableOp.preferCloneToConsumers();
+    // Most ops should have affinity at this point. If they do not then we allow
+    // them to be placed anywhere (and whatever performance implications that
+    // has is on the higher layers for not explicitly saying).
+    IREE::Stream::AffinityAttr affinityAttr;
+    if (auto affinityOp = dyn_cast<IREE::Stream::AffinityOpInterface>(op)) {
+      affinityAttr = affinityOp.getAffinityAttr();
+    }
+    if (!IREE::Stream::AffinityAttr::canExecuteTogether(
+            affinityAttr, builders[partitionOrdinal]->affinity)) {
+      return false;
+    }
+
+    bool preferCloneToConsumers =
+        check_for_clones && streamableOp.preferCloneToConsumers();
     llvm::BitVector *opHazards = nullptr;
     llvm::BitVector opHazardsInCandidatePartition;
     if (preferCloneToConsumers) {
@@ -115,11 +127,13 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
       // it should not produce invalid partitioning.
       opHazards = &opHazardsInCandidatePartition;
       for (auto user : op.getUsers()) {
-        if (builders[partitionOrdinal]->ops.contains(user))
+        if (builders[partitionOrdinal]->ops.contains(user)) {
           opHazardsInCandidatePartition |= opInfos[user].hazards;
+        }
       }
-    } else
+    } else {
       opHazards = &opInfo.hazards;
+    }
 
     for (auto opHazardOrdinal : opHazards->set_bits()) {
       if (partitionOrdinal < opHazardOrdinal) {
@@ -132,8 +146,9 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
       }
       // Check for formation of circular dependency between partitions.
       if (willCreateCircularDependencyBetweenPartitions(opHazardOrdinal,
-                                                        partitionOrdinal))
+                                                        partitionOrdinal)) {
         return false;
+      }
     }
     return true;
   };
@@ -143,6 +158,13 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
   llvm::DenseMap<Operation *, llvm::SmallVector<Operation *>> syncOps;
 
   for (auto &op : llvm::reverse(*block)) {
+
+    LLVM_DEBUG({
+      llvm::dbgs() << "====\nPartitioning op:\n";
+      op.print(llvm::dbgs(), *asmState);
+      llvm::dbgs() << "\n";
+    });
+
     // Skip constants; they just add noise (and since they are heavily CSE'd
     // they have lots of users to test).
     if (op.hasTrait<OpTrait::ConstantLike>()) {
@@ -173,11 +195,17 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
         dyn_cast<IREE::Stream::AsyncTransferOp>(op)) {
       auto producer = op.getOperand(0).getDefiningOp();
       auto streamable =
-          dyn_cast_or_null<IREE::Stream::StreamableOpInterface>(producer);
+          dyn_cast_if_present<IREE::Stream::StreamableOpInterface>(producer);
       if (streamable) {
-        if (!syncOps.contains(producer))
+        if (!syncOps.contains(producer)) {
           syncOps[producer] = llvm::SmallVector<Operation *>();
+        }
         syncOps[producer].push_back(&op);
+        LLVM_DEBUG({
+          llvm::dbgs() << "Skipping sync op for now \n";
+          op.print(llvm::dbgs(), *asmState);
+          llvm::dbgs() << "\n";
+        });
         continue;
       }
     }
@@ -191,20 +219,15 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
     opInfo.hazards.reserve(builders.size() + 1);
     opInfo.hazards.resize(builders.size(), /*t=*/false);
 
-    LLVM_DEBUG({
-      llvm::dbgs() << "====\nPartitioning op:\n";
-      op.print(llvm::dbgs(), *asmState);
-      llvm::dbgs() << "\n";
-    });
-
     // Set bits for each partition this op may be able to be placed into.
     // We prune the set based on whether the users are part of a transitive
     // dependency chain down the use-def chain to a partition.
     llvm::BitVector consumers(builders.size(), /*t=*/false);
     for (auto user : op.getUsers()) {
       auto userInfoIt = opInfos.find(user);
-      if (userInfoIt == opInfos.end())
+      if (userInfoIt == opInfos.end()) {
         continue;
+      }
       auto &userInfo = userInfoIt->second;
       LLVM_DEBUG({
         llvm::dbgs() << "Testing user:\n";
@@ -225,9 +248,23 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
     for (auto syncOp : syncOps[&op]) {
       for (auto user : syncOp->getUsers()) {
         auto userInfoIt = opInfos.find(user);
-        if (userInfoIt == opInfos.end())
+        if (userInfoIt == opInfos.end()) {
           continue;
+        }
         auto &userInfo = userInfoIt->second;
+
+        LLVM_DEBUG({
+          llvm::dbgs() << "Testing sync user:\n";
+          user->print(llvm::dbgs(), *asmState);
+          llvm::dbgs() << "\n";
+          for (auto membershipOrdinal : userInfo.membership.set_bits()) {
+            llvm::dbgs() << "  member of partition " << membershipOrdinal
+                         << "\n";
+          }
+          for (auto hazardOrdinal : userInfo.hazards.set_bits()) {
+            llvm::dbgs() << "  hazard w/ partition " << hazardOrdinal << "\n";
+          }
+        });
         opInfo.hazards |= userInfo.membership;
         opInfo.hazards |= userInfo.hazards;
         consumers.reset();
@@ -266,6 +303,34 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
     if (!streamableOp) {
       LLVM_DEBUG(llvm::dbgs() << "Not streamable (skip)\n");
       continue;
+    }
+
+    // If we prefer to clone to our consumers, but we are
+    // only cloning to a subset, we have to re-check our
+    // partitions as they may generate cycles.
+    if (streamableOp.preferCloneToConsumers()) {
+      auto tempCandidates = candidates;
+      tempCandidates &= consumers;
+      if (tempCandidates.count() != consumers.count()) {
+        // Prune candidates that do not have a compatible affinity.
+        for (auto ordinal : candidates.set_bits()) {
+          if (!canAddOpToPartition(op, opInfo, ordinal, false)) {
+            LLVM_DEBUG(llvm::dbgs() << "Candidate partition " << ordinal
+                                    << " incompatible for clone\n");
+            candidates.reset(ordinal);
+          }
+        }
+
+        for (auto syncOp : syncOps[&op]) {
+          for (auto ordinal : candidates.set_bits()) {
+            if (!canAddOpToPartition(*syncOp, opInfo, ordinal, false)) {
+              LLVM_DEBUG(llvm::dbgs() << "Candidate partition " << ordinal
+                                      << " incompatible for clone\n");
+              candidates.reset(ordinal);
+            }
+          }
+        }
+      }
     }
 
     // First see which partitions are consuming this that we can also safely
@@ -307,6 +372,10 @@ partitionStreamableOpsReference(IREE::Stream::PartitioningConfigAttr config,
 
     // If we have synchronization operations we can place in the last block:
     for (auto syncOp : syncOps[&op]) {
+      LLVM_DEBUG(llvm::dbgs() << "Moving sync to candidate partition "
+                              << firstCandidateOrdinal << ":\n    ");
+      LLVM_DEBUG(syncOp->print(llvm::dbgs(), *asmState));
+      LLVM_DEBUG(llvm::dbgs() << "\n");
       builder->insert(syncOp, opInfo);
     }
 
@@ -458,8 +527,9 @@ partitionRegionConcurrencyReference(IREE::Stream::PartitioningConfigAttr config,
     // dependency chain down the use-def chain to a wave.
     for (auto user : op.getUsers()) {
       auto userInfoIt = opInfos.find(user);
-      if (userInfoIt == opInfos.end())
+      if (userInfoIt == opInfos.end()) {
         continue;
+      }
       auto &userInfo = userInfoIt->second;
       LLVM_DEBUG({
         llvm::dbgs() << "Testing user:\n";
@@ -488,18 +558,22 @@ partitionRegionConcurrencyReference(IREE::Stream::PartitioningConfigAttr config,
     // For each resource operand of this op we scan back through previously
     // created waves to see if there are any partitioned ops that have a hazard.
     for (auto operand : op.getOperands()) {
-      if (!isa<IREE::Stream::ResourceType>(operand.getType()))
+      if (!isa<IREE::Stream::ResourceType>(operand.getType())) {
         continue;
+      }
       for (auto user : operand.getUsers()) {
         if (user == &op || user->getBlock() != block ||
-            user->isBeforeInBlock(&op))
+            user->isBeforeInBlock(&op)) {
           continue;
+        }
         auto tiedOp = dyn_cast<IREE::Util::TiedOpInterface>(user);
-        if (!tiedOp || !tiedOp.hasAnyTiedUses(operand))
+        if (!tiedOp || !tiedOp.hasAnyTiedUses(operand)) {
           continue;
+        }
         auto userInfoIt = opInfos.find(user);
-        if (userInfoIt == opInfos.end())
+        if (userInfoIt == opInfos.end()) {
           continue;
+        }
         auto &userInfo = userInfoIt->second;
         LLVM_DEBUG({
           llvm::dbgs() << "Testing tied user:\n";

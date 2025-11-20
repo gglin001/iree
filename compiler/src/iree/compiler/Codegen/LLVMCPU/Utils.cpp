@@ -8,60 +8,98 @@
 
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "llvm/ADT/STLExtras.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "llvm/Support/CommandLine.h"
 
 #define DEBUG_TYPE "iree-llvmcpu-utils"
 
+constexpr char kMaxStackAllocationSizeAttrName[] = "max_stack_allocation_size";
+constexpr char kNativeVectorSizeAttrName[] = "native_vector_size";
+
 namespace mlir::iree_compiler {
 
-bool preferIntrinsicsOverAsm(IREE::HAL::ExecutableTargetAttr targetAttr) {
+static llvm::cl::opt<int32_t> clMaxAllowedNumberOfNativeVectors(
+    "iree-llvmcpu-max-allowed-number-of-native-vectors",
+    llvm::cl::desc("ratio used to compute the max allowed vector size"),
+    llvm::cl::init(512));
+
+std::optional<int64_t>
+getConfigMaxStackAllocationSize(DictionaryAttr targetConfig) {
+  auto attr = targetConfig.getAs<IntegerAttr>(kMaxStackAllocationSizeAttrName);
+  if (attr) {
+    return attr.getInt();
+  }
+  return std::nullopt;
+}
+void addConfigMaxStackAllocationSize(MLIRContext *context,
+                                     int64_t maxStackAllocationSize,
+                                     SmallVectorImpl<NamedAttribute> &config) {
+  config.emplace_back(
+      StringAttr::get(context, kMaxStackAllocationSizeAttrName),
+      IntegerAttr::get(IntegerType::get(context, 64), maxStackAllocationSize));
+}
+
+std::optional<int64_t> getConfigNativeVectorSize(DictionaryAttr targetConfig) {
+  auto attr = targetConfig.getAs<IntegerAttr>(kNativeVectorSizeAttrName);
+  if (attr) {
+    return attr.getInt();
+  }
+  return std::nullopt;
+}
+void addConfigNativeVectorSize(MLIRContext *context, int64_t nativeVectorSize,
+                               SmallVectorImpl<NamedAttribute> &config) {
+  config.emplace_back(
+      StringAttr::get(context, kNativeVectorSizeAttrName),
+      IntegerAttr::get(IntegerType::get(context, 64), nativeVectorSize));
+}
+
+bool preferIntrinsicsOverAsm(DictionaryAttr targetConfig) {
   auto intrinsicsAttr =
-      getConfigBoolAttr(targetAttr, "prefer_intrinsics_over_asm");
-  return intrinsicsAttr && intrinsicsAttr->getValue();
+      targetConfig.getAs<BoolAttr>("prefer_intrinsics_over_asm");
+  return intrinsicsAttr && intrinsicsAttr.getValue();
 }
 
-bool hasAVX2Feature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasFeature(targetAttr, "+avx2");
+bool hasAVX2Feature(DictionaryAttr targetConfig) {
+  return hasFeature(targetConfig, "+avx2");
 }
 
-bool hasAVX512fFeature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasFeature(targetAttr, "+avx512f");
+bool hasAVX512fFeature(DictionaryAttr targetConfig) {
+  return hasFeature(targetConfig, "+avx512f");
 }
 
-bool hasVFeature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasFeature(targetAttr, "+v");
+bool hasVFeature(DictionaryAttr targetConfig) {
+  return hasFeature(targetConfig, "+v");
 }
 
-bool hasZve32xFeature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasFeature(targetAttr, "+zve32x");
+bool hasZve32xFeature(DictionaryAttr targetConfig) {
+  return hasFeature(targetConfig, "+zve32x");
 }
 
-bool hasZve32fFeature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasFeature(targetAttr, "+zve32f");
+bool hasZve32fFeature(DictionaryAttr targetConfig) {
+  return hasFeature(targetConfig, "+zve32f");
 }
 
-bool hasZve64xFeature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasFeature(targetAttr, "+zve64x");
+bool hasZve64xFeature(DictionaryAttr targetConfig) {
+  return hasFeature(targetConfig, "+zve64x");
 }
 
-bool hasAnyVFeature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasVFeature(targetAttr) || hasZve32xFeature(targetAttr) ||
-         hasZve32fFeature(targetAttr) || hasZve64xFeature(targetAttr) ||
-         hasFeature(targetAttr, "+zve64f") || hasFeature(targetAttr, "+zve64d");
+bool hasAnyVFeature(DictionaryAttr targetConfig) {
+  return hasVFeature(targetConfig) || hasZve32xFeature(targetConfig) ||
+         hasZve32fFeature(targetConfig) || hasZve64xFeature(targetConfig) ||
+         hasFeature(targetConfig, "+zve64f") ||
+         hasFeature(targetConfig, "+zve64d");
 }
 
-bool hasAnySVEFeature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasFeature(targetAttr, "+sve") || hasFeature(targetAttr, "+sve2") ||
-         hasFeature(targetAttr, "+v9a");
+bool hasAnySVEFeature(DictionaryAttr targetConfig) {
+  return hasFeature(targetConfig, "+sve") ||
+         hasFeature(targetConfig, "+sve2") || hasFeature(targetConfig, "+v9a");
 }
 
-bool hasSMEFeature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasFeature(targetAttr, "+sme");
+bool hasSMEFeature(DictionaryAttr targetConfig) {
+  return hasFeature(targetConfig, "+sme");
 }
 
-bool hasI8mmFeature(IREE::HAL::ExecutableTargetAttr targetAttr) {
-  return hasFeature(targetAttr, "+i8mm");
+bool hasI8mmFeature(DictionaryAttr targetConfig) {
+  return hasFeature(targetConfig, "+i8mm");
 }
 
 bool isLinalgGeneric2DTranspose(linalg::GenericOp genericOp) {
@@ -110,6 +148,22 @@ bool mayHaveUndefinedBehaviorInMasking(Operation *op) {
     return true;
   }
   return false;
+}
+
+int64_t getMaxVectorSizeForLargeVectorCheck(
+    IREE::HAL::ExecutableTargetAttr targetAttr) {
+  // Use 64 bits as target hardware vector size if the native_vector_size is not
+  // present.
+  int64_t maxVectorSizeInBytes = 8;
+  if (targetAttr) {
+    std::optional<int64_t> nativeVectorSizeAttr =
+        getConfigNativeVectorSize(targetAttr.getConfiguration());
+    if (nativeVectorSizeAttr) {
+      maxVectorSizeInBytes = nativeVectorSizeAttr.value();
+    }
+  }
+  maxVectorSizeInBytes *= clMaxAllowedNumberOfNativeVectors;
+  return maxVectorSizeInBytes;
 }
 
 } // namespace mlir::iree_compiler

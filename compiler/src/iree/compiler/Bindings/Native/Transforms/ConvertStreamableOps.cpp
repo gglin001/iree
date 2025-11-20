@@ -20,6 +20,9 @@
 
 namespace mlir::iree_compiler::IREE::ABI {
 
+#define GEN_PASS_DEF_CONVERTSTREAMABLEOPSPASS
+#include "iree/compiler/Bindings/Native/Transforms/Passes.h.inc"
+
 static constexpr int64_t kUnspecifiedDim = -1;
 static constexpr int64_t kTiedDim = -2;
 
@@ -91,7 +94,7 @@ convertStreamableFunc(mlir::ModuleOp moduleOp, IREE::Util::FuncOp funcOp,
   // Because streamable ops are asynchronous they must be able to declare their
   // result shapes before they execute so memory can be allocated.
   for (auto resultType : functionType.getResults()) {
-    if (auto shapedType = llvm::dyn_cast<ShapedType>(resultType)) {
+    if (auto shapedType = dyn_cast<ShapedType>(resultType)) {
       streamableFunc.requiredResultDims += shapedType.getNumDynamicDims();
     }
   }
@@ -158,7 +161,7 @@ convertStreamableFunc(mlir::ModuleOp moduleOp, IREE::Util::FuncOp funcOp,
     // arbitrarily complex (up to and including calling a function to compute
     // dims).
     SmallVector<int64_t> dynamicDimArgs;
-    auto shapedType = llvm::dyn_cast<ShapedType>(resultType);
+    auto shapedType = dyn_cast<ShapedType>(resultType);
     if (shapedType) {
       // Initialize dynamic dim args - we'll verify that they all get covered.
       dynamicDimArgs.resize(shapedType.getNumDynamicDims(), kUnspecifiedDim);
@@ -235,9 +238,9 @@ convertStreamableFunc(mlir::ModuleOp moduleOp, IREE::Util::FuncOp funcOp,
       anyTiedOperands
           ? moduleBuilder.getIndexArrayAttr(streamableFunc.tiedOperands)
           : ArrayAttr{};
-  streamableFunc.funcOp = moduleBuilder.create<IREE::Flow::FuncOp>(
-      funcOp.getLoc(), funcOp.getName(), functionType, tiedOperandsAttr,
-      funcAttrs, funcArgAttrs, funcResAttrs);
+  streamableFunc.funcOp = IREE::Flow::FuncOp::create(
+      moduleBuilder, funcOp.getLoc(), funcOp.getName(), functionType,
+      tiedOperandsAttr, funcAttrs, funcArgAttrs, funcResAttrs);
 
   // Swap out the symbol in the symbol table.
   symbolTable.erase(funcOp);
@@ -253,7 +256,7 @@ static LogicalResult convertStreamableCall(StreamableFunc &streamableFunc,
   // Capture all argument dynamic dimensions.
   SmallVector<Value> argDims;
   for (auto arg : callOp.getOperands()) {
-    if (llvm::isa<ShapedType>(arg.getType())) {
+    if (isa<ShapedType>(arg.getType())) {
       llvm::append_range(argDims, IREE::Util::buildDynamicDimsForValue(
                                       callOp.getLoc(), arg, builder));
     }
@@ -266,8 +269,8 @@ static LogicalResult convertStreamableCall(StreamableFunc &streamableFunc,
     // It should return the required number of dynamic dimensions.
     SmallVector<Type> resultDimTypes(streamableFunc.requiredResultDims,
                                      builder.getIndexType());
-    auto calculateCallOp = builder.create<IREE::Util::CallOp>(
-        callOp.getLoc(), resultDimTypes,
+    auto calculateCallOp = IREE::Util::CallOp::create(
+        builder, callOp.getLoc(), resultDimTypes,
         streamableFunc.resultDimsFunc.getLeafReference().getValue(),
         callOp.getOperands(), /*tied_operands=*/ArrayAttr{},
         callOp.getArgAttrsAttr(), callOp.getResAttrsAttr());
@@ -275,7 +278,7 @@ static LogicalResult convertStreamableCall(StreamableFunc &streamableFunc,
   } else {
     // Get the shape dimensions from existing call arguments or tied operands.
     for (auto [i, resultType] : llvm::enumerate(callOp.getResultTypes())) {
-      if (auto shapedType = llvm::dyn_cast<ShapedType>(resultType)) {
+      if (auto shapedType = dyn_cast<ShapedType>(resultType)) {
         const auto &resultDimArgs = streamableFunc.resultDimArgs[i];
         if (resultDimArgs.empty())
           continue;
@@ -302,8 +305,8 @@ static LogicalResult convertStreamableCall(StreamableFunc &streamableFunc,
   }
 
   // Replace the original func.call with the new flow.call.
-  auto streamableCallOp = builder.create<IREE::Flow::CallOp>(
-      callOp.getLoc(), callOp.getCalleeAttr(), callOp.getResultTypes(),
+  auto streamableCallOp = IREE::Flow::CallOp::create(
+      builder, callOp.getLoc(), callOp.getCalleeAttr(), callOp.getResultTypes(),
       resultDims, callOp.getOperands(), argDims,
       streamableFunc.funcOp.getTiedOperandsAttr());
   streamableCallOp->setDialectAttrs(callOp->getDialectAttrs());
@@ -329,27 +332,12 @@ convertStreamableCalls(mlir::ModuleOp moduleOp,
 }
 
 class ConvertStreamableOpsPass
-    : public PassWrapper<ConvertStreamableOpsPass, OperationPass<ModuleOp>> {
+    : public impl::ConvertStreamableOpsPassBase<ConvertStreamableOpsPass> {
 public:
-  ConvertStreamableOpsPass() = default;
-  ConvertStreamableOpsPass(const ConvertStreamableOpsPass &pass) {}
-
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<mlir::tensor::TensorDialect, IREE::Flow::FlowDialect,
-                    IREE::Util::UtilDialect>();
-  }
-
-  StringRef getArgument() const override {
-    return "iree-abi-convert-streamable-ops";
-  }
-
-  StringRef getDescription() const override {
-    return "Converts streamable ops in input dialects into their IREE dialect "
-           "forms.";
-  }
+  using Base::Base;
 
   void runOnOperation() override {
-    auto moduleOp = getOperation();
+    mlir::ModuleOp moduleOp = getOperation();
 
     // Gather functions that need wrapping.
     SmallVector<IREE::Util::FuncOp> originalFuncOps;
@@ -385,11 +373,5 @@ public:
     }
   }
 };
-
-std::unique_ptr<OperationPass<ModuleOp>> createConvertStreamableOpsPass() {
-  return std::make_unique<ConvertStreamableOpsPass>();
-}
-
-static PassRegistration<ConvertStreamableOpsPass> pass;
 
 } // namespace mlir::iree_compiler::IREE::ABI

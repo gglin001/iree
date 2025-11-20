@@ -7,7 +7,9 @@
 // TODO(benvanik): find a way to share the files (environment variables saying
 // what types to run, etc).
 
-// RUN: iree-compile --iree-hal-target-backends=llvm-cpu %s | \
+// RUN: iree-compile %s \
+// RUN:     --iree-hal-target-device=local \
+// RUN:     --iree-hal-local-target-device-backends=llvm-cpu | \
 // RUN: iree-run-module \
 // RUN:     --device=local-sync \
 // RUN:     --executable_plugin=$IREE_BINARY_DIR/samples/custom_dispatch/cpu/plugin/standalone_plugin.sos \
@@ -83,11 +85,11 @@ module @example {
         // The default `memref` lowering contains additional fields that might not be
         // always required. In this example, we only need the base and offset of the
         // `memref`s. So extract the base and offset from the memrefs.
-        %base0, %offset0, %size0, %stride0 = memref.extract_strided_metadata %memref0
+        %base0, %offset0, %size0, %stride0 = iree_codegen.extract_strided_metadata %memref0
             : memref<?xf32> -> memref<f32>, index, index, index
-        %base1, %offset1, %size1, %stride1 = memref.extract_strided_metadata %memref1
+        %base1, %offset1, %size1, %stride1 = iree_codegen.extract_strided_metadata %memref1
             : memref<?xf32> -> memref<f32>, index, index, index
-        %base2, %offset2, %size2, %stride2 = memref.extract_strided_metadata %memref2
+        %base2, %offset2, %size2, %stride2 = iree_codegen.extract_strided_metadata %memref2
             : memref<?xf32> -> memref<f32>, index, index, index
 
         // Call the externally defined C function with an (almost) plain C

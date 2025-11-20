@@ -12,26 +12,17 @@ include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 //===----------------------------------------------------------------------===//
-// Base class.
-//===----------------------------------------------------------------------===//
-
-class IREEEncoding_PureOp<string mnemonic, list<Trait> traits = []> :
-    Op<IREEEncoding_Dialect, mnemonic, traits> {
-}
-
-//===----------------------------------------------------------------------===//
 // set_encoding op.
 //===----------------------------------------------------------------------===//
 
 def IREEEncoding_SetEncodingOp : IREEEncoding_PureOp<"set_encoding",[
-   DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>, Pure
+   DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface, ["reifyResultShapes"]>, Pure
   ]> {
-  let summary = "perform pack and pad operation on source";
+  let summary = [{Perform pack and pad operation on source.}];
   let description = [{
     Operation to assign an encoding to a tensor. The operation does not change
-    the rank or extent of a tensor. Instead it adds an
-    EncodingLayoutResolverAttrInterface attribute to the tensor type to
-    represent a change in layout.
+    the rank or extent of a tensor. Instead it adds a LayoutResolverAttr
+    attribute to the tensor type to represent a change in layout.
   }];
 
   let arguments = (ins AnyRankedTensor:$source);
@@ -58,12 +49,12 @@ def IREEEncoding_SetEncodingOp : IREEEncoding_PureOp<"set_encoding",[
 //===----------------------------------------------------------------------===//
 
 def IREEEncoding_UnsetEncodingOp : IREEEncoding_PureOp<"unset_encoding", [
-    DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>, Pure
+    DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface, ["reifyResultShapes"]>, Pure
   ]> {
-  let summary = "perfom unpack and extract operation on source";
+  let summary = [{Perform unpack and extract operation on source.}];
   let description = [{
-    Operation to convert an tensor with EncodingLayoutResolverAttrInterface
-    encoding that represents its data layout into a tensor with default layout
+    Operation to convert a tensor with LayoutResolverAttr encoding that
+    represents its data layout into a tensor with default layout
     (i.e. no encoding). For now in IREE the default layout is row-major.
   }];
   let arguments = (ins

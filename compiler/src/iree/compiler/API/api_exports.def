@@ -5,7 +5,9 @@ EXPORTS
   ireeAttributeIsACodegenTranslationInfoAttr
   ireeAttributeIsAGPULoweringConfigAttr
   ireeAttributeIsAGPUMMAAttr
+  ireeAttributeIsAGPUVirtualMMAAttr
   ireeAttributeIsAGPUMMAIntrinsicAttr
+  ireeAttributeIsAGPUVirtualIntrinsicAttr
   ireeAttributeIsAGPUPipelineOptionsAttr
   ireeAttributeIsAGPUReorderWorkgroupsStrategyAttr
   ireeCodegenCompilationInfoAttrGet
@@ -15,7 +17,12 @@ EXPORTS
   ireeCodegenDispatchLoweringPassPipelineAttrGetTypeID
   ireeCodegenDispatchLoweringPassPipelineAttrGetValue
   ireeCodegenGetExecutableVariantOps
-  ireeCodegenQueryMMAIntrinsics
+  ireeGPUGetSingleSubgroupLayout
+  ireeCodegenGetTunerRootOps
+  ireeCodegenGetAttentionOpDetail
+  ireeCodegenMlirOperationIsACodegenAttentionOp
+  ireeCodegenHasIGEMMGenericConvDetails
+  ireeCodegenGetIGEMMGenericConvDetails
   ireeCodegenTranslationInfoAttrGet
   ireeCodegenTranslationInfoAttrGetParameters
   ireeCodegenTranslationInfoAttrGetTypeID
@@ -72,16 +79,22 @@ EXPORTS
   ireeCompilerSourceWrapBuffer
   ireeGPULoweringConfigAttrGet
   ireeGPULoweringConfigAttrGetAttributes
-  ireeGPULoweringConfigAttrGetTypeID
-  ireeGPULoweringConfigAttrGetTileSizes
-  ireeGPULoweringConfigAttrGetSubgroupCount
   ireeGPULoweringConfigAttrGetMmaKind
+  ireeGPULoweringConfigAttrGetSubgroupBasis
+  ireeGPULoweringConfigAttrGetTileSizes
+  ireeGPULoweringConfigAttrGetTypeID
   ireeGPUMMAAttrGet
+  ireeGPUVirtualMMAAttrGet
   ireeGPUMMAAttrGetInfo
   ireeGPUMMAAttrGetTypeID
+  ireeGPUVirtualMMAAttrGetTypeID
   ireeGPUMMAIntrinsicAttrGet
+  ireeGPUVirtualMMAIntrinsicAttrGet
   ireeGPUMMAIntrinsicAttrGetTypeID
+  ireeGPUVirtualMMAIntrinsicAttrGetTypeID
   ireeGPUMMAIntrinsicAttrGetValue
+  ireeGPUVirtualMMAIntrinsicAttrGetValue
+  ireeGPUMMAAttrGetVirtualMMAIntrinsic
   ireeGPUPipelineOptionsAttrGet
   ireeGPUPipelineOptionsAttrGetNoReduceSharedMemoryBankConflicts
   ireeGPUPipelineOptionsAttrGetPrefetchSharedMemory
@@ -91,6 +104,10 @@ EXPORTS
   ireeGPUReorderWorkgroupsStrategyAttrGet
   ireeGPUReorderWorkgroupsStrategyAttrGetTypeID
   ireeGPUReorderWorkgroupsStrategyAttrGetValue
+  ireeGPUTargetInfoGet
+  ireeGPUTargetInfoGetMMAIntrinsics
+  ireeHALExecutableTargetAttrGetGPUTargetInfo
+  ireeLinkRunMain
   ireeMlirLspServerRunMain
   ireeOptRunMain
   ireeReduceRunMain
@@ -122,6 +139,8 @@ EXPORTS
   mlirAffineExprIsPureAffine
   mlirAffineExprIsSymbolicOrConstant
   mlirAffineExprPrint
+  mlirAffineExprShiftDims
+  mlirAffineExprShiftSymbols
   mlirAffineFloorDivExprGet
   mlirAffineMapAttrGet
   mlirAffineMapAttrGetTypeID
@@ -248,7 +267,9 @@ EXPORTS
   mlirContextGetAllowUnregisteredDialects
   mlirContextGetNumLoadedDialects
   mlirContextGetNumRegisteredDialects
+  mlirContextGetNumThreads
   mlirContextGetOrLoadDialect
+  mlirContextGetThreadPool
   mlirContextIsRegisteredOperation
   mlirContextLoadAllAvailableDialects
   mlirContextSetAllowUnregisteredDialects
@@ -275,6 +296,7 @@ EXPORTS
   mlirDenseElementsAttrGetDoubleValue
   mlirDenseElementsAttrGetFloatSplatValue
   mlirDenseElementsAttrGetFloatValue
+  mlirDenseElementsAttrGetIndexValue
   mlirDenseElementsAttrGetInt16Value
   mlirDenseElementsAttrGetInt32SplatValue
   mlirDenseElementsAttrGetInt32Value
@@ -414,7 +436,6 @@ EXPORTS
   mlirGPUObjectAttrGetWithKernels
   mlirGPUObjectAttrHasKernels
   mlirGPUObjectAttrHasProperties
-  mlirGetDialectHandle__iree_input__
   mlirGetDialectHandle__transform__
   mlirIREELinalgTransformRegisterPasses
   mlirIREETransformRegisterPasses
@@ -466,6 +487,7 @@ EXPORTS
   mlirIsCurrentDebugType
   mlirIsGlobalDebugEnabled
   mlirLLVMArrayTypeGet
+  mlirLLVMArrayTypeGetElementType
   mlirLLVMCConvAttrGet
   mlirLLVMComdatAttrGet
   mlirLLVMDIAnnotationAttrGet
@@ -497,6 +519,9 @@ EXPORTS
   mlirLLVMDISubprogramAttrGetType
   mlirLLVMDISubroutineTypeAttrGet
   mlirLLVMFunctionTypeGet
+  mlirLLVMFunctionTypeGetInput
+  mlirLLVMFunctionTypeGetNumInputs
+  mlirLLVMFunctionTypeGetReturnType
   mlirLLVMLinkageAttrGet
   mlirLLVMPointerTypeGet
   mlirLLVMPointerTypeGetAddressSpace
@@ -517,13 +542,34 @@ EXPORTS
   mlirLlvmThreadPoolCreate
   mlirLlvmThreadPoolDestroy
   mlirLocationCallSiteGet
+  mlirLocationCallSiteGetCallee
+  mlirLocationCallSiteGetCaller
+  mlirLocationCallSiteGetTypeID
   mlirLocationEqual
   mlirLocationFileLineColGet
+  mlirLocationFileLineColRangeGet
+  mlirLocationFileLineColRangeGetEndColumn
+  mlirLocationFileLineColRangeGetEndLine
+  mlirLocationFileLineColRangeGetFilename
+  mlirLocationFileLineColRangeGetStartColumn
+  mlirLocationFileLineColRangeGetStartLine
+  mlirLocationFileLineColRangeGetTypeID
   mlirLocationFromAttribute
   mlirLocationFusedGet
+  mlirLocationFusedGetLocations
+  mlirLocationFusedGetMetadata
+  mlirLocationFusedGetNumLocations
+  mlirLocationFusedGetTypeID
   mlirLocationGetAttribute
   mlirLocationGetContext
+  mlirLocationIsACallSite
+  mlirLocationIsAFileLineColRange
+  mlirLocationIsAFused
+  mlirLocationIsAName
   mlirLocationNameGet
+  mlirLocationNameGetChildLoc
+  mlirLocationNameGetName
+  mlirLocationNameGetTypeID
   mlirLocationPrint
   mlirLocationUnknownGet
   mlirMemRefTypeContiguousGet
@@ -538,6 +584,7 @@ EXPORTS
   mlirMergeSymbolsIntoFromClone
   mlirModuleCreateEmpty
   mlirModuleCreateParse
+  mlirModuleCreateParseFromFile
   mlirModuleDestroy
   mlirModuleFromOperation
   mlirModuleGetBody
@@ -561,6 +608,7 @@ EXPORTS
   mlirOpPrintingFlagsElideLargeResourceString
   mlirOpPrintingFlagsEnableDebugInfo
   mlirOpPrintingFlagsPrintGenericOpForm
+  mlirOpPrintingFlagsPrintNameLocAsPrefix
   mlirOpPrintingFlagsSkipRegions
   mlirOpPrintingFlagsUseLocalScope
   mlirOpResultGetOwner
@@ -711,6 +759,7 @@ EXPORTS
   mlirShapedTypeIsDynamicDim
   mlirShapedTypeIsDynamicSize
   mlirShapedTypeIsDynamicStrideOrOffset
+  mlirSimplifyAffineExpr
   mlirSparseElementsAttrGetIndices
   mlirSparseElementsAttrGetTypeID
   mlirSparseElementsAttrGetValues
@@ -849,12 +898,15 @@ EXPORTS
   mlirUnrankedTensorTypeGetTypeID
   mlirValueDump
   mlirValueEqual
+  mlirValueGetContext
   mlirValueGetFirstUse
+  mlirValueGetLocation
   mlirValueGetType
   mlirValueIsABlockArgument
   mlirValueIsAOpResult
   mlirValuePrint
   mlirValuePrintAsOperand
+  mlirValueReplaceAllUsesExcept
   mlirValueReplaceAllUsesOfWith
   mlirValueSetType
   mlirVectorTypeGet

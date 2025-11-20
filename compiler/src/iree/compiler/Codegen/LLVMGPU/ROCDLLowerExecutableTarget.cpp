@@ -10,6 +10,7 @@
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
+#include "mlir/Dialect/AMDGPU/IR/AMDGPUDialect.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -37,9 +38,10 @@ public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
         .insert<IREE::HAL::HALDialect, IREE::LinalgExt::IREELinalgExtDialect,
-                IREE::GPU::IREEGPUDialect, bufferization::BufferizationDialect,
-                gpu::GPUDialect, linalg::LinalgDialect, scf::SCFDialect,
-                tensor::TensorDialect, vector::VectorDialect>();
+                IREE::GPU::IREEGPUDialect, amdgpu::AMDGPUDialect,
+                bufferization::BufferizationDialect, gpu::GPUDialect,
+                linalg::LinalgDialect, scf::SCFDialect, tensor::TensorDialect,
+                vector::VectorDialect>();
   }
 
   void runOnOperation() override {
@@ -67,11 +69,9 @@ public:
     case CodeGenPipeline::LLVMGPUBaseLowering:
       addGPUBaseLoweringPassPipeline(pipeline);
       break;
-    case CodeGenPipeline::LLVMGPUWarpReduction:
-      addGPUWarpReductionPassPipeline(pipeline);
-      break;
     case CodeGenPipeline::LLVMGPUTileAndFuse:
-      addGPUTileAndFusePassPipeline(pipeline, pipelineOptions);
+      addGPUTileAndFusePassPipeline(pipeline, pipelineOptions,
+                                    /*forROCDL=*/true);
       break;
     // If no pipeline specified, then nothing to do.
     case IREE::Codegen::DispatchLoweringPassPipeline::None:

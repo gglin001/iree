@@ -42,6 +42,8 @@ export IREE_NVIDIA_GPU_TESTS_DISABLE="${IREE_NVIDIA_GPU_TESTS_DISABLE:-1}"
 export IREE_NVIDIA_SM80_TESTS_DISABLE="${IREE_NVIDIA_SM80_TESTS_DISABLE:-1}"
 # Respect the user setting, but default to skipping tests that require RDNA3 AMD GPU.
 export IREE_AMD_RDNA3_TESTS_DISABLE="${IREE_AMD_RDNA3_TESTS_DISABLE:-1}"
+# Respect the user setting, but default to skipping tests that require RDNA4 AMD GPU.
+export IREE_AMD_RDNA4_TESTS_DISABLE="${IREE_AMD_RDNA4_TESTS_DISABLE:-1}"
 # Respect the user setting, but default to skipping tests that require more than one device(GPU).
 export IREE_MULTI_DEVICE_TESTS_DISABLE="${IREE_MULTI_DEVICE_TESTS_DISABLE:-1}"
 # Respect the user setting, default to no --repeat-until-fail.
@@ -97,6 +99,9 @@ fi
 if (( IREE_AMD_RDNA3_TESTS_DISABLE == 1 )); then
   label_exclude_args+=("^requires-gpu-rdna3$")
 fi
+if (( IREE_AMD_RDNA4_TESTS_DISABLE == 1 )); then
+  label_exclude_args+=("^requires-gpu-rdna4$")
+fi
 if (( IREE_MULTI_DEVICE_TESTS_DISABLE == 1 )); then
   label_exclude_args+=("^requires-multiple-devices$")
 fi
@@ -117,10 +122,10 @@ if [[ "${OSTYPE}" =~ ^msys ]]; then
     "iree/tests/e2e/matmul/e2e_matmul_vmvx_dt_uk_i8_small_vmvx_local-task"
     "iree/tests/e2e/matmul/e2e_matmul_vmvx_dt_uk_f32_small_vmvx_local-task"
     # TODO: Regressed when `pack` ukernel gained a uint64_t parameter in #13264.
-    "iree/tests/e2e/tensor_ops/check_vmvx_ukernel_local-task_pack.mlir"
-    "iree/tests/e2e/tensor_ops/check_vmvx_ukernel_local-task_pack_dynamic_inner_tiles.mlir"
+    "iree/tests/e2e/linalg/check_vmvx_ukernel_local-task_pack.mlir"
+    "iree/tests/e2e/linalg/check_vmvx_ukernel_local-task_pack_dynamic_inner_tiles.mlir"
     # TODO: Fix equality mismatch
-    "iree/tests/e2e/tensor_ops/check_vmvx_ukernel_local-task_unpack.mlir"
+    "iree/tests/e2e/linalg/check_vmvx_ukernel_local-task_unpack.mlir"
     # TODO(#11070): Fix argument/result signature mismatch
     "iree/tests/e2e/tosa_ops/check_vmvx_local-sync_microkernels_matmul.mlir"
     # Flaky on CI opening the .safetensors testdata for unknown reasons, skip.
@@ -181,6 +186,7 @@ if (( ${#excluded_tests[@]} )); then
 fi
 
 echo "*************** Running CTest ***************"
+echo "  Using CTEST_PARALLEL_LEVEL=${CTEST_PARALLEL_LEVEL}"
 
 set -x
 ctest ${ctest_args[@]}

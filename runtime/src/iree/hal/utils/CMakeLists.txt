@@ -98,6 +98,19 @@ iree_cc_library(
 
 iree_cc_library(
   NAME
+    executable_header
+  HDRS
+    "executable_header.h"
+  SRCS
+    "executable_header.c"
+  DEPS
+    iree::base
+    iree::base::internal::flatcc::parsing
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
     file_cache
   HDRS
     "file_cache.h"
@@ -181,6 +194,20 @@ iree_cc_library(
   DEPS
     ::libmpi
     iree::base
+    iree::hal
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
+    queue_emulation
+  HDRS
+    "queue_emulation.h"
+  SRCS
+    "queue_emulation.c"
+  DEPS
+    iree::base
+    iree::base::internal
     iree::hal
   PUBLIC
 )
@@ -287,6 +314,22 @@ iree_cc_library(
     ::semaphore_base
     iree::base
     iree::base::internal::arena
+    iree::base::internal::synchronization
+    iree::base::internal::threading
+    iree::hal
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
+    queue_host_call_emulation
+  HDRS
+    "queue_host_call_emulation.h"
+  SRCS
+    "queue_host_call_emulation.c"
+  DEPS
+    iree::base
+    iree::base::internal
     iree::base::internal::synchronization
     iree::base::internal::threading
     iree::hal

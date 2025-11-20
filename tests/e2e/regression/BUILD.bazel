@@ -17,14 +17,6 @@ package(
 )
 
 BACKEND_TESTS = [
-    "dynamic_abs.mlir",
-    "dynamic_add.mlir",
-    "dynamic_dot.mlir",
-    "dynamic_reduce_min.mlir",
-    "dynamic_torch_index_select_high_rank.mlir",
-    "dynamic_torch_index_select_negative.mlir",
-    "dynamic_torch_index_select_scalar.mlir",
-    "dynamic_torch_index_select_vector.mlir",
     "i1_inlined_constant.mlir",
     "linalg_ops.mlir",
     "reduction_broadcast_elementwise.mlir",
@@ -68,7 +60,6 @@ iree_check_single_backend_test_suite(
         "--iree-llvmcpu-target-cpu=generic",
     ],
     driver = "local-task",
-    input_type = "stablehlo",
     target_backend = "llvm-cpu",
 )
 
@@ -76,12 +67,25 @@ iree_check_single_backend_test_suite(
     name = "check_regression_llvm-cpu",
     srcs = [
         "layernorm.mlir",
-        "lowering_config.mlir",
-        "pack_pad_transpose_1x9_into_2x4x8x4_issue_12546.mlir",
+        "pack_pad_transpose_1x9_into_2x1x8x4_issue_12546.mlir",
+        "split_reduction_using_tiling.mlir",
     ] + BACKEND_TESTS,
     compiler_flags = ["--iree-llvmcpu-target-cpu=generic"],
     driver = "local-task",
-    input_type = "stablehlo",
+    target_backend = "llvm-cpu",
+)
+
+# TODO(22013): Merge the test suite into the main one, after the issue is fixed.
+iree_check_single_backend_test_suite(
+    name = "check_regression_dynamic_gather_attention_llvm-cpu",
+    srcs = [
+        "dynamic_gather_attention.mlir",
+    ],
+    compiler_flags = ["--iree-llvmcpu-target-cpu=generic"],
+    driver = "local-task",
+    tags = [
+        "noriscv",
+    ],
     target_backend = "llvm-cpu",
 )
 
@@ -95,7 +99,6 @@ iree_check_single_backend_test_suite(
     ],
     compiler_flags = ["--iree-llvmcpu-target-cpu=generic"],
     driver = "local-task",
-    input_type = "tosa",
     target_backend = "llvm-cpu",
 )
 
@@ -105,7 +108,6 @@ iree_check_single_backend_test_suite(
         "layernorm.mlir",
     ] + BACKEND_TESTS,
     driver = "local-task",
-    input_type = "stablehlo",
     target_backend = "vmvx",
 )
 
@@ -114,7 +116,6 @@ iree_check_single_backend_test_suite(
     # TODO(#10024): Fix layernorm.mlir on Pixel 6 and put in BACKEND_TESTS.
     srcs = BACKEND_TESTS,
     driver = "vulkan",
-    input_type = "stablehlo",
     target_backend = "vulkan-spirv",
 )
 
@@ -125,7 +126,6 @@ iree_check_single_backend_test_suite(
         "layernorm.mlir",
     ] + BACKEND_TESTS,
     driver = "cuda",
-    input_type = "stablehlo",
     tags = [
         # CUDA cuInit fails with sanitizer on.
         "noasan",
@@ -135,6 +135,27 @@ iree_check_single_backend_test_suite(
         "requires-gpu-nvidia",
     ],
     target_backend = "cuda",
+)
+
+iree_check_single_backend_test_suite(
+    name = "check_regression_hip",
+    srcs = [
+        "dynamic_gather_attention.mlir",
+        "linalg_ops_dynamic.mlir",
+        "split_reduction_using_tiling.mlir",
+    ],
+    compiler_flags = [
+        "--iree-opt-level=O3",
+    ],
+    driver = "hip",
+    tags = [
+        "noasan",
+        "nomsan",
+        "notsan",
+        "noubsan",
+        "requires-gpu-amd",
+    ],
+    target_backend = "rocm",
 )
 
 iree_check_single_backend_test_suite(
@@ -159,19 +180,6 @@ iree_check_single_backend_test_suite(
 )
 
 iree_check_single_backend_test_suite(
-    name = "disable_demote_f64_to_f32",
-    srcs = [
-        "disable_demote_f64_to_f32.mlir",
-    ],
-    compiler_flags = [
-        "--iree-input-demote-f64-to-f32=false",
-        "--iree-llvmcpu-target-cpu=generic",
-    ],
-    driver = "local-task",
-    target_backend = "llvm-cpu",
-)
-
-iree_check_single_backend_test_suite(
     name = "aggressive_fusion_test",
     srcs = [
         "softmax.mlir",
@@ -193,11 +201,9 @@ iree_check_single_backend_test_suite(
     name = "check_regression_compilation_only_vmvx_ukernels",
     srcs = [
         "dynamic_matmuls_on_same_accumulator_issue_12060.mlir",
-        "dynamic_tosa_clamp.mlir",
     ],
     compiler_flags = [
         "--iree-vmvx-enable-microkernels",
     ],
-    input_type = "tosa",
     target_backend = "vmvx",
 )

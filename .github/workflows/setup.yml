@@ -21,14 +21,6 @@ on:
         description: |
           Whether the workflow has been triggered by a pull request.
         value: ${{ jobs.setup.outputs.is-pr }}
-      runner-env:
-        description: |
-          The runner environment to use.
-        value: ${{ jobs.setup.outputs.runner-env }}
-      runner-group:
-        description: |
-          The runner group to use.
-        value: ${{ jobs.setup.outputs.runner-group }}
       write-caches:
         description: |
           Whether to write to caches.
@@ -47,12 +39,10 @@ jobs:
     outputs:
       enabled-jobs: ${{ steps.configure.outputs.enabled-jobs }}
       is-pr: ${{ steps.configure.outputs.is-pr }}
-      runner-env: ${{ steps.configure.outputs.runner-env }}
-      runner-group: ${{ steps.configure.outputs.runner-group }}
       write-caches: ${{ steps.configure.outputs.write-caches }}
     steps:
       - name: "Checking out repository"
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           # We need the parent commit to do a diff
           fetch-depth: 2

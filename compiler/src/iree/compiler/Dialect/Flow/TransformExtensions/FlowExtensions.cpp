@@ -9,7 +9,7 @@
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/Flow/Transforms/ConvertRegionToWorkgroups.h"
 #include "iree/compiler/Dialect/Flow/Transforms/RegionOpUtils.h"
-#include "mlir/Analysis/TopologicalSortUtils.h"
+#include "iree/compiler/Dialect/TensorExt/IR/TensorExtOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -60,7 +60,7 @@ static LogicalResult populateWorkgroupCountComputingRegion(
   // For now, this assumes that we only pull in constants.
   // TODO: Iteratively pull operations that are only consuming IndexType.
   for (Value v : forallOp.getUpperBound(rewriter)) {
-    auto op = dyn_cast_or_null<arith::ConstantIndexOp>(v.getDefiningOp());
+    auto op = dyn_cast_if_present<arith::ConstantIndexOp>(v.getDefiningOp());
     if (!op)
       return failure();
     results.push_back(
@@ -68,9 +68,9 @@ static LogicalResult populateWorkgroupCountComputingRegion(
   }
   // Resize to `3` to match IREE's assumptions.
   for (unsigned i = results.size(); i < 3; ++i) {
-    results.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 1));
+    results.push_back(arith::ConstantIndexOp::create(rewriter, loc, 1));
   }
-  rewriter.create<IREE::Flow::ReturnOp>(loc, results);
+  IREE::Flow::ReturnOp::create(rewriter, loc, results);
 
   return success();
 }
@@ -94,13 +94,12 @@ static void rewriteParallelInsertSlices(RewriterBase &rewriter,
     rewriter.setInsertionPoint(block.getTerminator());
     auto dynamicDims = IREE::Util::findDynamicDimsInList(
         resultIndex, resultTensorOperands, resultTensorsDynamicDims);
-    BlockArgument destBbArg =
-        llvm::cast<BlockArgument>(parallelInsertOp.getDest());
+    BlockArgument destBbArg = cast<BlockArgument>(parallelInsertOp.getDest());
     assert(destBbArg.getOwner()->getParentOp() == forallOp &&
            "expected that dest is an output bbArg");
     Value dest = forallOp.getTiedOpOperand(destBbArg)->get();
     // clang-format off
-    rewriter.create<IREE::Flow::DispatchTensorStoreOp>(
+    IREE::TensorExt::DispatchTensorStoreOp::create(rewriter,
         loc,
         parallelInsertOp.getSource(),
         tensorToFlowBvm.lookup(dest),
@@ -115,7 +114,7 @@ static void rewriteParallelInsertSlices(RewriterBase &rewriter,
 }
 
 /// Rewrite ExtractSlice ops in `dispatchOp` as
-/// IREE::Flow::DispatchTensorLoadOps. Takes a list of all tensor and all
+/// IREE::TensorExt::DispatchTensorLoadOps. Takes a list of all tensor and all
 /// tensorDynamicDims operands to the dispatchOp as well as a IRMapping from
 /// tensor operands to the corresponding Flow dispatch tensor bbArgs.
 static void rewriteExtractSlices(RewriterBase &rewriter, scf::ForallOp forallOp,
@@ -125,7 +124,7 @@ static void rewriteExtractSlices(RewriterBase &rewriter, scf::ForallOp forallOp,
                                  IRMapping tensorToFlowBvm) {
   dispatchOp->walk([&](tensor::ExtractSliceOp extractSliceOp) {
     Value source = extractSliceOp.getSource();
-    if (auto sourceBbArg = llvm::dyn_cast<BlockArgument>(source))
+    if (auto sourceBbArg = dyn_cast<BlockArgument>(source))
       if (sourceBbArg.getOwner()->getParentOp() == forallOp.getOperation())
         source = forallOp.getTiedOpOperand(sourceBbArg)->get();
 
@@ -143,7 +142,7 @@ static void rewriteExtractSlices(RewriterBase &rewriter, scf::ForallOp forallOp,
     auto dynamicDims = IREE::Util::findDynamicDimsInList(index, tensorOperands,
                                                          tensorDynamicDims);
     // clang-format off
-    Value load = rewriter.create<IREE::Flow::DispatchTensorLoadOp>(
+    Value load = IREE::TensorExt::DispatchTensorLoadOp::create(rewriter,
         loc,
         sourceFlow,
         dynamicDims,
@@ -211,7 +210,7 @@ static void cloneOpsIntoForallOp(RewriterBase &rewriter,
       if (forallOp->isProperAncestor(use.getOwner()))
         uses.push_back(&use);
     for (OpOperand *use : uses) {
-      unsigned resultNum = llvm::cast<OpResult>(use->get()).getResultNumber();
+      unsigned resultNum = cast<OpResult>(use->get()).getResultNumber();
       rewriter.modifyOpInPlace(
           use->getOwner(), [&]() { use->set(cloned->getOpResult(resultNum)); });
     }
@@ -235,7 +234,7 @@ static void cloneOpsIntoForallOp(RewriterBase &rewriter,
 ///   - Step 6: Move the body of forallOp to the dispatchOp.
 ///   - Step 7: Set up bvm for RAUWIf. In particular, tensor operands become
 ///     flow dispatch tensor bbArgs and need to be
-///     flow.dispatch.tensor.load'ed.
+///     iree_tensor_ext.dispatch.tensor.load'ed.
 ///   - Step 8: Plug dispatch workgroup id and count values into the bvm.
 ///   - Step 9. Rewrite tensor::ExtractSlice and ParallelInsert ops to the
 ///     relevant Flow DispatchTensorLoad/Store version.
@@ -262,17 +261,16 @@ rewriteForeachThreadToFlowDispatchWorkgroups(scf::ForallOp forallOp,
   llvm::SetVector<Value> resultTensorOperands, resultTensorsDynamicDims;
   for (const Operation &yieldingOp : InParallelOp.getYieldingOps()) {
     auto parallelInsertOp = cast<tensor::ParallelInsertSliceOp>(&yieldingOp);
-    BlockArgument destBbArg =
-        llvm::cast<BlockArgument>(parallelInsertOp.getDest());
+    BlockArgument destBbArg = cast<BlockArgument>(parallelInsertOp.getDest());
     Value dest = forallOp.getTiedOpOperand(destBbArg)->get();
     bool inserted = resultTensorOperands.insert(dest);
     if (!inserted)
       continue;
     auto dynamicDims =
-        getIndicesOfDynamicDims(llvm::cast<ShapedType>(dest.getType()));
+        getIndicesOfDynamicDims(cast<ShapedType>(dest.getType()));
     for (int64_t dim : dynamicDims)
       resultTensorsDynamicDims.insert(
-          rewriter.create<tensor::DimOp>(loc, dest, dim));
+          tensor::DimOp::create(rewriter, loc, dest, dim));
   }
   assert(resultTensorOperands.size() == forallOp.getNumResults() &&
          "Expected as many resultTensorOperands as results of forallOp");
@@ -286,7 +284,7 @@ rewriteForeachThreadToFlowDispatchWorkgroups(scf::ForallOp forallOp,
 
   SmallVector<Value> nonTensorOperands, tensorOperands, tensorDynamicDims;
   for (Value v : valuesDefinedAbove) {
-    auto tensorType = llvm::dyn_cast<RankedTensorType>(v.getType());
+    auto tensorType = dyn_cast<RankedTensorType>(v.getType());
     if (!tensorType) {
       nonTensorOperands.push_back(v);
       continue;
@@ -295,17 +293,17 @@ rewriteForeachThreadToFlowDispatchWorkgroups(scf::ForallOp forallOp,
       continue;
     tensorOperands.push_back(v);
     for (int64_t dim : getIndicesOfDynamicDims(tensorType))
-      tensorDynamicDims.push_back(rewriter.create<tensor::DimOp>(loc, v, dim));
+      tensorDynamicDims.push_back(tensor::DimOp::create(rewriter, loc, v, dim));
   }
   // Also add shared outputs. (These are usually already added as result
   // tensor operands.)
   for (Value v : forallOp.getOutputs()) {
-    auto tensorType = llvm::cast<RankedTensorType>(v.getType());
+    auto tensorType = cast<RankedTensorType>(v.getType());
     if (resultTensorOperands.contains(v))
       continue;
     tensorOperands.push_back(v);
     for (int64_t dim : getIndicesOfDynamicDims(tensorType))
-      tensorDynamicDims.push_back(rewriter.create<tensor::DimOp>(loc, v, dim));
+      tensorDynamicDims.push_back(tensor::DimOp::create(rewriter, loc, v, dim));
   }
 
   // Step 3. Create ordered vectors of operands to pass to the builder and
@@ -329,7 +327,7 @@ rewriteForeachThreadToFlowDispatchWorkgroups(scf::ForallOp forallOp,
   SmallVector<Value> allTensorDynamicDims = tensorDynamicDims;
   llvm::append_range(allTensorDynamicDims, resultTensorsDynamicDims);
   // clang-format off
-  auto dispatchOp = rewriter.create<IREE::Flow::DispatchWorkgroupsOp>(
+  auto dispatchOp = IREE::Flow::DispatchWorkgroupsOp::create(rewriter,
       loc,
       /*workload=*/ValueRange{},
       /*resultTypes=*/forallOp.getResultTypes(),
@@ -373,7 +371,7 @@ rewriteForeachThreadToFlowDispatchWorkgroups(scf::ForallOp forallOp,
   {
     OpBuilder::InsertionGuard g(rewriter);
     rewriter.setInsertionPointToEnd(block);
-    rewriter.create<IREE::Flow::ReturnOp>(loc);
+    IREE::Flow::ReturnOp::create(rewriter, loc);
   }
   // Add trailing index bbArgs and perform a basic sanity check.
   block->addArguments(
@@ -390,10 +388,10 @@ rewriteForeachThreadToFlowDispatchWorkgroups(scf::ForallOp forallOp,
 
   // Step 7. Set up bvm for RAUWIf.
   // Generally, allOperands map to their corresponding bbArg but there is a
-  // twist: tensor operands map to flow.dispatch.tensor bbArgs and we need to
-  // insert an explicit IREE::Flow::DispatchTensorLoadOp to get back a proper
-  // tensor. Save the tensor operand -> flow tensor bbArg mapping in
-  // `tensorToFlowBvm`.
+  // twist: tensor operands map to iree_tensor_ext.dispatch.tensor bbArgs and we
+  // need to insert an explicit IREE::TensorExt::DispatchTensorLoadOp to get
+  // back a proper tensor. Save the tensor operand -> flow tensor bbArg mapping
+  // in `tensorToFlowBvm`.
   IRMapping bvm, tensorToFlowBvm;
   auto flowBbArgs = block->getArguments().slice(
       sizeNonTensors, sizeNonResultTensors + sizeResultTensors);
@@ -407,14 +405,14 @@ rewriteForeachThreadToFlowDispatchWorkgroups(scf::ForallOp forallOp,
     OpBuilder::InsertionGuard g(rewriter);
     rewriter.setInsertionPointToStart(block);
     // Warning: findDynamicDimsInList needs to use the RankedTensorTypes and
-    // does not work out of the box with IREE::Flow::DispatchTensorType.
+    // does not work out of the box with IREE::TensorExt::DispatchTensorType.
     auto dynamicDims = IREE::Util::findDynamicDimsInList(
         en.index(), allTensorOperands, allTensorDimsBBArgs);
-    auto loadOp = rewriter.create<IREE::Flow::DispatchTensorLoadOp>(
-        loc, llvm::cast<RankedTensorType>(en.value().getType()),
+    auto loadOp = IREE::TensorExt::DispatchTensorLoadOp::create(
+        rewriter, loc, cast<RankedTensorType>(en.value().getType()),
         tensorToFlowBvm.lookup(en.value()), dynamicDims);
-    // Replace the tensor -> flow.dispatch.tensor entry by a
-    // tensor -> flow.dispatch.tensor.load entry.
+    // Replace the tensor -> iree_tensor_ext.dispatch.tensor entry by a
+    // tensor -> iree_tensor_ext.dispatch.tensor.load entry.
     bvm.map(en.value(), loadOp.getResult());
   }
 
@@ -424,9 +422,9 @@ rewriteForeachThreadToFlowDispatchWorkgroups(scf::ForallOp forallOp,
   for (int64_t rank :
        llvm::seq<int64_t>(0, forallOp.getInductionVars().size())) {
     workgroupIds.push_back(
-        rewriter.create<IREE::Flow::DispatchWorkgroupIDOp>(loc, rank));
+        IREE::Flow::DispatchWorkgroupIDOp::create(rewriter, loc, rank));
     workgroupCounts.push_back(
-        rewriter.create<IREE::Flow::DispatchWorkgroupCountOp>(loc, rank));
+        IREE::Flow::DispatchWorkgroupCountOp::create(rewriter, loc, rank));
   }
   bvm.map(forallOp.getInductionVars(), workgroupIds);
   bvm.map(forallOp.getUpperBound(rewriter), workgroupCounts);

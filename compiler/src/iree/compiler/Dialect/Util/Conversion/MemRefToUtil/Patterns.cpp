@@ -25,7 +25,7 @@ namespace {
 
 /// Returns true if the given `type` is a MemRef of rank 0 or 1.
 static bool isRankZeroOrOneMemRef(Type type) {
-  if (auto memrefType = llvm::dyn_cast<MemRefType>(type)) {
+  if (auto memrefType = dyn_cast<MemRefType>(type)) {
     return memrefType.hasRank() && memrefType.getRank() <= 1 &&
            memrefType.getLayout().isIdentity();
   }
@@ -34,8 +34,7 @@ static bool isRankZeroOrOneMemRef(Type type) {
 
 static Value getElementTypeByteSize(OpBuilder &builder, Location loc,
                                     Value memrefValue) {
-  auto elementType =
-      llvm::cast<ShapedType>(memrefValue.getType()).getElementType();
+  auto elementType = cast<ShapedType>(memrefValue.getType()).getElementType();
   return builder.createOrFold<IREE::Util::SizeOfOp>(loc, elementType);
 }
 
@@ -47,7 +46,7 @@ static Value getElementTypeByteSize(OpBuilder &builder, Location loc,
 static Value getByteOffsetForIndices(OpBuilder &builder, Location loc,
                                      Value memrefValue, ValueRange indices,
                                      Value elementTypeByteSize) {
-  auto memrefType = llvm::cast<MemRefType>(memrefValue.getType());
+  auto memrefType = cast<MemRefType>(memrefValue.getType());
   if (memrefType.getRank() == 0) {
     // Rank 0 buffers (like memref<i32>) have only a single valid offset at 0.
     return builder.createOrFold<arith::ConstantIndexOp>(loc, 0);
@@ -66,12 +65,12 @@ static Value getByteOffsetForIndices(OpBuilder &builder, Location loc,
 
   // Rank 1 memrefs are just offset by their element width by the offset.
   auto elementCount = indices[0];
-  return builder.create<arith::MulIOp>(loc, elementTypeByteSize, elementCount);
+  return arith::MulIOp::create(builder, loc, elementTypeByteSize, elementCount);
 }
 
 static Value getByteLength(OpBuilder &builder, Location loc,
                            Value memrefValue) {
-  auto memrefType = llvm::cast<MemRefType>(memrefValue.getType());
+  auto memrefType = cast<MemRefType>(memrefValue.getType());
   if (memrefType.getRank() == 0) {
     return getElementTypeByteSize(builder, loc, memrefValue);
   }
@@ -79,7 +78,7 @@ static Value getByteLength(OpBuilder &builder, Location loc,
     emitError(loc, "memrefs should have been flattened");
     return {};
   }
-  Value size = builder.create<memref::DimOp>(loc, memrefValue, 0);
+  Value size = memref::DimOp::create(builder, loc, memrefValue, 0);
   Value elementTypeByteSize = getElementTypeByteSize(builder, loc, memrefValue);
   return getByteOffsetForIndices(builder, loc, memrefValue, {size},
                                  elementTypeByteSize);
@@ -112,7 +111,7 @@ struct ElideNoOp final : public OpConversionPattern<OpTy> {
 };
 
 struct ConvertMemRefGlobalOp : public OpConversionPattern<memref::GlobalOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(memref::GlobalOp globalOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -134,20 +133,22 @@ struct ConvertMemRefGlobalOp : public OpConversionPattern<memref::GlobalOp> {
         rewriter.getType<IREE::Util::BufferType>());
     newOp.setPrivate();
 
+    // Ensure initializer comes after the global.
+    rewriter.setInsertionPointAfter(newOp);
     auto initializerOp =
-        rewriter.create<IREE::Util::InitializerOp>(globalOp.getLoc());
+        IREE::Util::InitializerOp::create(rewriter, globalOp.getLoc());
     auto initializerBuilder =
         OpBuilder::atBlockBegin(initializerOp.addEntryBlock());
     auto alignmentAttr = globalOp.getAlignmentAttr()
                              ? initializerBuilder.getIndexAttr(
                                    globalOp.getAlignmentAttr().getInt())
                              : IntegerAttr{};
-    auto constantOp = initializerBuilder.create<IREE::Util::BufferConstantOp>(
-        globalOp.getLoc(), /*name=*/nullptr, globalOp.getInitialValueAttr(),
-        alignmentAttr, /*mimeType=*/nullptr);
+    auto constantOp = IREE::Util::BufferConstantOp::create(
+        initializerBuilder, globalOp.getLoc(), /*name=*/nullptr,
+        globalOp.getInitialValueAttr(), alignmentAttr, /*mimeType=*/nullptr);
     newOp.createStoreOp(globalOp.getLoc(), constantOp.getResult(),
                         initializerBuilder);
-    initializerBuilder.create<IREE::Util::ReturnOp>(globalOp.getLoc());
+    IREE::Util::ReturnOp::create(initializerBuilder, globalOp.getLoc());
 
     return success();
   }
@@ -155,7 +156,7 @@ struct ConvertMemRefGlobalOp : public OpConversionPattern<memref::GlobalOp> {
 
 struct ConvertMemRefGetGlobalOp
     : public OpConversionPattern<memref::GetGlobalOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(memref::GetGlobalOp getOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -170,7 +171,7 @@ struct ConvertMemRefGetGlobalOp
 };
 
 struct ConvertMemRefAllocaOp : public OpConversionPattern<memref::AllocaOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(memref::AllocaOp allocaOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -185,7 +186,7 @@ struct ConvertMemRefAllocaOp : public OpConversionPattern<memref::AllocaOp> {
 };
 
 struct ConvertMemRefDimOp : public OpConversionPattern<memref::DimOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(memref::DimOp dimOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -194,11 +195,11 @@ struct ConvertMemRefDimOp : public OpConversionPattern<memref::DimOp> {
           dimOp, "only rank-0 and rank-1 memrefs are supported; flatten first");
     }
     auto elementType =
-        llvm::cast<MemRefType>(dimOp.getSource().getType()).getElementType();
+        cast<MemRefType>(dimOp.getSource().getType()).getElementType();
     Value elementSize = rewriter.createOrFold<IREE::Util::SizeOfOp>(
         dimOp.getLoc(), elementType);
-    Value bufferSize = rewriter.create<IREE::Util::BufferSizeOp>(
-        dimOp.getLoc(), rewriter.getIndexType(), adaptor.getSource());
+    Value bufferSize = IREE::Util::BufferSizeOp::create(
+        rewriter, dimOp.getLoc(), rewriter.getIndexType(), adaptor.getSource());
     rewriter.replaceOpWithNewOp<arith::FloorDivSIOp>(dimOp, bufferSize,
                                                      elementSize);
     return success();
@@ -206,7 +207,7 @@ struct ConvertMemRefDimOp : public OpConversionPattern<memref::DimOp> {
 };
 
 struct ConvertMemRefLoadOp : public OpConversionPattern<memref::LoadOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(memref::LoadOp loadOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -225,8 +226,8 @@ struct ConvertMemRefLoadOp : public OpConversionPattern<memref::LoadOp> {
     auto byteOffset =
         getByteOffsetForIndices(rewriter, loc, loadOp.getMemref(),
                                 loadOp.getIndices(), elementTypeByteSize);
-    Value loaded = rewriter.create<IREE::Util::BufferLoadOp>(
-        loc, oldType, adaptor.getMemref(), memRefSize, byteOffset,
+    Value loaded = IREE::Util::BufferLoadOp::create(
+        rewriter, loc, oldType, adaptor.getMemref(), memRefSize, byteOffset,
         elementTypeByteSize);
     if (newType != oldType) {
       // Since the BufferLoadOp semantics include its result type (i.e. a load
@@ -235,8 +236,9 @@ struct ConvertMemRefLoadOp : public OpConversionPattern<memref::LoadOp> {
       // conversion cast for downstreams. In this case, further legalizations
       // will be required to resolve it. This comes up in A->B->C lowerings
       // where the BufferLoad is an intermediate stage.
-      loaded = rewriter.create<UnrealizedConversionCastOp>(loc, newType, loaded)
-                   .getResult(0);
+      loaded =
+          UnrealizedConversionCastOp::create(rewriter, loc, newType, loaded)
+              .getResult(0);
     }
     rewriter.replaceOp(loadOp, loaded);
     return success();
@@ -244,7 +246,7 @@ struct ConvertMemRefLoadOp : public OpConversionPattern<memref::LoadOp> {
 };
 
 struct ConvertMemRefStoreOp : public OpConversionPattern<memref::StoreOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
   LogicalResult
   matchAndRewrite(memref::StoreOp storeOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -269,9 +271,8 @@ struct ConvertMemRefStoreOp : public OpConversionPattern<memref::StoreOp> {
       // conversion target widens). Insert an unrealized conversion cast to
       // preserve the original semantic. Presumably, something will clear this
       // with additional lowering.
-      newValue = rewriter
-                     .create<UnrealizedConversionCastOp>(
-                         loc, storeOp.getValue().getType(), newValue)
+      newValue = UnrealizedConversionCastOp::create(
+                     rewriter, loc, storeOp.getValue().getType(), newValue)
                      .getResult(0);
     }
     rewriter.replaceOpWithNewOp<IREE::Util::BufferStoreOp>(
@@ -284,7 +285,7 @@ struct ConvertMemRefStoreOp : public OpConversionPattern<memref::StoreOp> {
 // Make `reinterpret_cast` a no-op.
 struct ConvertMemRefReinterpretCastOp
     : public OpConversionPattern<memref::ReinterpretCastOp> {
-  using OpConversionPattern::OpConversionPattern;
+  using Base::Base;
 
   LogicalResult
   matchAndRewrite(memref::ReinterpretCastOp castOp, OpAdaptor adaptor,
@@ -316,7 +317,7 @@ void populateMemRefToUtilPatterns(MLIRContext *context,
       });
 
   patterns
-      .insert<FoldAsNoOp<bufferization::ToMemrefOp>,
+      .insert<FoldAsNoOp<bufferization::ToBufferOp>,
               ElideNoOp<memref::AssumeAlignmentOp>, FoldAsNoOp<memref::CastOp>>(
           typeConverter, context);
   patterns

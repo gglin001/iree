@@ -12,7 +12,6 @@ include "mlir/Pass/PassBase.td"
 //===----------------------------------------------------------------------===//
 // Tensor lowering and resource management
 //===----------------------------------------------------------------------===//
-
 def ConvertToStreamPass :
     Pass<"iree-stream-conversion", "mlir::ModuleOp"> {
   let summary = "Converts from flow and other input dialects into the stream dialect.";
@@ -123,8 +122,8 @@ def MaterializeBuiltinsPass :
     "mlir::memref::MemRefDialect",
     "mlir::scf::SCFDialect",
     "mlir::vector::VectorDialect",
-    "IREE::Flow::FlowDialect",
     "IREE::Stream::StreamDialect",
+    "IREE::TensorExt::IREETensorExtDialect",
     "IREE::Util::UtilDialect",
   ];
 }
@@ -165,6 +164,35 @@ def MaterializeCopyOnWritePass :
   ];
 }
 
+def MaterializeEncodingsPass :
+    Pass<"iree-stream-materialize-encodings", "mlir::ModuleOp"> {
+  let summary = "Materialize stream.tensor.encode ops to dispatches and executables.";
+  let description = [{
+    Materializes uniqued executables for `stream.tensor.encode` ops and replaces
+    them with dispatches to those executables.
+  }];
+  let dependentDialects = [
+    "mlir::func::FuncDialect",
+    "IREE::Encoding::IREEEncodingDialect",
+    "IREE::Stream::StreamDialect",
+    "IREE::TensorExt::IREETensorExtDialect",
+  ];
+}
+
+def CloneToConsumersPass :
+    Pass<"iree-stream-clone-to-consumers", "mlir::ModuleOp"> {
+  let summary = "Clones operations that opt-in to consumer affinities.";
+  let description = [{
+    Performs whole-program analysis to identify operations that are used on
+    multiple affinities that can be cloned per-affinity. The `StreamableOp`
+    interface's `preferCloneToConsumers` query is used and any ops implementing
+    the interface may opt-in to the cloning.
+  }];
+  let dependentDialects = [
+    "IREE::Stream::StreamDialect",
+  ];
+}
+
 def ElideAsyncCopiesPass :
     Pass<"iree-stream-elide-async-copies", "mlir::ModuleOp"> {
   let summary = "Elides copies when they are not performing meaningful work.";
@@ -174,6 +202,18 @@ def ElideAsyncCopiesPass :
     of a value. This eliminates copies both from input programs and those
     materialized by the `iree-stream-materialize-copy-on-write` pass.
   }];
+}
+
+def ElideAsyncTransfersPass :
+    Pass<"iree-stream-elide-async-transfers", "mlir::ModuleOp"> {
+  let summary = "Elides transfer ops when they the topology allows";
+  let description = [{
+    Elides all transfer ops that are between device links that do not
+    require tansfers and do not change the lifetime of the resource.
+  }];
+  let dependentDialects = [
+    "IREE::Stream::StreamDialect",
+  ];
 }
 
 def EmplaceAllocationsPass :
@@ -188,6 +228,7 @@ def EmplaceAllocationsPass :
     tensor concatenation.
   }];
   let dependentDialects = [
+    "mlir::arith::ArithDialect",
     "IREE::Stream::StreamDialect",
   ];
 }
@@ -340,6 +381,22 @@ def ScheduleAllocationPass :
   ];
 }
 
+def AutomaticReferenceCountingPass :
+    Pass<"iree-stream-automatic-reference-counting", "mlir::ModuleOp"> {
+  let summary = "Inserts automatic reference counting ops for resources.";
+  let description = [{
+    Identifies asynchronous allocations and based on their lifetime inserts
+    either local deallocations or reference counting ops
+    (`stream.resource.retain` and `stream.resource.release`). If analysis fails
+    for a particular resource they will be marked as having indeterminate
+    lifetime in order to prevent external users from deallocating the resources
+    while they may still be used.
+  }];
+  let dependentDialects = [
+    "IREE::Stream::StreamDialect",
+  ];
+}
+
 def PackConstantsPass :
     InterfacePass<"iree-stream-pack-constants", "mlir::CallableOpInterface"> {
   let summary = "Packs and allocates backing storage for fused constant resources.";
@@ -373,6 +430,78 @@ def LayoutSlicesPass :
   let dependentDialects = [
     "mlir::arith::ArithDialect",
     "IREE::Stream::StreamDialect",
+    "IREE::Util::UtilDialect",
+  ];
+}
+
+def ReuseAllocationsPass :
+    InterfacePass<"iree-stream-reuse-allocations", "mlir::CallableOpInterface"> {
+  let summary = "Reuses transient allocations when doing so will not increase lifetime.";
+  let description = [{
+    Tries to reduce allocation overhead by reusing allocations from a
+    deallocation-to-allocation sequence on a compatible affinity.
+
+    This relies on timeline ordering and the guarantees (or lack thereof) of
+    timeline operations: deallocations _may_ happen as late as immediately prior
+    to their timepoint being signaled and allocations _may_ happen as early as
+    immediately after their await timepoint has been reached. With this
+    allowance the compiler is allowed to treat any allocation on the same
+    affinity as an atomic reallocation of the resource for reuse.
+  }];
+  let dependentDialects = [
+    "IREE::Stream::StreamDialect",
+  ];
+}
+
+def EmplaceTransientsPass :
+    Pass<"iree-stream-emplace-transients", "mlir::ModuleOp"> {
+  let summary = "Emplaces transient allocations into user-provided storage buffers.";
+  let description = [{
+    Experimental implementation for validating the transient storage IR design.
+
+    Limitations:
+    - Only handles public functions with `stream.resource.transients` ops
+    - Assumes no function calls (single function only)
+    - No complex timeline analysis (uses non-overlapping liveness intervals)
+    - Only supports a single unique transient storage buffer
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "IREE::Stream::StreamDialect",
+  ];
+}
+
+def MaterializeTransientSizeQueriesPass :
+    Pass<"iree-stream-materialize-transient-size-queries", "mlir::ModuleOp"> {
+  let summary = "Generates size query functions for transient storage.";
+  let description = [{
+    Experimental implementation for generating transient storage size query
+    functions.
+
+    For now, handles simple cases where sizes are constant or easily computable
+    from function inputs. Later it will handle complex call graphs and dynamic
+    size computation with hoisting. Only runs on IR produced by
+    `EmplaceTransientsPass` that adds the `stream.experimental.transients`
+    attribute to `stream.resource.pack` ops.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "IREE::Stream::StreamDialect",
+    "IREE::Util::UtilDialect",
+  ];
+}
+
+def AnnotateConstantTransientSizePass :
+    Pass<"iree-stream-annotate-constant-transient-size", "mlir::ModuleOp"> {
+  let summary = "Annotates constant transient sizes in reflection metadata.";
+  let description = [{
+    Detects when transient size query functions have folded to constant returns
+    and adds reflection metadata with the constant size values. At runtime a
+    user can query the reflection information and skip calling the size query
+    function when sizes are statically known.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
     "IREE::Util::UtilDialect",
   ];
 }
@@ -466,8 +595,7 @@ def SpecializeEncodingsPass :
     - The binding types have to implement IREE::Encoding::EncodingTypeInterface,
       so it can updates the types without accessing any other dialects.
     - All the encodings attached on the types have to implement
-      SerializableEncodingAttrInterface. Because the pass updates the encodings
-      using interfaces.
+      SerializableAttr. Because the pass updates the encodings using interfaces.
   }];
   let dependentDialects = [
     "IREE::Encoding::IREEEncodingDialect"

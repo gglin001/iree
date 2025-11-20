@@ -9,21 +9,17 @@
 #include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h"
 #include "iree/compiler/Dialect/HAL/Analysis/DeviceAnalysis.h"
 #include "iree/compiler/Dialect/HAL/Conversion/HALToVM/Patterns.h"
-#include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALTypes.h"
 #include "iree/compiler/Dialect/HAL/hal.imports.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamInterfaces.h"
 #include "iree/compiler/Dialect/Util/IR/UtilDialect.h"
 #include "iree/compiler/Dialect/VM/Conversion/ConversionDialectInterface.h"
-#include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/SourceMgr.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/InliningUtils.h"
@@ -41,13 +37,13 @@ struct HALOpAsmInterface : public OpAsmDialectInterface {
   /// end with a numeric digit([0-9]+). Returns success if an alias was
   /// provided, failure otherwise.
   AliasResult getAlias(Attribute attr, raw_ostream &os) const override {
-    if (auto targetAttr = llvm::dyn_cast<DeviceTargetAttr>(attr)) {
+    if (auto targetAttr = dyn_cast<DeviceTargetAttr>(attr)) {
       os << "device_target_" << targetAttr.getSymbolNameFragment();
       return AliasResult::OverridableAlias;
-    } else if (auto targetAttr = llvm::dyn_cast<ExecutableTargetAttr>(attr)) {
+    } else if (auto targetAttr = dyn_cast<ExecutableTargetAttr>(attr)) {
       os << "executable_target_" << targetAttr.getSymbolNameFragment();
       return AliasResult::OverridableAlias;
-    } else if (auto layoutAttr = llvm::dyn_cast<PipelineLayoutAttr>(attr)) {
+    } else if (auto layoutAttr = dyn_cast<PipelineLayoutAttr>(attr)) {
       os << "pipeline_layout";
       return AliasResult::OverridableAlias;
     }
@@ -103,13 +99,12 @@ public:
       const function_ref<void(Attribute elementAttr)> &fn) const override {
     MLIRContext *context = attr.getContext();
     // TODO(benvanik): remove this interface or make it an attr interface.
-    if (auto bindingAttr =
-            llvm::dyn_cast<IREE::HAL::PipelineBindingAttr>(attr)) {
+    if (auto bindingAttr = dyn_cast<IREE::HAL::PipelineBindingAttr>(attr)) {
       fn(IREE::HAL::DescriptorTypeAttr::get(context, bindingAttr.getType()));
       fn(IREE::HAL::DescriptorFlagsAttr::get(context, bindingAttr.getFlags()));
       return success();
     }
-    if (auto dtAttr = llvm::dyn_cast<IREE::HAL::DescriptorTypeAttr>(attr)) {
+    if (auto dtAttr = dyn_cast<IREE::HAL::DescriptorTypeAttr>(attr)) {
       // Repack as a normal integer attribute.
       fn(IntegerAttr::get(IntegerType::get(context, 32),
                           APInt(32, static_cast<uint32_t>(dtAttr.getValue()))));
@@ -124,11 +119,11 @@ class HALAffinityAnalysisDialectInterface
 public:
   using AffinityAnalysisDialectInterface::AffinityAnalysisDialectInterface;
 
-  // Returns a function that gathers the corresponding
-  // EncodingLayoutResolverAttrInterface attributes for each
-  // (IREE::Stream::Affinity, Operation) query. The attribute is extracted from
-  // the `encoding` field in the HAL::ExecutableTargetAttr configuration. If the
-  // `encoding` is not present, UnsupportedEncodingAttr is returned.
+  // Returns a function that gathers the corresponding LayoutResolverAttr
+  // attributes for each (IREE::Stream::Affinity, Operation) query. The
+  // attribute is extracted from the `encoding` field in the
+  // HAL::ExecutableTargetAttr configuration. If the `encoding` is not present,
+  // IdentityResolverAttr is returned.
   IREE::Stream::ResolveLayoutAttrFn
   makeLayoutAttrResolver(ModuleOp moduleOp) const {
     return [=](ArrayRef<IREE::Stream::AffinityAndOpPair> batchQueries,
@@ -142,12 +137,12 @@ public:
       }
 
       MLIRContext *ctx = getContext();
-      std::optional<IREE::Encoding::UnsupportedEncodingAttr> defaultAttr;
+      std::optional<IREE::Encoding::IdentityResolverAttr> defaultAttr;
       auto getDefaultAttr = [&]() {
         if (defaultAttr) {
           return defaultAttr.value();
         }
-        defaultAttr = IREE::Encoding::UnsupportedEncodingAttr::get(ctx);
+        defaultAttr = IREE::Encoding::IdentityResolverAttr::get(ctx);
         return defaultAttr.value();
       };
       for (IREE::Stream::AffinityAndOpPair key : batchQueries) {
@@ -163,7 +158,7 @@ public:
           }
           auto encodingLayoutAttr =
               targetAttr.getConfiguration()
-                  .getAs<IREE::Encoding::EncodingLayoutResolverAttrInterface>(
+                  .getAs<IREE::Encoding::LayoutResolverAttr>(
                       IREE::Encoding::kEncodingResolverAttrName);
           if (!encodingLayoutAttr) {
             layoutAttrs[key].insert(getDefaultAttr());
@@ -205,11 +200,11 @@ HALDialect::HALDialect(MLIRContext *context)
 
 Operation *HALDialect::materializeConstant(OpBuilder &builder, Attribute value,
                                            Type type, Location loc) {
-  if (llvm::isa<IndexType>(type)) {
+  if (isa<IndexType>(type)) {
     // Some folders materialize raw index types, which just become std
     // constants.
-    return builder.create<mlir::arith::ConstantIndexOp>(
-        loc, llvm::cast<IntegerAttr>(value).getValue().getSExtValue());
+    return mlir::arith::ConstantIndexOp::create(
+        builder, loc, cast<IntegerAttr>(value).getValue().getSExtValue());
   }
   return nullptr;
 }

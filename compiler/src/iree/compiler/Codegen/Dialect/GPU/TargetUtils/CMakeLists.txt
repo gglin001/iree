@@ -17,8 +17,10 @@ iree_cc_library(
     "ConfigUtils.h"
   SRCS
     "ConfigUtils.cpp"
+    "ReductionConfigUtils.cpp"
   DEPS
     LLVMSupport
+    MLIRAnalysis
     MLIRFunctionInterfaces
     MLIRIR
     MLIRLinalgDialect
@@ -28,8 +30,12 @@ iree_cc_library(
     iree::compiler::Codegen::Common::GPU::GPUHeuristics
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Codegen::Dialect::GPU::IR::IREEGPUDialect
+    iree::compiler::Codegen::Dialect::GPU::IR::IREEGPUInterfaces
+    iree::compiler::Codegen::Interfaces::PartitionableLoopsInterface
     iree::compiler::Codegen::Utils
+    iree::compiler::Dialect::LinalgExt::IR
     iree::compiler::Dialect::LinalgExt::Utils
+    iree::compiler::Dialect::TensorExt::IR
   PUBLIC
 )
 

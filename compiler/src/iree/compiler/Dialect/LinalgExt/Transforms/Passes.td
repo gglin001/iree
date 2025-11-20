@@ -60,14 +60,31 @@ def DecomposeIm2colPass :
   ];
 }
 
+def DecomposeMapScatterPass :
+    InterfacePass<"iree-linalg-ext-decompose-map-scatter", "mlir::FunctionOpInterface"> {
+  let summary =
+      "Decomposes vectorized map_scatter ops into vector ops";
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::vector::VectorDialect",
+    "::mlir::iree_compiler::IREE::LinalgExt::IREELinalgExtDialect"
+  ];
+  let options = [
+    Option<"testPreprocessingPatterns", "test-preprocessing-patterns", "bool",
+           /*default=*/"false",
+           "Test only map_scatter decomposition preprocessing patterns.">,
+  ];
+}
+
 def DecomposeWinogradTransformPass :
     InterfacePass<"iree-linalg-ext-decompose-winograd", "mlir::FunctionOpInterface"> {
   let summary =
       "Decomposes winograd transform ops into linalg ops";
 }
 
-def ConvertConv2DToIm2ColOpPass :
-    InterfacePass<"iree-linalg-ext-convert-conv2d-to-im2col-op", "mlir::FunctionOpInterface"> {
+def ConvertConvToIm2ColOpPass :
+    InterfacePass<"iree-linalg-ext-convert-conv-to-im2col-op", "mlir::FunctionOpInterface"> {
   let summary = "Convert linalg convolution ops to im2col gemm based implementation.";
 }
 
@@ -92,6 +109,33 @@ def DecomposeAttentionPass :
 def ConvertAttentionToOnlineAttentionPass :
     Pass<"iree-linalg-ext-convert-attention-to-online-attention", ""> {
   let summary = "Converts attention op to online_attention op";
+}
+
+def FoldUnitExtentDimsPass :
+      Pass<"iree-linalg-ext-fold-unit-extent-dims", "">  {
+  let summary = "Folds unit dims for iree_linalg_ext ops";
+  let options = [
+    Option<"useReshapes", "use-reshapes", "bool", /*default=*/"true",
+           "Use reshapes vs slices for rank reduction">,
+  ];
+  let dependentDialects = [
+    "::mlir::tensor::TensorDialect",
+    "::mlir::iree_compiler::IREE::LinalgExt::IREELinalgExtDialect"
+  ];
+}
+
+def TestReshapeFusionPass :
+    Pass<"iree-linalg-ext-test-reshape-fusion", ""> {
+  let summary = "Test reshape fusion patterns";
+}
+
+def VectorizeIREELinalgExtOpsPass :
+    InterfacePass<"iree-linalg-ext-vectorize-ops", "mlir::FunctionOpInterface"> {
+  let summary = "Convert linalg_ext ops into their vector form.";
+  let dependentDialects = [
+    "::mlir::vector::VectorDialect",
+    "::mlir::arith::ArithDialect"
+  ];
 }
 
 #endif  // IREE_DIALECT_LINALGEXT_PASSES

@@ -43,30 +43,20 @@ iree_check_single_backend_test_suite(
   COMPILER_FLAGS
     "--iree-llvmcpu-reassociate-fp-reductions=false"
     "--iree-llvmcpu-target-cpu=generic"
-  INPUT_TYPE
-    "stablehlo"
 )
 
 iree_check_single_backend_test_suite(
   NAME
     check_regression_llvm-cpu
   SRCS
-    "dynamic_abs.mlir"
-    "dynamic_add.mlir"
-    "dynamic_dot.mlir"
-    "dynamic_reduce_min.mlir"
-    "dynamic_torch_index_select_high_rank.mlir"
-    "dynamic_torch_index_select_negative.mlir"
-    "dynamic_torch_index_select_scalar.mlir"
-    "dynamic_torch_index_select_vector.mlir"
     "i1_inlined_constant.mlir"
     "layernorm.mlir"
     "linalg_ops.mlir"
-    "lowering_config.mlir"
-    "pack_pad_transpose_1x9_into_2x4x8x4_issue_12546.mlir"
+    "pack_pad_transpose_1x9_into_2x1x8x4_issue_12546.mlir"
     "reduction_broadcast_elementwise.mlir"
     "scalar_computation.mlir"
     "softmax.mlir"
+    "split_reduction_using_tiling.mlir"
     "strided_slice.mlir"
     "transpose.mlir"
   TARGET_BACKEND
@@ -75,8 +65,21 @@ iree_check_single_backend_test_suite(
     "local-task"
   COMPILER_FLAGS
     "--iree-llvmcpu-target-cpu=generic"
-  INPUT_TYPE
-    "stablehlo"
+)
+
+iree_check_single_backend_test_suite(
+  NAME
+    check_regression_dynamic_gather_attention_llvm-cpu
+  SRCS
+    "dynamic_gather_attention.mlir"
+  TARGET_BACKEND
+    "llvm-cpu"
+  DRIVER
+    "local-task"
+  COMPILER_FLAGS
+    "--iree-llvmcpu-target-cpu=generic"
+  LABELS
+    "noriscv"
 )
 
 iree_check_single_backend_test_suite(
@@ -90,22 +93,12 @@ iree_check_single_backend_test_suite(
     "local-task"
   COMPILER_FLAGS
     "--iree-llvmcpu-target-cpu=generic"
-  INPUT_TYPE
-    "tosa"
 )
 
 iree_check_single_backend_test_suite(
   NAME
     check_regression_vmvx
   SRCS
-    "dynamic_abs.mlir"
-    "dynamic_add.mlir"
-    "dynamic_dot.mlir"
-    "dynamic_reduce_min.mlir"
-    "dynamic_torch_index_select_high_rank.mlir"
-    "dynamic_torch_index_select_negative.mlir"
-    "dynamic_torch_index_select_scalar.mlir"
-    "dynamic_torch_index_select_vector.mlir"
     "i1_inlined_constant.mlir"
     "layernorm.mlir"
     "linalg_ops.mlir"
@@ -118,22 +111,12 @@ iree_check_single_backend_test_suite(
     "vmvx"
   DRIVER
     "local-task"
-  INPUT_TYPE
-    "stablehlo"
 )
 
 iree_check_single_backend_test_suite(
   NAME
     check_regression_vulkan-spirv
   SRCS
-    "dynamic_abs.mlir"
-    "dynamic_add.mlir"
-    "dynamic_dot.mlir"
-    "dynamic_reduce_min.mlir"
-    "dynamic_torch_index_select_high_rank.mlir"
-    "dynamic_torch_index_select_negative.mlir"
-    "dynamic_torch_index_select_scalar.mlir"
-    "dynamic_torch_index_select_vector.mlir"
     "i1_inlined_constant.mlir"
     "linalg_ops.mlir"
     "reduction_broadcast_elementwise.mlir"
@@ -145,22 +128,12 @@ iree_check_single_backend_test_suite(
     "vulkan-spirv"
   DRIVER
     "vulkan"
-  INPUT_TYPE
-    "stablehlo"
 )
 
 iree_check_single_backend_test_suite(
   NAME
     check_regression_cuda
   SRCS
-    "dynamic_abs.mlir"
-    "dynamic_add.mlir"
-    "dynamic_dot.mlir"
-    "dynamic_reduce_min.mlir"
-    "dynamic_torch_index_select_high_rank.mlir"
-    "dynamic_torch_index_select_negative.mlir"
-    "dynamic_torch_index_select_scalar.mlir"
-    "dynamic_torch_index_select_vector.mlir"
     "i1_inlined_constant.mlir"
     "large_reduction.mlir"
     "layernorm.mlir"
@@ -174,14 +147,33 @@ iree_check_single_backend_test_suite(
     "cuda"
   DRIVER
     "cuda"
-  INPUT_TYPE
-    "stablehlo"
   LABELS
     "noasan"
     "nomsan"
     "notsan"
     "noubsan"
     "requires-gpu-nvidia"
+)
+
+iree_check_single_backend_test_suite(
+  NAME
+    check_regression_hip
+  SRCS
+    "dynamic_gather_attention.mlir"
+    "linalg_ops_dynamic.mlir"
+    "split_reduction_using_tiling.mlir"
+  TARGET_BACKEND
+    "rocm"
+  DRIVER
+    "hip"
+  COMPILER_FLAGS
+    "--iree-opt-level=O3"
+  LABELS
+    "noasan"
+    "nomsan"
+    "notsan"
+    "noubsan"
+    "requires-gpu-amd"
 )
 
 iree_check_single_backend_test_suite(
@@ -206,20 +198,6 @@ iree_check_single_backend_test_suite(
 
 iree_check_single_backend_test_suite(
   NAME
-    disable_demote_f64_to_f32
-  SRCS
-    "disable_demote_f64_to_f32.mlir"
-  TARGET_BACKEND
-    "llvm-cpu"
-  DRIVER
-    "local-task"
-  COMPILER_FLAGS
-    "--iree-input-demote-f64-to-f32=false"
-    "--iree-llvmcpu-target-cpu=generic"
-)
-
-iree_check_single_backend_test_suite(
-  NAME
     aggressive_fusion_test
   SRCS
     "softmax.mlir"
@@ -237,13 +215,10 @@ iree_check_single_backend_test_suite(
     check_regression_compilation_only_vmvx_ukernels
   SRCS
     "dynamic_matmuls_on_same_accumulator_issue_12060.mlir"
-    "dynamic_tosa_clamp.mlir"
   TARGET_BACKEND
     "vmvx"
   COMPILER_FLAGS
     "--iree-vmvx-enable-microkernels"
-  INPUT_TYPE
-    "tosa"
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###
