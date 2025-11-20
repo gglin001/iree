@@ -24,7 +24,7 @@
         "IREE_TARGET_BACKEND_ROCM": false,
         "IREE_TARGET_BACKEND_CUDA": false,
         "IREE_HAL_DRIVER_CUDA": false,
-        "IREE_BUILD_PYTHON_BINDINGS": true,
+        "IREE_BUILD_PYTHON_BINDINGS": false,
         "IREE_BUILD_BUNDLED_LLVM": false,
         "LLVM_DIR": "llvm-iree/llvm-project/build/lib/cmake/llvm",
         "MLIR_DIR": "llvm-iree/llvm-project/build/lib/cmake/mlir",
