@@ -32,6 +32,13 @@
         "Clang_DIR": "llvm-iree/llvm-project/build/lib/cmake/clang",
         "IREE_ENABLE_ASSERTIONS": true
       }
+    },
+    {
+      "name": "osx_py",
+      "inherits": "osx",
+      "cacheVariables": {
+        "IREE_BUILD_PYTHON_BINDINGS": true
+      }
     }
   ]
 }
