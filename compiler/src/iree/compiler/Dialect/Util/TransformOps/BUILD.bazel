@@ -16,6 +16,7 @@ package(
 iree_td_library(
     name = "td_files",
     srcs = enforce_glob(
+        # keep sorted
         [
             "UtilTransformOps.td",
         ],
@@ -61,7 +62,6 @@ iree_compiler_cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:BytecodeWriter",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:PDLDialect",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TransformDialect",

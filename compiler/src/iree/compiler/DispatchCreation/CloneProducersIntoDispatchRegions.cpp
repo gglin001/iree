@@ -25,18 +25,19 @@ namespace mlir::iree_compiler::DispatchCreation {
 namespace {
 
 struct CloneProducersIntoDispatchRegionsPass final
-    : public impl::CloneProducersIntoDispatchRegionsPassBase<
+    : impl::CloneProducersIntoDispatchRegionsPassBase<
           CloneProducersIntoDispatchRegionsPass> {
   using Base::Base;
   void runOnOperation() override {
     mlir::FunctionOpInterface funcOp = getOperation();
     IRRewriter rewriter(funcOp->getContext());
 
-    IREE::Flow::ClonableIntoDispatchOptions options;
+    IREE::Flow::CloneableIntoDispatchOptions options;
     options.aggressive = aggressive;
     funcOp->walk([&](IREE::Flow::DispatchRegionOp regionOp) {
-      if (failed(cloneProducersToRegion(rewriter, regionOp, options)))
+      if (failed(cloneProducersToRegion(rewriter, regionOp, options))) {
         return signalPassFailure();
+      }
     });
 
     funcOp->walk<WalkOrder::PostOrder, ReverseIterator>([&](Operation *op) {
@@ -55,11 +56,12 @@ struct CloneProducersIntoDispatchRegionsPass final
       }
     });
 
-    // Rerun the cloning again to move still clonable operations into
+    // Rerun the cloning again to move still cloneable operations into
     // dispatches.
     funcOp->walk([&](IREE::Flow::DispatchRegionOp regionOp) {
-      if (failed(cloneProducersToRegion(rewriter, regionOp, options)))
+      if (failed(cloneProducersToRegion(rewriter, regionOp, options))) {
         return signalPassFailure();
+      }
     });
   }
 };

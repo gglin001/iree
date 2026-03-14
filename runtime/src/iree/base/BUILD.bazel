@@ -6,7 +6,8 @@
 
 # Common types and utilities used in the IREE codebase.
 
-load("//build_tools/bazel:build_defs.oss.bzl", "iree_runtime_cc_library", "iree_runtime_cc_test")
+load("//build_tools/bazel:build_defs.oss.bzl", "iree_runtime_cc_fuzz", "iree_runtime_cc_library", "iree_runtime_cc_test")
+load("//build_tools/bazel:cc_binary_benchmark.bzl", "cc_binary_benchmark")
 
 package(
     default_visibility = ["//visibility:public"],
@@ -27,10 +28,14 @@ iree_runtime_cc_library(
         "assert.h",
         "bitfield.c",
         "bitfield.h",
+        "bitmap.c",
+        "bitmap.h",
         "loop.c",
         "loop.h",
         "loop_inline.c",
         "loop_inline.h",
+        "printf.c",
+        "printf.h",
         "status.c",
         "status.h",
         "status_cc.h",
@@ -50,8 +55,31 @@ iree_runtime_cc_library(
     ],
     deps = [
         ":core_headers",
+        "//build_tools/third_party/libbacktrace",
+        "//runtime/src/iree/base/internal",
         "//runtime/src/iree/base/internal:time",
         "//runtime/src/iree/base/tracing:provider",
+        "@printf_lib//:printf",
+    ],
+)
+
+cc_binary_benchmark(
+    name = "allocator_benchmark",
+    srcs = ["allocator_benchmark.cc"],
+    deps = [
+        ":base",
+        "//runtime/src/iree/testing:benchmark",
+        "//runtime/src/iree/testing:benchmark_main",
+    ],
+)
+
+iree_runtime_cc_test(
+    name = "allocator_test",
+    srcs = ["allocator_test.cc"],
+    deps = [
+        ":base",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
     ],
 )
 
@@ -62,6 +90,26 @@ iree_runtime_cc_test(
         ":base",
         "//runtime/src/iree/testing:gtest",
         "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+iree_runtime_cc_test(
+    name = "bitmap_test",
+    srcs = ["bitmap_test.cc"],
+    deps = [
+        ":base",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+cc_binary_benchmark(
+    name = "bitmap_benchmark",
+    srcs = ["bitmap_benchmark.cc"],
+    deps = [
+        ":base",
+        "//runtime/src/iree/testing:benchmark",
+        "//runtime/src/iree/testing:benchmark_main",
     ],
 )
 
@@ -108,6 +156,14 @@ iree_runtime_cc_test(
         ":base",
         "//runtime/src/iree/testing:gtest",
         "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+iree_runtime_cc_fuzz(
+    name = "string_view_fuzz",
+    srcs = ["string_view_fuzz.cc"],
+    deps = [
+        ":base",
     ],
 )
 

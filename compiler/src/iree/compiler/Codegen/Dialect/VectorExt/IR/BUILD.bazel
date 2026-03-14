@@ -23,20 +23,22 @@ exports_files([
 iree_td_library(
     name = "td_files",
     srcs = enforce_glob(
+        # keep sorted
         [
             "VectorExtAttrs.td",
             "VectorExtBase.td",
-            "VectorExtOps.td",
             "VectorExtInterfaces.td",
+            "VectorExtOps.td",
         ],
         include = ["*.td"],
     ),
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
         "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
-        "@llvm-project//mlir:MaskableOpInterfaceTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+        "@llvm-project//mlir:ValueBoundsOpInterfaceTdFiles",
         "@llvm-project//mlir:VectorInterfacesTdFiles",
     ],
 )
@@ -75,12 +77,13 @@ iree_compiler_cc_library(
         "//compiler/src/iree/compiler/Utils",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:ControlFlowInterfaces",
         "@llvm-project//mlir:DialectUtils",
         "@llvm-project//mlir:IR",
-        "@llvm-project//mlir:MaskableOpInterface",
         "@llvm-project//mlir:SideEffectInterfaces",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
+        "@llvm-project//mlir:ValueBoundsOpInterface",
         "@llvm-project//mlir:VectorDialect",
         "@llvm-project//mlir:VectorInterfaces",
     ],

@@ -230,7 +230,7 @@ LogicalResult ScatterOp::getIterationDomainTileFromOperandTiles(
   // TODO: Support fusion along the index operand. For the index operand, the
   // offset + size must be the full size for the inner most dim.
   if (operandNumbers.size() != 1 ||
-      getInputs().getBeginOperandIndex() != operandNumbers.front()) {
+      getUpdatesMutable().getOperandNumber() != operandNumbers.front()) {
     return failure();
   }
   ArrayRef<OpFoldResult> offsets(allOffsets[0]);
@@ -291,8 +291,9 @@ LogicalResult ScatterOp::generateScalarImplementation(OpBuilder &b,
 
     auto dim = dimMap[i];
 
-    if (starts[dim])
+    if (starts[dim]) {
       ret = arith::AddIOp::create(b, loc, ret, starts[dim]);
+    }
     starts[dim] = ret;
   }
 
@@ -441,8 +442,9 @@ LogicalResult GatherOp::generateScalarImplementation(OpBuilder &b, Location loc,
     Value idx = memref::LoadOp::create(b, loc, getIndices(), loadIndices);
     Value ret = arith::IndexCastOp::create(b, loc, b.getIndexType(), idx);
     auto dim = dimMap[i];
-    if (starts[dim])
+    if (starts[dim]) {
       ret = arith::AddIOp::create(b, loc, ret, starts[dim]);
+    }
     starts[dim] = ret;
   }
 
@@ -455,16 +457,192 @@ LogicalResult GatherOp::generateScalarImplementation(OpBuilder &b, Location loc,
 }
 
 //===----------------------------------------------------------------------===//
-// MapScatterOp
+// MapLoadOp
 //===----------------------------------------------------------------------===//
 
-SmallVector<utils::IteratorType> MapScatterOp::getLoopIteratorTypes() {
+SmallVector<utils::IteratorType> MapLoadOp::getLoopIteratorTypes() {
+  SmallVector<utils::IteratorType> iteratorTypes(getOutputRank(),
+                                                 utils::IteratorType::parallel);
+  return iteratorTypes;
+}
+
+SmallVector<Range> MapLoadOp::getIterationDomain(OpBuilder &builder) {
+  Location loc = getLoc();
+  OpFoldResult zero = builder.getIndexAttr(0);
+  OpFoldResult one = builder.getIndexAttr(1);
+  SmallVector<Range> ranges;
+  for (auto dim : llvm::seq<int64_t>(0, getOutputRank())) {
+    OpFoldResult ub = getDim(builder, loc, getOutput(), dim);
+    ranges.push_back(Range{zero, ub, one});
+  }
+  return ranges;
+}
+
+FailureOr<TilingResult>
+MapLoadOp::getTiledImplementation(OpBuilder &builder,
+                                  ArrayRef<OpFoldResult> offsets,
+                                  ArrayRef<OpFoldResult> sizes) {
+  Location loc = getLoc();
+
+  // Get a slice of the output (the dest/init operand).
+  SmallVector<OpFoldResult> outputStrides(getOutputRank(),
+                                          builder.getI64IntegerAttr(1));
+  Operation *outputSlice =
+      getSlice(builder, loc, getOutput(), offsets, sizes, outputStrides);
+
+  // Clone the operation with the full source but sliced output, and then
+  // compose the tiling offsets with the index transformation of the
+  // map_load op, because the space of the transformation output indices
+  // is now local to the new output tile.
+  Value tiledOutput = outputSlice->getResult(0);
+  SmallVector<Type> resultTypes;
+  if (getNumResults()) {
+    resultTypes.push_back(tiledOutput.getType());
+  }
+  Operation *tiledOp = mlir::clone(builder, getOperation(), resultTypes,
+                                   {getSource(), tiledOutput});
+  auto tiledMapLoadOp = cast<MapLoadOp>(tiledOp);
+  auto indexTransformBuilder =
+      [&](ArrayRef<BlockArgument> outputIndices) -> SmallVector<Value> {
+    SmallVector<OpFoldResult> offsetIndices;
+    auto addMap = AffineMap::get(
+        2, 0, {builder.getAffineDimExpr(0) + builder.getAffineDimExpr(1)});
+    for (auto [outIdx, offset] : llvm::zip_equal(outputIndices, offsets)) {
+      offsetIndices.push_back(affine::makeComposedFoldedAffineApply(
+          builder, loc, addMap, {OpFoldResult(outIdx), offset}));
+    }
+    return getValueOrCreateConstantIndexOp(builder, loc, offsetIndices);
+  };
+  tiledMapLoadOp.insertTransformationAtStart(builder, indexTransformBuilder,
+                                             offsets.size());
+  return TilingResult{{tiledOp}, {tiledOp->getResults()}, {outputSlice}};
+}
+
+LogicalResult MapLoadOp::getResultTilePosition(
+    OpBuilder &builder, unsigned resultNumber, ArrayRef<OpFoldResult> offsets,
+    ArrayRef<OpFoldResult> sizes, SmallVector<OpFoldResult> &resultOffsets,
+    SmallVector<OpFoldResult> &resultSizes) {
+  resultOffsets.assign(offsets.begin(), offsets.end());
+  resultSizes.assign(sizes.begin(), sizes.end());
+  return success();
+}
+
+FailureOr<TilingResult>
+MapLoadOp::generateResultTileValue(OpBuilder &builder, unsigned resultNumber,
+                                   ArrayRef<OpFoldResult> offsets,
+                                   ArrayRef<OpFoldResult> sizes) {
+  return getTiledImplementation(builder, offsets, sizes);
+}
+
+LogicalResult MapLoadOp::getIterationDomainTileFromOperandTiles(
+    OpBuilder &b, ArrayRef<unsigned> operandNumbers,
+    ArrayRef<SmallVector<OpFoldResult>> allOffsets,
+    ArrayRef<SmallVector<OpFoldResult>> allSizes,
+    SmallVectorImpl<OpFoldResult> &iterDomainOffsets,
+    SmallVectorImpl<OpFoldResult> &iterDomainSizes) {
+  if (operandNumbers.size() != 1 ||
+      operandNumbers.front() != getOutputMutable().getOperandNumber()) {
+    return failure();
+  }
+  ArrayRef<OpFoldResult> offsets(allOffsets[0]);
+  ArrayRef<OpFoldResult> sizes(allSizes[0]);
+
+  // The iteration domain is defined in terms of the `output`, so simply
+  // use the given offsets/sizes.
+  iterDomainOffsets.assign(offsets.begin(), offsets.end());
+  iterDomainSizes.assign(sizes.begin(), sizes.end());
+  return success();
+}
+
+FailureOr<TilingResult> MapLoadOp::getTiledImplementationFromOperandTiles(
+    OpBuilder &b, ArrayRef<unsigned> operandNumbers,
+    ArrayRef<SmallVector<OpFoldResult>> allOffsets,
+    ArrayRef<SmallVector<OpFoldResult>> allSizes) {
+  SmallVector<OpFoldResult> mappedOffsets, mappedSizes;
+  if (failed(getIterationDomainTileFromOperandTiles(
+          b, operandNumbers, allOffsets, allSizes, mappedOffsets,
+          mappedSizes))) {
+    return failure();
+  }
+  return getTiledImplementation(b, mappedOffsets, mappedSizes);
+}
+
+/// The body of the transformation_region is inlined, and the yielded indices
+/// are used to read values from the source and write to the output. Bounds
+/// checking is performed on the source indices, and the padding value is used
+/// if the indices are out of bounds.
+LogicalResult MapLoadOp::generateScalarImplementation(OpBuilder &b,
+                                                      Location loc,
+                                                      ValueRange ivs) {
+  // The scalar implementation is currently only implemented for buffer
+  // semantics.
+  if (!hasPureBufferSemantics()) {
+    return failure();
+  }
+
+  auto bodyBuilder = [&](OpBuilder nestedBuilder, Location nestedLoc,
+                         ArrayRef<Value> yieldedValues) {
+    // The last yielded Value is the padding, the rest are source indices.
+    Value paddingValue = yieldedValues.back();
+    ArrayRef<Value> loadIndices = yieldedValues.drop_back();
+
+    // Check bounds for each source dimension. Start with true so that
+    // for 0-D sources, inBounds is always true.
+    Value inBounds = nestedBuilder.createOrFold<arith::ConstantIntOp>(
+        nestedLoc, /*value=*/1, /*width=*/1);
+    Value zero =
+        nestedBuilder.createOrFold<arith::ConstantIndexOp>(nestedLoc, 0);
+    for (auto [dim, idx] : llvm::enumerate(loadIndices)) {
+      Value dimSize =
+          memref::DimOp::create(nestedBuilder, nestedLoc, getSource(), dim);
+
+      // Check: idx >= 0
+      Value geZero = arith::CmpIOp::create(
+          nestedBuilder, nestedLoc, arith::CmpIPredicate::sge, idx, zero);
+      // Check: idx < dimSize
+      Value ltDim = arith::CmpIOp::create(
+          nestedBuilder, nestedLoc, arith::CmpIPredicate::slt, idx, dimSize);
+      // Combine: idx >= 0 && idx < dimSize
+      Value dimInBounds =
+          arith::AndIOp::create(nestedBuilder, nestedLoc, geZero, ltDim);
+
+      inBounds = arith::AndIOp::create(nestedBuilder, nestedLoc, inBounds,
+                                       dimInBounds);
+    }
+
+    // Create if-else: if in bounds, load from source; else use padding.
+    // The if yields the value to store.
+    auto ifOp = scf::IfOp::create(nestedBuilder, nestedLoc,
+                                  TypeRange{paddingValue.getType()}, inBounds,
+                                  /*addThenBlock=*/true, /*addElseBlock=*/true);
+    {
+      auto thenBuilder = ifOp.getThenBodyBuilder();
+      Value loaded = memref::LoadOp::create(thenBuilder, nestedLoc, getSource(),
+                                            loadIndices);
+      scf::YieldOp::create(thenBuilder, nestedLoc, loaded);
+    }
+    {
+      auto elseBuilder = ifOp.getElseBodyBuilder();
+      scf::YieldOp::create(elseBuilder, nestedLoc, paddingValue);
+    }
+    memref::StoreOp::create(nestedBuilder, nestedLoc, ifOp.getResult(0),
+                            getOutput(), ivs);
+  };
+  inlineMapLoadBody(b, loc, ivs, bodyBuilder);
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// MapStoreOp
+//===----------------------------------------------------------------------===//
+
+SmallVector<utils::IteratorType> MapStoreOp::getLoopIteratorTypes() {
   SmallVector<utils::IteratorType> iteratorTypes(getInputRank(),
                                                  utils::IteratorType::parallel);
   return iteratorTypes;
 }
 
-SmallVector<Range> MapScatterOp::getIterationDomain(OpBuilder &builder) {
+SmallVector<Range> MapStoreOp::getIterationDomain(OpBuilder &builder) {
   Location loc = getLoc();
   OpFoldResult zero = builder.getIndexAttr(0);
   OpFoldResult one = builder.getIndexAttr(1);
@@ -477,9 +655,9 @@ SmallVector<Range> MapScatterOp::getIterationDomain(OpBuilder &builder) {
 }
 
 FailureOr<TilingResult>
-MapScatterOp::getTiledImplementation(OpBuilder &builder,
-                                     ArrayRef<OpFoldResult> offsets,
-                                     ArrayRef<OpFoldResult> sizes) {
+MapStoreOp::getTiledImplementation(OpBuilder &builder,
+                                   ArrayRef<OpFoldResult> offsets,
+                                   ArrayRef<OpFoldResult> sizes) {
   Location loc = getLoc();
 
   // Get a slice of the input.
@@ -489,12 +667,12 @@ MapScatterOp::getTiledImplementation(OpBuilder &builder,
       getSlice(builder, loc, getInput(), offsets, sizes, inputStrides);
 
   // Clone the operation with the slice of the input, and then compose the
-  // tiling offsets with the index transformation of the map_scatter op,
+  // tiling offsets with the index transformation of the map_store op,
   // because the space of the transformation source indices is now local to
   // the new input tile.
   Operation *tiledOp = mlir::clone(builder, getOperation(), getResultTypes(),
                                    {inputSlice->getResult(0), getOutput()});
-  auto tiledMapScatterOp = cast<MapScatterOp>(tiledOp);
+  auto tiledMapStoreOp = cast<MapStoreOp>(tiledOp);
   auto indexTransformBuilder =
       [&](ArrayRef<BlockArgument> srcIndices) -> SmallVector<Value> {
     SmallVector<OpFoldResult> offsetIndices;
@@ -506,12 +684,12 @@ MapScatterOp::getTiledImplementation(OpBuilder &builder,
     }
     return getValueOrCreateConstantIndexOp(builder, loc, offsetIndices);
   };
-  tiledMapScatterOp.insertTransformationAtStart(builder, indexTransformBuilder,
-                                                offsets.size());
+  tiledMapStoreOp.insertTransformationAtStart(builder, indexTransformBuilder,
+                                              offsets.size());
   return TilingResult{{tiledOp}, {tiledOp->getResults()}, {inputSlice}};
 }
 
-LogicalResult MapScatterOp::getResultTilePosition(
+LogicalResult MapStoreOp::getResultTilePosition(
     OpBuilder &builder, unsigned resultNumber, ArrayRef<OpFoldResult> offsets,
     ArrayRef<OpFoldResult> sizes, SmallVector<OpFoldResult> &resultOffsets,
     SmallVector<OpFoldResult> &resultSizes) {
@@ -523,7 +701,7 @@ LogicalResult MapScatterOp::getResultTilePosition(
   return success();
 }
 
-LogicalResult MapScatterOp::getIterationDomainTileFromOperandTiles(
+LogicalResult MapStoreOp::getIterationDomainTileFromOperandTiles(
     OpBuilder &b, ArrayRef<unsigned> operandNumbers,
     ArrayRef<SmallVector<OpFoldResult>> allOffsets,
     ArrayRef<SmallVector<OpFoldResult>> allSizes,
@@ -543,7 +721,7 @@ LogicalResult MapScatterOp::getIterationDomainTileFromOperandTiles(
   return success();
 }
 
-FailureOr<TilingResult> MapScatterOp::getTiledImplementationFromOperandTiles(
+FailureOr<TilingResult> MapStoreOp::getTiledImplementationFromOperandTiles(
     OpBuilder &b, ArrayRef<unsigned> operandNumbers,
     ArrayRef<SmallVector<OpFoldResult>> allOffsets,
     ArrayRef<SmallVector<OpFoldResult>> allSizes) {
@@ -560,12 +738,12 @@ FailureOr<TilingResult> MapScatterOp::getTiledImplementationFromOperandTiles(
 /// are used to write input values to the output. The reads and writes are
 /// wrapped in an scf.if, conditioned on the yielded mask value of the
 /// transformation body.
-LogicalResult MapScatterOp::generateScalarImplementation(OpBuilder &b,
-                                                         Location loc,
-                                                         ValueRange ivs) {
+LogicalResult MapStoreOp::generateScalarImplementation(OpBuilder &b,
+                                                       Location loc,
+                                                       ValueRange ivs) {
   // The scalar implementation is currently only implemented for buffer
   // semantics, because we need to conditionally write values based on the
-  // mask. Vectorized map_scatter ops should be decomposed, not tiled to loops,
+  // mask. Vectorized map_store ops should be decomposed, not tiled to loops,
   // so vector types are not allowed.
   if (!hasPureBufferSemantics() || isa<VectorType>(getInputType())) {
     return failure();
@@ -585,7 +763,7 @@ LogicalResult MapScatterOp::generateScalarImplementation(OpBuilder &b,
     };
     scf::IfOp::create(nestedBuilder, nestedLoc, ifCond, thenBuilder);
   };
-  inlineMapScatterBody(b, loc, ivs, bodyBuilder);
+  inlineMapStoreBody(b, loc, ivs, bodyBuilder);
   return success();
 }
 
@@ -732,7 +910,7 @@ LogicalResult SortOp::generateScalarImplementation(OpBuilder &b, Location loc,
 //===----------------------------------------------------------------------===//
 
 SmallVector<utils::IteratorType> FftOp::getLoopIteratorTypes() {
-  // There are `rank-1` outer loops. The fft itselfs has one loop for each
+  // There are `rank-1` outer loops. The fft itself has one loop for each
   // stage, which handles the merge step -- taking two half size tensors and
   // merge them into one tensor.
   SmallVector<utils::IteratorType> iteratorTypes(getOperandRank(),
@@ -818,7 +996,7 @@ void FftOp::generateScalarImplWithCoeffBuf(OpBuilder &b, Location loc,
                                            ArrayRef<Value> operands) {
   auto rank = getOperandRank();
   SmallVector<AffineMap> maps;
-  // The size of coefficent buffer is epxected to match `2^(stage-1)`, which
+  // The size of coefficient buffer is expected to match `2^(stage-1)`, which
   // equals to the last dim of operands.
   maps.append(
       2, AffineMap::get(rank, 0, b.getAffineDimExpr(rank - 1), b.getContext()));
@@ -919,7 +1097,7 @@ FftOp::getTiledImplementation(OpBuilder &builder,
   tiledOperands[2] = getImagCoeff();
   SmallVector<Type, 4> resultTypes;
 
-  for (auto [index, out] : llvm::enumerate(getOutputs())) {
+  for (Value out : getDpsInits()) {
     Operation *slice =
         getSlice(builder, getLoc(), out, offsets, sizes, strides);
     tiledOperands.push_back(slice->getResult(0));
@@ -1016,11 +1194,13 @@ LogicalResult ScanOp::generateScalarImplementation(OpBuilder &b, Location loc,
         scanBlkArgs.push_back(
             memref::LoadOp::create(b, loc, getOutput(), indices));
         Value i0;
-        if (!isInclusive)
+        if (!isInclusive) {
           i0 = memref::LoadOp::create(b, loc, getInput(), indices);
+        }
         indices[scanDim] = iv;
-        if (isInclusive)
+        if (isInclusive) {
           i0 = memref::LoadOp::create(b, loc, getInput(), indices);
+        }
         scanBlkArgs.push_back(i0);
       });
 
@@ -1071,7 +1251,7 @@ ScanOp::getTiledImplementation(OpBuilder &builder,
   // Output 0
   {
     Operation *output0Slice =
-        getSlice(builder, getLoc(), getOutputs()[0], offsets, sizes, strides);
+        getSlice(builder, getLoc(), getOutput(), offsets, sizes, strides);
     tiledOperands.emplace_back(output0Slice->getResult(0));
     slices.push_back(output0Slice);
   }
@@ -1083,12 +1263,12 @@ ScanOp::getTiledImplementation(OpBuilder &builder,
       return {};
     }
     SmallVector<OpFoldResult> accumStrides(rank - 1, oneAttr);
-    Operation *output1Slice = getSlice(builder, getLoc(), getOutputs()[1],
+    Operation *output1Slice = getSlice(builder, getLoc(), getAccumulator(),
                                        accumOffsets, accumSizes, accumStrides);
     tiledOperands.emplace_back(output1Slice->getResult(0));
     slices.push_back(output1Slice);
   } else {
-    tiledOperands.emplace_back(getOutputs()[1]);
+    tiledOperands.emplace_back(getAccumulator());
   }
 
   SmallVector<Type, 4> resultTypes;
@@ -1116,8 +1296,9 @@ LogicalResult ScanOp::getResultTilePosition(
     int64_t rank = getOperandRank();
     if (rank > 1) {
       for (auto i : llvm::seq<int64_t>(0, rank)) {
-        if (i == getDimension())
+        if (i == getDimension()) {
           continue;
+        }
         resultOffsets.push_back(offsets[i]);
         resultSizes.push_back(sizes[i]);
       }
@@ -1164,7 +1345,7 @@ LogicalResult TopkOp::generateScalarImplementation(OpBuilder &b, Location loc,
   // loop induction variables.
   Value initialIndex;
   if (getIndices()) {
-    initialIndex = memref::LoadOp::create(b, loc, *getIndices(), ivs);
+    initialIndex = memref::LoadOp::create(b, loc, getIndices(), ivs);
   } else {
     Value rawInitialIndex = ivs[kDim];
     initialIndex =
@@ -1172,7 +1353,7 @@ LogicalResult TopkOp::generateScalarImplementation(OpBuilder &b, Location loc,
   }
 
   // Compute K (ub) from the selected dim of the output
-  Value ub = memref::DimOp::create(b, loc, outputValues(), getDimension());
+  Value ub = memref::DimOp::create(b, loc, getOutputValues(), getDimension());
 
   // Inner K loop functions:
   //   Load current K value and index
@@ -1188,15 +1369,15 @@ LogicalResult TopkOp::generateScalarImplementation(OpBuilder &b, Location loc,
       [&](OpBuilder &b, Location loc, Value iv, ValueRange loopCarryValues) {
         SmallVector<Value> indices(ivs);
         indices[kDim] = iv;
-        kValue = memref::LoadOp::create(b, loc, outputValues(), indices);
-        kIndex = memref::LoadOp::create(b, loc, outputIndices(), indices);
+        kValue = memref::LoadOp::create(b, loc, getOutputValues(), indices);
+        kIndex = memref::LoadOp::create(b, loc, getOutputIndices(), indices);
       });
 
   SmallVector<Value> indices(ivs);
   indices[kDim] = scfFor.getInductionVar();
   auto loopCarryValues = scfFor.getRegionIterArgs();
 
-  // Retrieve region as black box comparision function f(x,y). Plug into op.
+  // Retrieve region as black box comparison function f(x,y). Plug into op.
   auto &srcBlock = getRegion().front();
   IRMapping bvmF; // f(x,y)
   IRMapping bvmR; // f(y,x)
@@ -1237,8 +1418,8 @@ LogicalResult TopkOp::generateScalarImplementation(OpBuilder &b, Location loc,
                                                  loopCarryValues[0], kValue);
     Value resultKIndex = arith::SelectOp::create(b, loc, indexCmpRes,
                                                  loopCarryValues[1], kIndex);
-    memref::StoreOp::create(b, loc, resultKValue, outputValues(), indices);
-    memref::StoreOp::create(b, loc, resultKIndex, outputIndices(), indices);
+    memref::StoreOp::create(b, loc, resultKValue, getOutputValues(), indices);
+    memref::StoreOp::create(b, loc, resultKIndex, getOutputIndices(), indices);
     // Select loop carry, opposite of K results
     Value resultCarryValue = arith::SelectOp::create(
         b, loc, forwardCmpRes, kValue, loopCarryValues[0]);
@@ -1279,30 +1460,31 @@ TopkOp::getTiledImplementation(OpBuilder &builder,
 
   if (getIndices()) {
     Operation *indicesSlice =
-        getSlice(builder, loc, *getIndices(), offsets, sizes, strides);
+        getSlice(builder, loc, getIndices(), offsets, sizes, strides);
     tiledOperands.emplace_back(indicesSlice->getResult(0));
     slices.push_back(indicesSlice);
   }
 
   // Replace the tile size for the K dimension to use the output size instead of
   // the input size.
-  Value kSize = getDimValue(builder, getLoc(), outputValues(), getDimension());
+  Value kSize =
+      getDimValue(builder, getLoc(), getOutputValues(), getDimension());
   outputSizes[getDimension()] = getAsOpFoldResult(kSize);
 
-  // Output 0
+  // Output values
   {
-    Operation *output0Slice =
-        getSlice(builder, loc, getOutputs()[0], offsets, outputSizes, strides);
-    tiledOperands.emplace_back(output0Slice->getResult(0));
-    slices.push_back(output0Slice);
+    Operation *outputValuesSlice = getSlice(builder, loc, getOutputValues(),
+                                            offsets, outputSizes, strides);
+    tiledOperands.emplace_back(outputValuesSlice->getResult(0));
+    slices.push_back(outputValuesSlice);
   }
 
-  // Output 1
+  // Output indices
   {
-    Operation *output1Slice =
-        getSlice(builder, loc, getOutputs()[1], offsets, outputSizes, strides);
-    tiledOperands.emplace_back(output1Slice->getResult(0));
-    slices.push_back(output1Slice);
+    Operation *outputIndicesSlice = getSlice(builder, loc, getOutputIndices(),
+                                             offsets, outputSizes, strides);
+    tiledOperands.emplace_back(outputIndicesSlice->getResult(0));
+    slices.push_back(outputIndicesSlice);
   }
 
   SmallVector<Type, 2> resultTypes;
@@ -1372,6 +1554,13 @@ ArgCompareOp::getTiledImplementation(OpBuilder &builder,
   tiledOperands.push_back(inputSlice->getResult(0));
   slices.push_back(inputSlice);
 
+  if (hasExplicitIndexInput()) {
+    Operation *inputIndexSlice =
+        getSlice(builder, loc, getInputIndex(), offsets, sizes, strides);
+    tiledOperands.push_back(inputIndexSlice->getResult(0));
+    slices.push_back(inputIndexSlice);
+  }
+
   SmallVector<OpFoldResult> outputOffsets, outputSizes;
   if (failed(getResultTilePosition(builder, 0, offsets, sizes, outputOffsets,
                                    outputSizes))) {
@@ -1380,13 +1569,15 @@ ArgCompareOp::getTiledImplementation(OpBuilder &builder,
 
   SmallVector<OpFoldResult> outputStrides(outputOffsets.size(),
                                           builder.getIndexAttr(1));
-  Operation *outputValSlice = getSlice(
-      builder, loc, outputValue(), outputOffsets, outputSizes, outputStrides);
+  Operation *outputValSlice =
+      getSlice(builder, loc, getOutputValue(), outputOffsets, outputSizes,
+               outputStrides);
   tiledOperands.push_back(outputValSlice->getResult(0));
   slices.push_back(outputValSlice);
 
-  Operation *outputIdxSlice = getSlice(
-      builder, loc, outputIndex(), outputOffsets, outputSizes, outputStrides);
+  Operation *outputIdxSlice =
+      getSlice(builder, loc, getOutputIndex(), outputOffsets, outputSizes,
+               outputStrides);
   tiledOperands.push_back(outputIdxSlice->getResult(0));
   slices.push_back(outputIdxSlice);
 
@@ -1441,15 +1632,16 @@ LogicalResult ArgCompareOp::generateScalarImplementation(OpBuilder &b,
   uint64_t reductionDim = getDimension();
   SmallVector<Value> parallelIndices;
   for (size_t i = 0, rank = ivs.size(); i < rank; ++i) {
-    if (i == reductionDim)
+    if (i == reductionDim) {
       continue;
+    }
     parallelIndices.push_back(ivs[i]);
   }
 
   Value bestValueSoFar =
-      memref::LoadOp::create(b, loc, outputValue(), parallelIndices);
+      memref::LoadOp::create(b, loc, getOutputValue(), parallelIndices);
   Value bestIndexSoFar =
-      memref::LoadOp::create(b, loc, outputIndex(), parallelIndices);
+      memref::LoadOp::create(b, loc, getOutputIndex(), parallelIndices);
 
   Value candidateValue = memref::LoadOp::create(b, loc, getInputValue(), ivs);
 
@@ -1464,21 +1656,33 @@ LogicalResult ArgCompareOp::generateScalarImplementation(OpBuilder &b,
   Value cmpResult = regionMap.lookup(srcBlock.getTerminator()->getOperand(0));
   Value selectedValue = arith::SelectOp::create(b, loc, cmpResult,
                                                 candidateValue, bestValueSoFar);
-  Value indexOffset = ivs[reductionDim];
-  if (getIndexBase()) {
-    indexOffset = arith::AddIOp::create(b, loc, getIndexBase(), indexOffset);
-  }
-  Value castedIndex = indexOffset;
-  if (castedIndex.getType() != bestIndexSoFar.getType()) {
-    castedIndex = arith::IndexCastOp::create(b, loc, bestIndexSoFar.getType(),
-                                             castedIndex);
+
+  Value candidateIndex;
+  if (hasExplicitIndexInput()) {
+    // Explicit-index mode: load from input.
+    // The verifier ensures input and output index types match, so no cast
+    // needed.
+    candidateIndex = memref::LoadOp::create(b, loc, getInputIndex(), ivs);
+  } else {
+    // Implicit-index mode: compute from induction variable.
+    Value indexOffset = ivs[reductionDim];
+    if (getIndexBase()) {
+      indexOffset = arith::AddIOp::create(b, loc, getIndexBase(), indexOffset);
+    }
+    candidateIndex = indexOffset;
+
+    // Cast if induction variable type doesn't match output index type.
+    if (candidateIndex.getType() != bestIndexSoFar.getType()) {
+      candidateIndex = arith::IndexCastOp::create(
+          b, loc, bestIndexSoFar.getType(), candidateIndex);
+    }
   }
 
-  Value selectedIndex =
-      arith::SelectOp::create(b, loc, cmpResult, castedIndex, bestIndexSoFar);
-  memref::StoreOp::create(b, loc, selectedValue, outputValue(),
+  Value selectedIndex = arith::SelectOp::create(b, loc, cmpResult,
+                                                candidateIndex, bestIndexSoFar);
+  memref::StoreOp::create(b, loc, selectedValue, getOutputValue(),
                           parallelIndices);
-  memref::StoreOp::create(b, loc, selectedIndex, outputIndex(),
+  memref::StoreOp::create(b, loc, selectedIndex, getOutputIndex(),
                           parallelIndices);
   return success();
 }
@@ -1488,8 +1692,8 @@ ArgCompareOp::generateInitialTensorForPartialReduction(
     OpBuilder &b, Location loc, ArrayRef<OpFoldResult> sizes,
     const llvm::SetVector<unsigned> &reductionDims) {
   // Get the original init tensors.
-  Value valueInit = outputValue();
-  Value indexInit = outputIndex();
+  Value valueInit = getOutputValue();
+  Value indexInit = getOutputIndex();
 
   // Create tensors with the partial result shape.
   Type valueElTy = getElementTypeOrSelf(valueInit.getType());
@@ -1515,15 +1719,219 @@ ArgCompareOp::generateInitialTensorForPartialReduction(
                             indexBroadcastOp->getResult(0)};
 }
 
+// Helper function to create a tiled operation for the OuterReduction strategy.
+//
+// OuterReduction uses scf.for with iter_args to accumulate results across
+// iterations. Within each iteration, we perform element-wise comparisons (not
+// reductions), so we always use linalg.generic. The only difference between
+// explicit and implicit-index modes is whether indices come from the input
+// tensor or are computed from the tile offset.
+static std::pair<Operation *, SmallVector<Operation *>>
+createTiledOpForOuterReduction(ArgCompareOp op, OpBuilder &b, Location loc,
+                               ValueRange init, ArrayRef<OpFoldResult> offsets,
+                               SmallVector<Value> &tiledOperands,
+                               int64_t reductionDim, int64_t rank,
+                               bool isExplicitIndexMode) {
+  SmallVector<Operation *> slices;
+  Value initValResult = init[0];
+  Value initIdxResult = init[1];
+
+  SmallVector<Type, 2> resultTypes;
+  if (op.hasPureTensorSemantics()) {
+    resultTypes = {initValResult.getType(), initIdxResult.getType()};
+  }
+
+  // For OuterReduction, we always use linalg.generic to perform element-wise
+  // comparison, regardless of index mode. The difference is just how we obtain
+  // the indices: from input (explicit) or computed (implicit).
+  AffineMap identityMap = b.getMultiDimIdentityMap(rank);
+
+  // Base setup: input_value, accum_value, accum_index.
+  SmallVector<AffineMap> indexingMaps = {identityMap, identityMap, identityMap};
+  SmallVector<Value> inputs = {tiledOperands[0]};
+
+  if (isExplicitIndexMode) {
+    // Explicit-index mode: Also read indices from the sliced input_index
+    // tensor.
+    indexingMaps.push_back(identityMap);
+    inputs.push_back(tiledOperands[1]);
+  }
+
+  SmallVector<utils::IteratorType> iterators(rank,
+                                             utils::IteratorType::parallel);
+
+  auto genericOp = linalg::GenericOp::create(
+      b, loc, TypeRange{initValResult.getType(), initIdxResult.getType()},
+      inputs, ValueRange{initValResult, initIdxResult}, indexingMaps, iterators,
+      [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange args) {
+        Value newVal, accVal, accIdx, newIdx;
+
+        newVal = args[0];
+        if (isExplicitIndexMode) {
+          // Args: [input_value, input_index, accum_value, accum_index].
+          newIdx = args[1];
+          accVal = args[2];
+          accIdx = args[3];
+        } else {
+          // Args: [input_value, accum_value, accum_index].
+          accVal = args[1];
+          accIdx = args[2];
+
+          // Compute the global index for this element.
+          Value localIdx =
+              linalg::IndexOp::create(nestedBuilder, nestedLoc, reductionDim);
+          Value offsetValue = getValueOrCreateConstantIndexOp(
+              nestedBuilder, nestedLoc, offsets[reductionDim]);
+          Value globalIdx = arith::AddIOp::create(nestedBuilder, nestedLoc,
+                                                  offsetValue, localIdx);
+
+          if (Value indexBase = op.getIndexBase()) {
+            globalIdx = arith::AddIOp::create(nestedBuilder, nestedLoc,
+                                              indexBase, globalIdx);
+          }
+
+          // Cast to match the output index tensor's element type.
+          Type idxElemType = accIdx.getType();
+          newIdx = globalIdx;
+          if (!isa<IndexType>(idxElemType)) {
+            newIdx = arith::IndexCastOp::create(nestedBuilder, nestedLoc,
+                                                idxElemType, globalIdx);
+          }
+        }
+
+        // Clone the user's comparison logic to decide whether to update.
+        Block &originalBlock = op.getRegion().front();
+        IRMapping mapper;
+        mapper.map(originalBlock.getArgument(0), newVal);
+        mapper.map(originalBlock.getArgument(1), accVal);
+        for (Operation &innerOp : originalBlock) {
+          if (innerOp.hasTrait<OpTrait::IsTerminator>()) {
+            break;
+          }
+          nestedBuilder.clone(innerOp, mapper);
+        }
+
+        Value predicate =
+            mapper.lookup(originalBlock.getTerminator()->getOperand(0));
+        Value selectedVal = arith::SelectOp::create(nestedBuilder, nestedLoc,
+                                                    predicate, newVal, accVal);
+        Value selectedIdx = arith::SelectOp::create(nestedBuilder, nestedLoc,
+                                                    predicate, newIdx, accIdx);
+        linalg::YieldOp::create(nestedBuilder, nestedLoc,
+                                ValueRange{selectedVal, selectedIdx});
+      });
+
+  return {genericOp, slices};
+}
+
+// Helper function to create a tiled operation for the OuterParallel strategy.
+//
+// OuterParallel uses scf.forall with parallel_insert_slice where each parallel
+// iteration handles an independent chunk of the reduction dimension. Each chunk
+// performs a complete reduction and writes its result to a specific slot in the
+// output. Unlike OuterReduction, we can use ArgCompareOp for both index modes
+// because each chunk has a fixed offset that can be baked into index_base.
+static std::pair<Operation *, SmallVector<Operation *>>
+createTiledOpForOuterParallel(ArgCompareOp op, OpBuilder &b, Location loc,
+                              ValueRange init, ArrayRef<OpFoldResult> offsets,
+                              ArrayRef<OpFoldResult> sizes,
+                              ArrayRef<OpFoldResult> splitReductionIvs,
+                              SmallVector<Value> &tiledOperands,
+                              int64_t reductionDim, int64_t rank,
+                              bool isExplicitIndexMode) {
+  SmallVector<Operation *> slices;
+
+  // Extract a slice of the output for this parallel chunk.
+  SmallVector<OpFoldResult> initOffsets, initSizes, initStrides;
+  for (int64_t i = 0; i < rank; ++i) {
+    if (i == reductionDim) {
+      initOffsets.push_back(splitReductionIvs[0]);
+      initSizes.push_back(b.getIndexAttr(1));
+    } else {
+      initOffsets.push_back(offsets[i]);
+      initSizes.push_back(sizes[i]);
+    }
+    initStrides.push_back(b.getIndexAttr(1));
+  }
+
+  SmallVector<int64_t> resultValShape, resultIdxShape;
+  for (int64_t i = 0; i < rank; ++i) {
+    if (i == reductionDim) {
+      continue;
+    }
+    int64_t size =
+        getConstantIntValue(initSizes[i]).value_or(ShapedType::kDynamic);
+    resultValShape.push_back(size);
+    resultIdxShape.push_back(size);
+  }
+
+  auto sliceValResultType = RankedTensorType::get(
+      resultValShape, op.getOutputValueType().getElementType());
+  auto sliceIdxResultType =
+      RankedTensorType::get(resultIdxShape, op.getOutputIndexElementType());
+
+  auto initValSlice = tensor::ExtractSliceOp::create(
+      b, loc, sliceValResultType, init[0], initOffsets, initSizes, initStrides);
+  slices.push_back(initValSlice);
+
+  auto initIdxSlice = tensor::ExtractSliceOp::create(
+      b, loc, sliceIdxResultType, init[1], initOffsets, initSizes, initStrides);
+  slices.push_back(initIdxSlice);
+
+  Value initValResult = initValSlice.getResult();
+  Value initIdxResult = initIdxSlice.getResult();
+
+  tiledOperands.push_back(initValResult);
+  tiledOperands.push_back(initIdxResult);
+
+  SmallVector<Type, 2> resultTypes;
+  if (op.hasPureTensorSemantics()) {
+    resultTypes = {initValResult.getType(), initIdxResult.getType()};
+  }
+
+  ArgCompareOp tiledArgmaxOp;
+  if (isExplicitIndexMode) {
+    // Indices are provided as input, no index_base needed.
+    tiledArgmaxOp = ArgCompareOp::create(
+        b, loc, resultTypes,
+        /*input_value=*/tiledOperands[0], /*input_index=*/tiledOperands[1],
+        /*output_value=*/tiledOperands[2], /*output_index=*/tiledOperands[3],
+        /*index_base=*/Value(), /*dimension=*/reductionDim);
+  } else {
+    // Compute index_base for this chunk so that generated indices correspond
+    // to positions in the original tensor. We use tileIndex * tileSize to get
+    // the starting offset of this chunk in the reduction dimension.
+    Value tileIndex =
+        getValueOrCreateConstantIndexOp(b, loc, splitReductionIvs[0]);
+    Value tileSize =
+        getValueOrCreateConstantIndexOp(b, loc, sizes[reductionDim]);
+    Value newIndexBase = arith::MulIOp::create(b, loc, tileIndex, tileSize);
+
+    if (Value globalIndexBase = op.getIndexBase()) {
+      newIndexBase =
+          arith::AddIOp::create(b, loc, globalIndexBase, newIndexBase);
+    }
+
+    tiledArgmaxOp = ArgCompareOp::create(
+        b, loc, resultTypes,
+        /*input_value=*/tiledOperands[0], /*input_index=*/Value(),
+        /*output_value=*/tiledOperands[1], /*output_index=*/tiledOperands[2],
+        /*index_base=*/newIndexBase, /*dimension=*/reductionDim);
+  }
+
+  return {tiledArgmaxOp, slices};
+}
+
 FailureOr<TilingResult> ArgCompareOp::tileToPartialReduction(
     OpBuilder &b, Location loc, ReductionTilingStrategy strategy,
     ValueRange init, ArrayRef<OpFoldResult> offsets,
     ArrayRef<OpFoldResult> sizes,
     const llvm::SetVector<unsigned> &reductionDims,
     ArrayRef<OpFoldResult> splitReductionIvs) {
-  if (strategy != ReductionTilingStrategy::PartialReductionOuterParallel) {
-    return failure();
-  }
+  assert(
+      (strategy == ReductionTilingStrategy::PartialReductionOuterParallel ||
+       strategy == ReductionTilingStrategy::PartialReductionOuterReduction) &&
+      "Unexpected partial reduction tiling strategy");
 
   OpBuilder::InsertionGuard guard(b);
 
@@ -1541,136 +1949,81 @@ FailureOr<TilingResult> ArgCompareOp::tileToPartialReduction(
   SmallVector<Operation *> slices;
   SmallVector<Value> tiledOperands;
 
-  // Extract a slice of the input operand.
   SmallVector<OpFoldResult> strides(rank, b.getIndexAttr(1));
   Operation *inputSlice =
       getSlice(b, loc, getInputValue(), offsets, sizes, strides);
   tiledOperands.push_back(inputSlice->getResult(0));
   slices.push_back(inputSlice);
 
-  // Extract slices of the init operands (partial results). For split-reduction,
-  // slice along the reduction dimension to get extra parallelism.
-  SmallVector<OpFoldResult> initOffsets, initSizes, initStrides;
-  for (int64_t i = 0; i < rank; ++i) {
-    if (i == reductionDim) {
-      initOffsets.push_back(splitReductionIvs[0]);
-      initSizes.push_back(b.getIndexAttr(1));
-    } else {
-      // For non-reduction dimensions, use the same offsets/sizes as input.
-      initOffsets.push_back(offsets[i]);
-      initSizes.push_back(sizes[i]);
-    }
-    initStrides.push_back(b.getIndexAttr(1));
+  bool isExplicitIndexMode = hasExplicitIndexInput();
+  if (isExplicitIndexMode) {
+    Operation *inputIndexSlice =
+        getSlice(b, loc, getInputIndex(), offsets, sizes, strides);
+    tiledOperands.push_back(inputIndexSlice->getResult(0));
+    slices.push_back(inputIndexSlice);
   }
 
-  SmallVector<int64_t> resultValShape, resultIdxShape;
-  for (int64_t i = 0; i < rank; ++i) {
-    if (i == reductionDim) {
-      continue;
-    }
-
-    if (auto sizeAttr = dyn_cast<Attribute>(initSizes[i])) {
-      int64_t size = (cast<IntegerAttr>(sizeAttr)).getInt();
-      resultValShape.push_back(size);
-      resultIdxShape.push_back(size);
-      continue;
-    }
-
-    resultValShape.push_back(ShapedType::kDynamic);
-    resultIdxShape.push_back(ShapedType::kDynamic);
-  }
-
-  RankedTensorType sliceValResultType =
-      cast<RankedTensorType>(getOutputValueType().clone(resultValShape));
-  RankedTensorType sliceIdxResultType =
-      cast<RankedTensorType>(getOutputIndexType().clone(resultIdxShape));
-
-  auto initValSlice = tensor::ExtractSliceOp::create(
-      b, loc, sliceValResultType, init[0], initOffsets, initSizes, initStrides);
-  tiledOperands.push_back(initValSlice.getResult());
-  slices.push_back(initValSlice);
-
-  auto initIdxSlice = tensor::ExtractSliceOp::create(
-      b, loc, sliceIdxResultType, init[1], initOffsets, initSizes, initStrides);
-  tiledOperands.push_back(initIdxSlice.getResult());
-  slices.push_back(initIdxSlice);
-
-  // Create index_base for this chunk.
-  Value tileIndex =
-      getValueOrCreateConstantIndexOp(b, loc, splitReductionIvs[0]);
-  Value tileSize = getValueOrCreateConstantIndexOp(b, loc, sizes[reductionDim]);
-  Value tileStartIndex = arith::MulIOp::create(b, loc, tileIndex, tileSize);
-
-  Value newIndexBase;
-  if (Value globalIndexBase = getIndexBase()) {
-    // Add chunk start to existing index_base.
-    newIndexBase =
-        arith::AddIOp::create(b, loc, globalIndexBase, tileStartIndex);
+  // Dispatch to appropriate helper based on strategy.
+  // The two strategies handle partial results differently:
+  // - OuterReduction: Uses scf.for iter_args to accumulate across iterations.
+  // - OuterParallel: Uses scf.forall with parallel_insert_slice for parallel
+  // chunks.
+  Operation *tiledOp;
+  SmallVector<Operation *> strategySlices;
+  if (strategy == ReductionTilingStrategy::PartialReductionOuterReduction) {
+    auto [op, extraSlices] = createTiledOpForOuterReduction(
+        *this, b, loc, init, offsets, tiledOperands, reductionDim, rank,
+        isExplicitIndexMode);
+    tiledOp = op;
+    strategySlices = std::move(extraSlices);
   } else {
-    // Use chunk start as index_base.
-    newIndexBase = tileStartIndex;
+    auto [op, extraSlices] = createTiledOpForOuterParallel(
+        *this, b, loc, init, offsets, sizes, splitReductionIvs, tiledOperands,
+        reductionDim, rank, isExplicitIndexMode);
+    tiledOp = op;
+    strategySlices = std::move(extraSlices);
   }
 
-  SmallVector<Type, 2> resultTypes;
-  if (hasPureTensorSemantics()) {
-    resultTypes = {initValSlice->getResult(0).getType(),
-                   initIdxSlice->getResult(0).getType()};
+  slices.insert(slices.end(), strategySlices.begin(), strategySlices.end());
+
+  // Clone the user's comparison region into the tiled operation. This is only
+  // needed for OuterParallel which creates ArgCompareOp; OuterReduction uses
+  // linalg.generic which already has its region fully defined.
+  if (strategy == ReductionTilingStrategy::PartialReductionOuterParallel) {
+    auto argCompareOp = cast<ArgCompareOp>(tiledOp);
+    Region &targetRegion = argCompareOp.getRegion();
+    Region &sourceRegion = getRegion();
+    IRMapping mapper;
+    sourceRegion.cloneInto(&targetRegion, mapper);
   }
-
-  // Create the tiled operation with adjusted index_base.
-  SmallVector<Value> operands = std::move(tiledOperands);
-  operands.push_back(newIndexBase);
-  Operation *tiledArgmaxOp = ArgCompareOp::create(
-      b, loc, resultTypes,
-      /*inputs=*/operands[0],
-      /*outputs=*/ValueRange{operands[1], operands[2]},
-      /*indexBase=*/operands[3], /*dimension=*/reductionDim);
-
-  // Copy the region.
-  Region &targetRegion = tiledArgmaxOp->getRegion(0);
-  Region &sourceRegion = getRegion();
-  IRMapping mapper;
-  sourceRegion.cloneInto(&targetRegion, mapper);
 
   return TilingResult{
-      {tiledArgmaxOp}, SmallVector<Value>(tiledArgmaxOp->getResults()), slices};
+      {tiledOp}, SmallVector<Value>(tiledOp->getResults()), slices};
 }
 
 FailureOr<MergeResult>
 ArgCompareOp::mergeReductions(OpBuilder &b, Location loc,
                               ValueRange partialReduce,
                               const llvm::SetVector<unsigned> &reductionDims) {
-  auto mergeReductionDims = llvm::to_vector_of<int64_t>(reductionDims);
-  // Create linalg.reduce to perform final merge of partial results.
-  auto reduction = linalg::ReduceOp::create(
-      b, loc, partialReduce, getDpsInits(), mergeReductionDims,
-      [this](OpBuilder &b, Location loc, ValueRange inputs) {
-        Block &originalBlock = getRegion().front();
-        IRMapping mapper;
+  int64_t reductionDim = reductionDims.front();
 
-        // Map the original block arguments to the new inputs.
-        mapper.map(originalBlock.getArgument(0), inputs[0]);
-        mapper.map(originalBlock.getArgument(1), inputs[2]);
-        for (Operation &op : originalBlock) {
-          if (op.hasTrait<OpTrait::IsTerminator>()) {
-            break;
-          }
-          b.clone(op, mapper);
-        }
+  // Create arg_compare in explicit-index mode to merge the partial results.
+  // Explicit-index mode: 2 inputs (value + index), no index_base.
+  ArgCompareOp mergeOp = ArgCompareOp::create(
+      b, loc, hasPureTensorSemantics() ? TypeRange(getDpsInits()) : TypeRange{},
+      /*input_value=*/partialReduce[0], /*input_index=*/partialReduce[1],
+      /*output_value=*/getDpsInits()[0], /*output_index=*/getDpsInits()[1],
+      /*index_base=*/Value(),
+      /*dimension=*/reductionDim);
 
-        // The verifier from ArgCompareOp ensures the region block ends with
-        // iree_linalg_ext.yield i1, so we can safely extract the predicate.
-        Value predicate =
-            mapper.lookup(originalBlock.getTerminator()->getOperand(0));
-        Value selectedVal =
-            arith::SelectOp::create(b, loc, predicate, inputs[0], inputs[2]);
-        Value selectedIdx =
-            arith::SelectOp::create(b, loc, predicate, inputs[1], inputs[3]);
-        linalg::YieldOp::create(b, loc, ValueRange{selectedVal, selectedIdx});
-      });
+  // Clone the comparator region from the original operation.
+  Region &targetRegion = mergeOp->getRegion(0);
+  Region &sourceRegion = getRegion();
+  IRMapping mapper;
+  sourceRegion.cloneInto(&targetRegion, mapper);
 
-  return MergeResult{{reduction},
-                     {reduction->getResult(0), reduction->getResult(1)}};
+  return MergeResult{{mergeOp.getOperation()},
+                     {mergeOp.getResult(0), mergeOp.getResult(1)}};
 }
 
 LogicalResult ArgCompareOp::getPartialResultTilePosition(
@@ -1681,251 +2034,26 @@ LogicalResult ArgCompareOp::getPartialResultTilePosition(
     SmallVector<OpFoldResult> &resultOffsets,
     SmallVector<OpFoldResult> &resultSizes) {
   int64_t reductionDim = getDimension();
-  int64_t inputRank = getInputRank();
   resultOffsets.clear();
   resultSizes.clear();
-  for (int64_t i = 0; i < inputRank; ++i) {
+
+  bool isOuterReduction =
+      tilingStrategy == ReductionTilingStrategy::PartialReductionOuterReduction;
+
+  for (auto [i, size, offset] : llvm::enumerate(sizes, offsets)) {
     if (i == reductionDim) {
-      resultOffsets.push_back(splitReductionIvs[0]);
-      resultSizes.push_back(b.getIndexAttr(1));
-      continue;
-    }
-    resultOffsets.push_back(offsets[i]);
-    resultSizes.push_back(sizes[i]);
-  }
-
-  return success();
-}
-
-//===----------------------------------------------------------------------===//
-// PackOp and UnPackOp utils
-//===----------------------------------------------------------------------===//
-
-/// Utility function to build the iteration domain for `packOp` or `unPackOp`.
-template <typename OpTy>
-static SmallVector<Range> getIterationDomain(OpTy op, OpBuilder &builder) {
-  static_assert(llvm::is_one_of<OpTy, PackOp, UnPackOp>::value,
-                "applies to only pack or unpack operations");
-  OpBuilder::InsertionGuard g(builder);
-  Location loc = op.getLoc();
-  int64_t rank = (std::is_same<OpTy, PackOp>::value) ? op.getInputRank()
-                                                     : op.getOutputRank();
-  SmallVector<Range> loopBounds(rank);
-  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
-  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-  ReifiedRankedShapedTypeDims resultShape;
-  (void)op.reifyResultShapes(builder, resultShape);
-  for (auto dim : llvm::seq<int64_t>(0, rank)) {
-    loopBounds[dim].offset = zero;
-    loopBounds[dim].stride = one;
-    loopBounds[dim].size = resultShape[0][dim];
-  }
-  return loopBounds;
-}
-
-//===----------------------------------------------------------------------===//
-// PackOp
-//===----------------------------------------------------------------------===//
-
-SmallVector<Range> PackOp::getIterationDomain(OpBuilder &builder) {
-  return LinalgExt::getIterationDomain(*this, builder);
-}
-
-/// Generate the body of the innermost loop of the scalar implementation
-/// of `pack` operation.
-static void generatePackOpScalarImplementationBody(PackOp packOp,
-                                                   OpBuilder &builder,
-                                                   Location loc,
-                                                   ValueRange ivs) {
-  // Note: `ivs` are already in the correct order, possibly interchanged based
-  // on `dims_pos`. However, connecting the loops with the access patterns is
-  // difficult - What is the relation between the position of the tile loop and
-  // the point loop? However, if we interchange `ivs` once more to go to the
-  // canonical blocking format: ABCabc, this connection becomes trivial: Each
-  // point loop is pointLoopsOffset + inputRank away from the tiled loop.
-  ArrayRef<int64_t> dimsToInnerBlock = packOp.getInnerDimsPos();
-  ArrayRef<int64_t> dimsToOuterBlock = packOp.getOuterDimsPerm();
-
-  SmallVector<Value> interchangedIvs = ivs;
-  SmallVector<int64_t> interchangeVector =
-      computeInterchangeFromDimPos(dimsToInnerBlock, packOp.getInputRank());
-  interchangedIvs = interchange<Value>(interchangedIvs, interchangeVector,
-                                       /*offset=*/packOp.getInputRank());
-  if (!dimsToOuterBlock.empty()) {
-    interchangeVector =
-        computeInterchangeFromDimPos(dimsToOuterBlock, packOp.getInputRank());
-    interchangedIvs =
-        interchange<Value>(interchangedIvs, interchangeVector, /*offset=*/0);
-  }
-
-  SmallVector<OpFoldResult> tiles = packOp.getMixedTiles();
-  DenseMap<int64_t, OpFoldResult> dimAndTileMapping =
-      packOp.getDimAndTileMapping();
-  SmallVector<OpFoldResult> sourceIndices;
-  size_t pointLoopsOffset = 0;
-  int64_t inputRank = packOp.getInputRank();
-  for (auto dim : llvm::seq<int64_t>(0, inputRank)) {
-    if (dimAndTileMapping.count(dim)) {
-      AffineExpr i, j, tile;
-      bindDims(builder.getContext(), i, j);
-      bindSymbols(builder.getContext(), tile);
-      OpFoldResult sourceIndex = affine::makeComposedFoldedAffineApply(
-          builder, loc, i * tile + j,
-          ArrayRef<OpFoldResult>{
-              interchangedIvs[dim],
-              interchangedIvs[pointLoopsOffset + packOp.getInputRank()],
-              dimAndTileMapping[dim]});
-      sourceIndices.push_back(sourceIndex);
-      ++pointLoopsOffset;
+      // OuterReduction accumulates in place, always writing to offset 0.
+      // OuterParallel writes each chunk to a separate slot indexed by chunkIdx.
+      resultOffsets.push_back(isOuterReduction ? b.getIndexAttr(0)
+                                               : splitReductionIvs[0]);
+      resultSizes.push_back(isOuterReduction ? size : b.getIndexAttr(1));
     } else {
-      sourceIndices.push_back(interchangedIvs[dim]);
+      resultOffsets.push_back(offset);
+      resultSizes.push_back(size);
     }
   }
 
-  auto createLoad = [&]() -> Value {
-    return memref::LoadOp::create(
-        builder, loc, packOp.getInput(),
-        getValueOrCreateConstantIndexOp(builder, loc, sourceIndices));
-  };
-  Value scalar;
-  if (auto paddingValue = packOp.getPaddingValue()) {
-    ArithBuilder arithBuilder(builder, loc);
-    Value isInBounds;
-    for (auto dim : llvm::seq<int64_t>(0, inputRank)) {
-      Value idx =
-          getValueOrCreateConstantIndexOp(builder, loc, sourceIndices[dim]);
-      Value cond = arithBuilder.slt(
-          idx, getDimValue(builder, loc, packOp.getInput(), dim));
-      isInBounds = dim == 0 ? cond : arithBuilder._and(isInBounds, cond);
-    }
-    scalar = scf::IfOp::create(
-                 builder, loc, isInBounds, /*thenBuilder=*/
-                 [&](OpBuilder &b, Location l) {
-                   scf::YieldOp::create(b, l, createLoad());
-                 },
-                 /*elseBuilder=*/
-                 [&](OpBuilder &b, Location l) {
-                   scf::YieldOp::create(b, l, paddingValue);
-                 })
-                 .getResult(0);
-  } else {
-    scalar = createLoad();
-  }
-
-  memref::StoreOp::create(builder, loc, scalar, packOp.getOutput(), ivs);
-}
-
-LogicalResult PackOp::generateScalarImplementation(OpBuilder &builder,
-                                                   Location loc,
-                                                   ValueRange ivs) {
-  OpBuilder::InsertionGuard g(builder);
-  // The `ivs` already represent the position into the output tensor for the
-  // non data-tile dimensions.
-  SmallVector<Value> ivVec = llvm::to_vector(ivs);
-  ReifiedRankedShapedTypeDims outputShape;
-  if (failed(reifyResultShapes(builder, outputShape))) {
-    return getOperation()->emitOpError("failed to reify result shape");
-  }
-  if (outputShape.size() != 1 || outputShape[0].size() != getOutputRank()) {
-    return getOperation()->emitOpError(
-               "expected shape of one result value of rank")
-           << getOutputRank();
-  }
-
-  // Generate the loops that iterate over the data tile.
-  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
-  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-
-  // All loops except the innermost are simple loops that just iterate
-  // over the tile dimensions.
-  for (auto dataTileDim :
-       llvm::seq<unsigned>(getInputRank(), getOutputRank() - 1)) {
-    Value ub = getValueOrCreateConstantIndexOp(builder, loc,
-                                               outputShape[0][dataTileDim]);
-    scf::ForOp loop = scf::ForOp::create(builder, loc, zero, ub, one);
-    builder.setInsertionPointToStart(loop.getBody());
-    ivVec.push_back(loop.getInductionVar());
-  }
-  // The body of the innermost loops does the actual data movement.
-  scf::ForOp::create(
-      builder, loc, zero,
-      getValueOrCreateConstantIndexOp(builder, loc, outputShape[0].back()), one,
-      ValueRange{},
-      [&](OpBuilder &bodyBuilder, Location bodyLoc, Value iv,
-          ValueRange regionIterArgs) {
-        ivVec.push_back(iv);
-        generatePackOpScalarImplementationBody(*this, bodyBuilder, bodyLoc,
-                                               ivVec);
-        scf::YieldOp::create(bodyBuilder, bodyLoc);
-      });
   return success();
-}
-
-//===----------------------------------------------------------------------===//
-// UnPackOp
-//===----------------------------------------------------------------------===//
-
-LogicalResult UnPackOp::generateScalarImplementation(OpBuilder &builder,
-                                                     Location loc,
-                                                     ValueRange ivs) {
-  assert(ivs.size() == getOutputRank() &&
-         "number of ivs must match the rank of the output tensor");
-  OpBuilder::InsertionGuard g(builder);
-  ReifiedRankedShapedTypeDims outputShape;
-  if (failed(reifyResultShapes(builder, outputShape))) {
-    return getOperation()->emitOpError("failed to reify result shape");
-  }
-  if (outputShape.size() != 1 || outputShape[0].size() != getOutputRank()) {
-    return getOperation()->emitOpError(
-               "expected shape of one result value of rank")
-           << getOutputRank();
-  }
-
-  DenseMap<int64_t, OpFoldResult> dimAndTileMapping = getDimAndTileMapping();
-  // untiled loops and tile loops induction variables.
-  SmallVector<Value> inputIvs;
-  // point loops induction variables.
-  SmallVector<Value> inputIvsPointLoops;
-  inputIvs.reserve(getOutputRank());
-  inputIvsPointLoops.reserve(dimAndTileMapping.size());
-  for (auto dim : llvm::seq<int64_t>(0, getOutputRank())) {
-    if (dimAndTileMapping.count(dim)) {
-      affine::DivModValue divMod =
-          affine::getDivMod(builder, loc, ivs[dim],
-                            getValueOrCreateConstantIndexOp(
-                                builder, loc, dimAndTileMapping[dim]));
-      inputIvsPointLoops.push_back(divMod.remainder);
-      inputIvs.push_back(divMod.quotient);
-    } else {
-      inputIvs.push_back(ivs[dim]);
-    }
-  }
-
-  // TODO: (lorenzo) simplify the logic a bit. There is `ivs`,
-  // `inputIvsPointLoops` and `inputIvs`.
-  assert(inputIvsPointLoops.size() + inputIvs.size() == getInputRank() &&
-         "expect same number of iduction variables equals to input rank");
-  // interchange the point loops induction variables based on `inner_dim_pos`.
-  ArrayRef<int64_t> innerDims = getInnerDimsPos();
-  SmallVector<int64_t> interchangeVector =
-      computeInterchangeFromDimPos(innerDims, getOutputRank());
-  SmallVector<Value> interchangedInputIvsPointLoops = inputIvsPointLoops;
-  interchangedInputIvsPointLoops = interchange<Value>(
-      interchangedInputIvsPointLoops, interchangeVector, /*offset=*/0);
-  // interchange the tiled loops induction variables based on `outer_dims_perm`.
-  ArrayRef<int64_t> outerDims = getOuterDimsPerm();
-  if (!outerDims.empty()) {
-    inputIvs = interchange<Value>(inputIvs, outerDims, /*offset=*/0);
-  }
-
-  llvm::append_range(inputIvs, interchangedInputIvsPointLoops);
-  Value scalar = memref::LoadOp::create(builder, loc, getInput(), inputIvs);
-  memref::StoreOp::create(builder, loc, scalar, getOutput(), ivs);
-  return success();
-}
-
-SmallVector<Range> UnPackOp::getIterationDomain(OpBuilder &builder) {
-  return LinalgExt::getIterationDomain(*this, builder);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2615,6 +2743,12 @@ AttentionOp::getTiledImplementation(OpBuilder &builder,
   assert(offsets.size() == getIterationDomainRank());
   assert(sizes.size() == getIterationDomainRank());
 
+  // TODO: Add support for linalg_ext.index operations in the region.
+  // Currently, tiling will break if index operations are present.
+  if (!getBody()->getOps<IREE::LinalgExt::IndexOp>().empty()) {
+    return failure();
+  }
+
   Location loc = getLoc();
 
   SmallVector<Range> querySlice =
@@ -3179,7 +3313,7 @@ LogicalResult OnlineAttentionOp::getPartialResultTilePosition(
     resultSizes.push_back(sizes[dim]);
 
     if (llvm::find(opInfo.getK2Dims(), dim) != opInfo.getK2Dims().end()) {
-      // Reduction dims are reduced, and are always outputed in the same
+      // Reduction dims are reduced, and are always outputted in the same
       // place. So use offset 0 for them.
       resultOffsets.push_back(b.getIndexAttr(0));
     } else {
@@ -3390,8 +3524,9 @@ static void offsetCustomOpIndices(OpBuilder &b, CustomOp customOp,
                                   ArrayRef<OpFoldResult> offsets) {
   IRRewriter rewriter(b);
   for (auto indexOp : customOp.getBody()->getOps<IREE::LinalgExt::IndexOp>()) {
-    if (indexOp.getDim() >= offsets.size() || !offsets[indexOp.getDim()])
+    if (indexOp.getDim() >= offsets.size() || !offsets[indexOp.getDim()]) {
       continue;
+    }
     OpBuilder::InsertionGuard guard(b);
     rewriter.setInsertionPointAfter(indexOp);
     AffineExpr index, offset;
@@ -3477,8 +3612,8 @@ LogicalResult CustomOp::getResultTilePosition(
 
 namespace {
 struct ConcatOpTilingExternalModel
-    : public TilingInterface::ExternalModel<ConcatOpTilingExternalModel,
-                                            tensor::ConcatOp> {
+    : TilingInterface::ExternalModel<ConcatOpTilingExternalModel,
+                                     tensor::ConcatOp> {
   SmallVector<utils::IteratorType> getLoopIteratorTypes(Operation *op) const {
     auto concatOp = cast<tensor::ConcatOp>(op);
     SmallVector<utils::IteratorType> iteratorTypes(

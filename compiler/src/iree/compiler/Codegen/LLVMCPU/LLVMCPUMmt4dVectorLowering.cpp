@@ -19,7 +19,7 @@
 // parallel paths.
 static llvm::cl::opt<bool> clMmt4dUseIntrinsics(
     "iree-codegen-mmt4d-use-intrinsics",
-    llvm::cl::desc("Whether to use instrinsics when lowering vector contracts "
+    llvm::cl::desc("Whether to use intrinsics when lowering vector contracts "
                    "generated from mmt4d matmuls (as opposed to inline asm). "
                    "Not for production use."),
     llvm::cl::init(false));
@@ -31,8 +31,7 @@ namespace mlir::iree_compiler {
 
 namespace {
 struct LLVMCPUMmt4dVectorLoweringPass
-    : public impl::LLVMCPUMmt4dVectorLoweringPassBase<
-          LLVMCPUMmt4dVectorLoweringPass> {
+    : impl::LLVMCPUMmt4dVectorLoweringPassBase<LLVMCPUMmt4dVectorLoweringPass> {
   using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -48,13 +47,15 @@ void LLVMCPUMmt4dVectorLoweringPass::runOnOperation() {
 
   std::optional<int64_t> numLoops;
   funcOp.walk([&](vector::ContractionOp op) {
-    if (numLoops)
+    if (numLoops) {
       return signalPassFailure();
+    }
     numLoops = op.getIndexingMapsArray()[0].getNumDims();
   });
   // No vector.contract op to optimize.
-  if (!numLoops)
+  if (!numLoops) {
     return;
+  }
 
   {
     // Fold consumer add ops into the contraction op itself.
@@ -69,7 +70,7 @@ void LLVMCPUMmt4dVectorLoweringPass::runOnOperation() {
     LLVM_DEBUG({
       llvm::dbgs()
           << "\n--- After folding consumer add ops into contraction op "
-             "iteself ---\n";
+             "itself ---\n";
       funcOp.print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
       llvm::dbgs() << "\n\n";
     });

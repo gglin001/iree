@@ -335,17 +335,18 @@ getDeviceFallbackGlobals(IREE::Util::GlobalOpInterface deviceGlobal,
                          SymbolTable &symbolTable) {
   SetVector<IREE::Util::GlobalOpInterface> resultSet;
   auto processAttr = [&](Attribute attr) {
-    if (!attr)
+    if (!attr) {
       return true; // ignore uninitialized devices
+    }
     return TypeSwitch<Attribute, bool>(attr)
-        .Case<IREE::HAL::DeviceOrdinalAttr>([](auto attr) { return true; })
-        .Case<IREE::HAL::DeviceTargetAttr>([](auto attr) { return true; })
-        .Case<IREE::HAL::DeviceFallbackAttr>([&](auto fallbackAttr) {
+        .Case([](IREE::HAL::DeviceOrdinalAttr attr) { return true; })
+        .Case([](IREE::HAL::DeviceTargetAttr attr) { return true; })
+        .Case([&](IREE::HAL::DeviceFallbackAttr fallbackAttr) {
           resultSet.insert(symbolTable.lookup<IREE::Util::GlobalOpInterface>(
               fallbackAttr.getName().getValue()));
           return true;
         })
-        .Default([](auto attr) { return false; });
+        .Default(false);
   };
   auto initialValue = deviceGlobal.getGlobalInitialValue();
   if (auto selectAttr =
@@ -468,7 +469,7 @@ static LogicalResult gatherDeviceResources(
 }
 
 struct MaterializeResourceCachesPass
-    : public IREE::HAL::impl::MaterializeResourceCachesPassBase<
+    : IREE::HAL::impl::MaterializeResourceCachesPassBase<
           MaterializeResourceCachesPass> {
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();

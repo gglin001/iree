@@ -23,7 +23,7 @@ enum class EncodingOptions { Padding, Generic };
 // Pipelines
 //===----------------------------------------------------------------------===//
 
-struct TransformOptions : public PassPipelineOptions<TransformOptions> {
+struct TransformOptions : PassPipelineOptions<TransformOptions> {
   Option<bool> enableAggressiveFusion{
       *this,
       "aggressive-fusion",
@@ -46,6 +46,26 @@ struct TransformOptions : public PassPipelineOptions<TransformOptions> {
       *this,
       "split-reduction",
       llvm::cl::desc("Enable split reduction for dispatch creation pipeline"),
+      llvm::cl::init(false),
+  };
+  Option<bool> enableAggressiveReshapeMovement{
+      *this,
+      "aggressive-reshape-movement",
+      llvm::cl::desc(
+          "Enable aggressive reshape movement (bubbling expand/collapse "
+          "shapes across reduction ops)"),
+      llvm::cl::init(false),
+  };
+  Option<bool> enablePadHandling{
+      *this,
+      "pad-handling",
+      llvm::cl::desc("Enable native handling of tensor.pad operations"),
+      llvm::cl::init(false),
+  };
+  Option<bool> enableFusePaddingIntoLinalgConsumerOps{
+      *this,
+      "fuse-padding-into-linalg-consumer-ops",
+      llvm::cl::desc("Enable fusing tensor.pad ops into Linalg consumer ops"),
       llvm::cl::init(false),
   };
   Option<bool> constExprHoisting{

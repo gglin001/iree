@@ -67,6 +67,15 @@ MLIR_CAPI_EXPORTED MlirAttribute ireeCodegenCompilationInfoAttrGet(
 MLIR_CAPI_EXPORTED ireeCodegenCompilationInfoParameters
 ireeCodegenCompilationInfoAttrGetParameters(MlirAttribute attr);
 
+MLIR_CAPI_EXPORTED bool ireeAttributeIsACodegenRootOpAttr(MlirAttribute attr);
+
+MLIR_CAPI_EXPORTED MlirTypeID ireeCodegenRootOpAttrGetTypeID(void);
+
+MLIR_CAPI_EXPORTED MlirAttribute ireeCodegenRootOpAttrGet(MlirContext mlirCtx,
+                                                          int64_t set);
+
+MLIR_CAPI_EXPORTED int64_t ireeCodegenRootOpAttrGetSet(MlirAttribute attr);
+
 MLIR_CAPI_EXPORTED void
 ireeCodegenGetExecutableVariantOps(MlirModule module, size_t *numOps,
                                    MlirOperation *executableOps);
@@ -118,6 +127,34 @@ MLIR_CAPI_EXPORTED bool ireeCodegenHasIGEMMGenericConvDetails(MlirOperation op);
 // Gets IGEMM generic convolution details for the given operation.
 MLIR_CAPI_EXPORTED ireeCodegenIGEMMGenericConvDetails
 ireeCodegenGetIGEMMGenericConvDetails(MlirOperation op);
+
+struct ireeCodegenScaledContractionDimensions {
+  // Batch dimension for scaled contraction (ArrayAttr).
+  MlirAttribute batch;
+  // M dimension for scaled contraction (ArrayAttr).
+  MlirAttribute m;
+  // N dimension for scaled contraction (ArrayAttr).
+  MlirAttribute n;
+  // K outer reduction dimension for scaled contraction (ArrayAttr).
+  MlirAttribute k;
+  // K blocking dimension for scaled contraction (ArrayAttr).
+  MlirAttribute kB;
+};
+
+MLIR_CAPI_EXPORTED bool
+ireeCodegenMlirOperationIsAScaledContractionOp(MlirOperation op);
+
+MLIR_CAPI_EXPORTED ireeCodegenScaledContractionDimensions
+ireeCodegenInferScaledContractionDimensions(MlirOperation op);
+
+MLIR_CAPI_EXPORTED bool
+ireeAttributeIsACodegenOneOfKnobAttr(MlirAttribute attr);
+MLIR_CAPI_EXPORTED MlirTypeID ireeCodegenOneOfKnobAttrGetTypeID(void);
+MLIR_CAPI_EXPORTED MlirAttribute
+ireeCodegenOneOfKnobAttrGetName(MlirAttribute attr);
+MLIR_CAPI_EXPORTED void
+ireeCodegenOneOfKnobAttrGetOptions(MlirAttribute attr, intptr_t *numOptions,
+                                   MlirAttribute *options);
 
 #ifdef __cplusplus
 }

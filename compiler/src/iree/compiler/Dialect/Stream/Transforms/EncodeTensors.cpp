@@ -47,11 +47,6 @@ namespace {
 static LogicalResult checkEncoding(Operation *op, RankedTensorType encodingType,
                                    ValueRange encodingDims,
                                    PatternRewriter &rewriter) {
-  if (isa_and_nonnull<IREE::Encoding::PackedStorageAttr>(
-          encodingType.getEncoding())) {
-    return success();
-  }
-
   auto serializableEncoding = IREE::Encoding::getSerializableAttr(encodingType);
   if (serializableEncoding && !serializableEncoding.isSerialized()) {
     return rewriter.notifyMatchFailure(op, [=](Diagnostic &d) {
@@ -64,9 +59,10 @@ static LogicalResult checkEncoding(Operation *op, RankedTensorType encodingType,
 // Aligns the element type of a tensor<> to a byte-aligned power of 2 bit width.
 static RankedTensorType alignTensorType(RankedTensorType originalType) {
   Type elementType = originalType.getElementType();
-  Type alignedType = legalizeStorageElementType(elementType);
-  if (alignedType == elementType)
+  Type alignedType = legalizeStorageElementType(originalType);
+  if (alignedType == elementType) {
     return originalType;
+  }
   return RankedTensorType::get(originalType.getShape(), alignedType,
                                originalType.getEncoding());
 }
@@ -84,8 +80,9 @@ static Value makeTensorDim(Location loc, RankedTensorType tensorType,
   // Map from absolute dimension index to the compact dynamic index.
   unsigned di = 0;
   for (unsigned j = 0; j < i; ++j) {
-    if (tensorType.isDynamicDim(j))
+    if (tensorType.isDynamicDim(j)) {
       ++di;
+    }
   }
   return dynamicDims[di];
 }
@@ -138,7 +135,8 @@ static Value calculateElementByteOffset(Location loc,
 //
 // Returns the pattern converted to one of [i8, i16, i32, i64] (with i64 needing
 // to be handled via emulation) or nullptr if the type is unsupported.
-static Value canonicalizeFillPattern(Value pattern, OpBuilder &builder) {
+static Value canonicalizeFillPattern(Value pattern, RankedTensorType resultType,
+                                     OpBuilder &builder) {
   auto loc = pattern.getLoc();
 
   // Decompose complex numbers into the real/imag components and pack into an
@@ -158,14 +156,7 @@ static Value canonicalizeFillPattern(Value pattern, OpBuilder &builder) {
         pattern);
   }
 
-  // HACK: extend i1 to i8. This is really not something we should be doing here
-  // in optimized programs as this is a super shady operation.
   unsigned elementBitWidth = IREE::Util::getTypeBitWidth(pattern.getType());
-  if (elementBitWidth == 1) {
-    return builder.createOrFold<arith::ExtUIOp>(loc, builder.getI8Type(),
-                                                pattern);
-  }
-
   // For packed sub-byte patterns, duplicate the sub-byte parts into a full
   // byte. We first extend the sub-byte parts into full bytes, and then keep
   // shifting left and bitwise or the sub-byte parts. For example, to create an
@@ -174,7 +165,7 @@ static Value canonicalizeFillPattern(Value pattern, OpBuilder &builder) {
   //   %i8_val = (%i8_val << 2) | %i2_val
   //   %i8_val = (%i8_val << 2) | %i2_val
   //   %i8_val = (%i8_val << 2) | %i2_val
-  if (needToPackSubByteElementBitWidth(elementBitWidth)) {
+  if (needToPackSubByteElements(resultType)) {
     Type i8Type = builder.getI8Type();
     Value bitwidth = builder.createOrFold<arith::ConstantOp>(
         loc, i8Type, builder.getIntegerAttr(i8Type, elementBitWidth));
@@ -187,6 +178,15 @@ static Value canonicalizeFillPattern(Value pattern, OpBuilder &builder) {
     }
     return i8Val;
   }
+
+  // HACK: For unpacked i1, extend i1 to i8. This is really not something we
+  // should be doing here in optimized programs as this is a super shady
+  // operation.
+  if (elementBitWidth == 1) {
+    return builder.createOrFold<arith::ExtUIOp>(loc, builder.getI8Type(),
+                                                pattern);
+  }
+
   if ((elementBitWidth % 8) != 0) {
     // We'd need some policy to determine how to handle non-byte-aligned widths.
     return {};
@@ -200,8 +200,7 @@ static Value canonicalizeFillPattern(Value pattern, OpBuilder &builder) {
 // stream.tensor.import
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorImportOp
-    : public OpRewritePattern<IREE::Stream::TensorImportOp> {
+struct EncodeTensorImportOp : OpRewritePattern<IREE::Stream::TensorImportOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorImportOp op,
                                 PatternRewriter &rewriter) const override {
@@ -223,8 +222,7 @@ struct EncodeTensorImportOp
 // stream.tensor.export
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorExportOp
-    : public OpRewritePattern<IREE::Stream::TensorExportOp> {
+struct EncodeTensorExportOp : OpRewritePattern<IREE::Stream::TensorExportOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorExportOp op,
                                 PatternRewriter &rewriter) const override {
@@ -246,8 +244,7 @@ struct EncodeTensorExportOp
 // stream.tensor.sizeof
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorSizeOfOp
-    : public OpRewritePattern<IREE::Stream::TensorSizeOfOp> {
+struct EncodeTensorSizeOfOp : OpRewritePattern<IREE::Stream::TensorSizeOfOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorSizeOfOp op,
                                 PatternRewriter &rewriter) const override {
@@ -274,8 +271,7 @@ struct EncodeTensorSizeOfOp
 // stream.tensor.empty
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorEmptyOp
-    : public OpRewritePattern<IREE::Stream::TensorEmptyOp> {
+struct EncodeTensorEmptyOp : OpRewritePattern<IREE::Stream::TensorEmptyOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorEmptyOp op,
                                 PatternRewriter &rewriter) const override {
@@ -298,7 +294,7 @@ struct EncodeTensorEmptyOp
 //===----------------------------------------------------------------------===//
 
 struct EncodeTensorConstantOp
-    : public OpRewritePattern<IREE::Stream::TensorConstantOp> {
+    : OpRewritePattern<IREE::Stream::TensorConstantOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorConstantOp op,
                                 PatternRewriter &rewriter) const override {
@@ -347,8 +343,8 @@ struct EncodeTensorConstantOp
              << alignedType << " does not have integral number of total bytes";
     }
     rewriter.replaceOpWithNewOp<IREE::Stream::AsyncConstantOp>(
-        op, op.getResult().getType(), encodedAttr, resultSize,
-        op.getAffinityAttr());
+        op, op.getResult().getType(), /*awaitTimepoint=*/Value(), encodedAttr,
+        resultSize, op.getAffinityAttr());
 
     return success();
   }
@@ -358,8 +354,7 @@ struct EncodeTensorConstantOp
 // stream.tensor.splat
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorSplatOp
-    : public OpRewritePattern<IREE::Stream::TensorSplatOp> {
+struct EncodeTensorSplatOp : OpRewritePattern<IREE::Stream::TensorSplatOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorSplatOp op,
                                 PatternRewriter &rewriter) const override {
@@ -370,7 +365,7 @@ struct EncodeTensorSplatOp
     }
 
     // Canonicalize the fill pattern into an integer type [i8, i16, i32, i64].
-    auto pattern = canonicalizeFillPattern(op.getValue(), rewriter);
+    auto pattern = canonicalizeFillPattern(op.getValue(), resultType, rewriter);
     if (!pattern) {
       return op.emitOpError()
              << "has unsupported pattern type " << op.getValue().getType()
@@ -391,8 +386,7 @@ struct EncodeTensorSplatOp
 // stream.tensor.clone
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorCloneOp
-    : public OpRewritePattern<IREE::Stream::TensorCloneOp> {
+struct EncodeTensorCloneOp : OpRewritePattern<IREE::Stream::TensorCloneOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorCloneOp op,
                                 PatternRewriter &rewriter) const override {
@@ -420,8 +414,7 @@ struct EncodeTensorCloneOp
 // stream.tensor.slice
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorSliceOp
-    : public OpRewritePattern<IREE::Stream::TensorSliceOp> {
+struct EncodeTensorSliceOp : OpRewritePattern<IREE::Stream::TensorSliceOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorSliceOp op,
                                 PatternRewriter &rewriter) const override {
@@ -453,8 +446,7 @@ struct EncodeTensorSliceOp
 // stream.tensor.fill
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorFillOp
-    : public OpRewritePattern<IREE::Stream::TensorFillOp> {
+struct EncodeTensorFillOp : OpRewritePattern<IREE::Stream::TensorFillOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorFillOp op,
                                 PatternRewriter &rewriter) const override {
@@ -465,7 +457,7 @@ struct EncodeTensorFillOp
     }
 
     // Canonicalize the fill pattern into an integer type [i8, i16, i32, i64].
-    auto pattern = canonicalizeFillPattern(op.getValue(), rewriter);
+    auto pattern = canonicalizeFillPattern(op.getValue(), targetType, rewriter);
     if (!pattern) {
       return op.emitOpError()
              << "has unsupported pattern type " << op.getValue().getType()
@@ -492,8 +484,7 @@ struct EncodeTensorFillOp
 // stream.tensor.update
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorUpdateOp
-    : public OpRewritePattern<IREE::Stream::TensorUpdateOp> {
+struct EncodeTensorUpdateOp : OpRewritePattern<IREE::Stream::TensorUpdateOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorUpdateOp op,
                                 PatternRewriter &rewriter) const override {
@@ -526,8 +517,7 @@ struct EncodeTensorUpdateOp
 // stream.tensor.load
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorLoadOp
-    : public OpRewritePattern<IREE::Stream::TensorLoadOp> {
+struct EncodeTensorLoadOp : OpRewritePattern<IREE::Stream::TensorLoadOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorLoadOp op,
                                 PatternRewriter &rewriter) const override {
@@ -569,8 +559,7 @@ struct EncodeTensorLoadOp
 // stream.tensor.store
 //===----------------------------------------------------------------------===//
 
-struct EncodeTensorStoreOp
-    : public OpRewritePattern<IREE::Stream::TensorStoreOp> {
+struct EncodeTensorStoreOp : OpRewritePattern<IREE::Stream::TensorStoreOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorStoreOp op,
                                 PatternRewriter &rewriter) const override {
@@ -600,7 +589,7 @@ struct EncodeTensorStoreOp
 //===----------------------------------------------------------------------===//
 
 struct EncodeTensorDispatchOp
-    : public OpRewritePattern<IREE::Stream::TensorDispatchOp> {
+    : OpRewritePattern<IREE::Stream::TensorDispatchOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::TensorDispatchOp op,
                                 PatternRewriter &rewriter) const override {
@@ -631,12 +620,89 @@ struct EncodeTensorDispatchOp
 };
 
 //===----------------------------------------------------------------------===//
+// stream.tensor.parameter.load
+//===----------------------------------------------------------------------===//
+
+struct EncodeTensorParameterLoadOp
+    : OpRewritePattern<IREE::Stream::TensorParameterLoadOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(IREE::Stream::TensorParameterLoadOp op,
+                                PatternRewriter &rewriter) const override {
+    auto resultType = cast<RankedTensorType>(op.getResultEncoding());
+    auto resultDims = op.getResultEncodingDims();
+    if (failed(checkEncoding(op, resultType, resultDims, rewriter))) {
+      return failure();
+    }
+
+    // Calculate the actual storage size, accounting for sub-byte alignment.
+    RankedTensorType alignedType = alignTensorType(resultType);
+    Value resultSize = calculateStorageElementCountInBytes(
+        op.getLoc(), alignedType, resultDims, rewriter);
+    if (!resultSize) {
+      return op.emitOpError("failed to calculate total byte count: ")
+             << alignedType << " does not have integral number of total bytes";
+    }
+
+    // Create the async parameter load (returns resource + timepoint).
+    auto timepointType = rewriter.getType<IREE::Stream::TimepointType>();
+    auto loadOp = IREE::Stream::AsyncParameterLoadOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(), timepointType,
+        /*await_timepoint=*/Value(), op.getSourceScope(), op.getSourceKey(),
+        op.getSourceOffset(), resultSize, op.getAffinityAttr());
+
+    // Await the timepoint to synchronize.
+    auto awaitOp = IREE::Stream::TimepointAwaitOp::create(
+        rewriter, op.getLoc(), ValueRange{loadOp.getResult()},
+        ValueRange{resultSize}, loadOp.getResultTimepoint());
+    rewriter.replaceOp(op, awaitOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// stream.tensor.parameter.write
+//===----------------------------------------------------------------------===//
+
+struct EncodeTensorParameterWriteOp
+    : OpRewritePattern<IREE::Stream::TensorParameterWriteOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(IREE::Stream::TensorParameterWriteOp op,
+                                PatternRewriter &rewriter) const override {
+    auto sourceType = cast<RankedTensorType>(op.getSourceEncoding());
+    auto sourceDims = op.getSourceEncodingDims();
+    if (failed(checkEncoding(op, sourceType, sourceDims, rewriter))) {
+      return failure();
+    }
+
+    // Write the full resource: offset=0, end=size, length=size.
+    Value zeroOffset = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
+    Value sourceSize = op.getSourceSize();
+
+    // Create the async parameter write (returns resource + timepoint).
+    auto timepointType = rewriter.getType<IREE::Stream::TimepointType>();
+    auto writeOp = IREE::Stream::AsyncParameterWriteOp::create(
+        rewriter, op.getLoc(), op.getSource().getType(), timepointType,
+        op.getSource(), sourceSize, zeroOffset,
+        /*source_end=*/sourceSize,
+        /*source_length=*/sourceSize, op.getTargetScope(), op.getTargetKey(),
+        op.getTargetOffset(),
+        /*await_timepoint=*/Value(), op.getAffinityAttr());
+
+    // Await the timepoint to synchronize.
+    auto awaitOp = IREE::Stream::TimepointAwaitOp::create(
+        rewriter, op.getLoc(), ValueRange{writeOp.getResult()},
+        ValueRange{sourceSize}, writeOp.getResultTimepoint());
+    rewriter.replaceOp(op, awaitOp.getResult(0));
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // --iree-stream-encode-host-tensors
 //===----------------------------------------------------------------------===//
 
 struct EncodeHostTensorsPass
-    : public IREE::Stream::impl::EncodeHostTensorsPassBase<
-          EncodeHostTensorsPass> {
+    : IREE::Stream::impl::EncodeHostTensorsPassBase<EncodeHostTensorsPass> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     patterns.insert<
@@ -644,7 +710,8 @@ struct EncodeHostTensorsPass
         EncodeTensorEmptyOp, EncodeTensorConstantOp, EncodeTensorSplatOp,
         EncodeTensorCloneOp, EncodeTensorSliceOp, EncodeTensorFillOp,
         EncodeTensorUpdateOp, EncodeTensorLoadOp, EncodeTensorStoreOp,
-        EncodeTensorDispatchOp>(&getContext());
+        EncodeTensorDispatchOp, EncodeTensorParameterLoadOp,
+        EncodeTensorParameterWriteOp>(&getContext());
     FrozenRewritePatternSet frozenPatterns(std::move(patterns));
     if (failed(applyPatternsGreedily(getOperation(), frozenPatterns))) {
       return signalPassFailure();
@@ -661,9 +728,11 @@ struct EncodeHostTensorsPass
 static IREE::TensorExt::DispatchTensorType
 alignDispatchTensorType(IREE::TensorExt::DispatchTensorType originalType) {
   Type elementType = originalType.getBoundElementType();
-  Type alignedType = legalizeStorageElementType(elementType);
-  if (alignedType == elementType)
+  Type alignedType =
+      legalizeStorageElementType(originalType.asRankedTensorType());
+  if (alignedType == elementType) {
     return originalType;
+  }
   return IREE::TensorExt::DispatchTensorType::get(
       originalType.getAccess(), originalType.getShape(), alignedType);
 }
@@ -676,7 +745,7 @@ alignDispatchTensorType(IREE::TensorExt::DispatchTensorType originalType) {
 // conversion to ensure both host and device agree upon the number of bytes in
 // a resource.
 struct EncodeBindingSubspanOp
-    : public OpRewritePattern<IREE::Stream::BindingSubspanOp> {
+    : OpRewritePattern<IREE::Stream::BindingSubspanOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::BindingSubspanOp op,
                                 PatternRewriter &rewriter) const override {
@@ -689,8 +758,9 @@ struct EncodeBindingSubspanOp
     // Align the element type, if needed.
     IREE::TensorExt::DispatchTensorType alignedType =
         alignDispatchTensorType(originalType);
-    if (originalType == alignedType)
+    if (originalType == alignedType) {
       return failure(); // already aligned.
+    }
 
     // Directly swap the type with the one, changing all uses in the IR.
     // This works because
@@ -706,7 +776,7 @@ struct EncodeBindingSubspanOp
 //===----------------------------------------------------------------------===//
 
 struct EncodeDispatchTensorLoadOp
-    : public OpRewritePattern<IREE::TensorExt::DispatchTensorLoadOp> {
+    : OpRewritePattern<IREE::TensorExt::DispatchTensorLoadOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::TensorExt::DispatchTensorLoadOp op,
                                 PatternRewriter &rewriter) const override {
@@ -714,8 +784,9 @@ struct EncodeDispatchTensorLoadOp
 
     // Align the element type, if needed.
     RankedTensorType alignedType = alignTensorType(targetType);
-    if (targetType == alignedType)
+    if (targetType == alignedType) {
       return failure(); // already aligned.
+    }
 
     // Loads always truncate from an byte aligned type to a sub-byte one.
     assert(targetType.getElementTypeBitWidth() <
@@ -740,7 +811,7 @@ struct EncodeDispatchTensorLoadOp
 //===----------------------------------------------------------------------===//
 
 struct EncodeDispatchTensorStoreOp
-    : public OpRewritePattern<IREE::TensorExt::DispatchTensorStoreOp> {
+    : OpRewritePattern<IREE::TensorExt::DispatchTensorStoreOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::TensorExt::DispatchTensorStoreOp op,
                                 PatternRewriter &rewriter) const override {
@@ -748,8 +819,9 @@ struct EncodeDispatchTensorStoreOp
 
     // Align the element type, if needed.
     RankedTensorType alignedType = alignTensorType(sourceType);
-    if (sourceType == alignedType)
+    if (sourceType == alignedType) {
       return failure(); // already aligned.
+    }
 
     // Stores always extend from a sub-byte aligned type to a byte aligned one.
     assert(sourceType.getElementTypeBitWidth() <
@@ -770,8 +842,7 @@ struct EncodeDispatchTensorStoreOp
 //===----------------------------------------------------------------------===//
 
 struct EncodeDeviceTensorsPass
-    : public IREE::Stream::impl::EncodeDeviceTensorsPassBase<
-          EncodeDeviceTensorsPass> {
+    : IREE::Stream::impl::EncodeDeviceTensorsPassBase<EncodeDeviceTensorsPass> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     patterns.insert<EncodeBindingSubspanOp, EncodeDispatchTensorLoadOp,

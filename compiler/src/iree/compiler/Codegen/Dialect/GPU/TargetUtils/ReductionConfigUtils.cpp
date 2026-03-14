@@ -4,6 +4,8 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "iree/compiler/Codegen/Dialect/GPU/IR/GPULoweringConfigUtils.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/TargetUtils/ConfigUtils.h"
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
@@ -40,6 +42,16 @@ static bool isMatmulLike(linalg::LinalgOp linalgOp) {
 
 static bool hasReductionIterator(linalg::LinalgOp op) {
   return llvm::any_of(op.getIteratorTypesArray(), linalg::isReductionIterator);
+}
+
+// Dimension expansion inserts tensor.expand_shape/tensor.collapse_shape pairs
+// around operands, then relies on
+// linalg::populateFoldReshapeOpsByExpansionPatterns to fuse them into the
+// linalg op by expanding its iteration space. This fusion requires all indexing
+// maps to be projected permutations.
+static bool hasExpandCompatibleIndexing(linalg::LinalgOp op) {
+  return llvm::all_of(op.getIndexingMapsArray(),
+                      [](AffineMap m) { return m.isProjectedPermutation(); });
 }
 
 struct TensorSizeEstimate {
@@ -118,6 +130,21 @@ static FailureOr<int64_t> getBitWidth(linalg::LinalgOp op) {
   return largestInput.elementBitwidth;
 }
 
+/// Returns the dimension size that threadLoads must divide for the given op.
+static int64_t getThreadLoadsConstraint(linalg::LinalgOp op) {
+  SmallVector<unsigned> parallelDims, reductionDims;
+  op.getParallelDims(parallelDims);
+  op.getReductionDims(reductionDims);
+  SmallVector<int64_t> bounds = op.getStaticLoopRanges();
+
+  if (reductionDims.empty()) {
+    // Parallel-only op: threadLoads must divide last parallel dim
+    return bounds[parallelDims.back()];
+  }
+  // Reduction op: threadLoads must divide last reduction dim
+  return bounds[reductionDims.back()];
+}
+
 /// Check if the reduction op has a single combiner operation.
 static LogicalResult checkSingleCombiner(linalg::LinalgOp op) {
   bool foundSingleReductionOutput = false;
@@ -126,13 +153,15 @@ static LogicalResult checkSingleCombiner(linalg::LinalgOp op) {
     SmallVector<Operation *> combinerOps;
     if (matchReduction(op.getRegionOutputArgs(), index, combinerOps) &&
         combinerOps.size() == 1) {
-      if (foundSingleReductionOutput)
+      if (foundSingleReductionOutput) {
         return failure();
+      }
       foundSingleReductionOutput = true;
       continue;
     }
-    if (!op.getMatchingIndexingMap(&initOpOperand).isIdentity())
+    if (!op.getMatchingIndexingMap(&initOpOperand).isIdentity()) {
       return failure();
+    }
   }
   if (!foundSingleReductionOutput) {
     return failure();
@@ -180,6 +209,10 @@ getVectorDistributeReductionConfig(
       parallelSize = kVectorDistributeReductionSizeToTargetIfDynamic;
     }
     if (parallelSize % threadLoads != 0) {
+      LDBG() << "Failed to get vector distribute config for op ("
+             << "parallelSize=" << parallelSize
+             << " is not divisible by threadLoads=" << threadLoads << "):\n"
+             << op << "\n";
       return failure();
     }
 
@@ -276,6 +309,10 @@ getVectorDistributeReductionConfig(
     lastReductionDimSize = kVectorDistributeReductionSizeToTargetIfDynamic;
   }
   if (lastReductionDimSize % threadLoads != 0) {
+    LDBG() << "Failed to get vector distribute config for op ("
+           << "lastReductionDimSize=" << lastReductionDimSize
+           << " is not divisible by threadLoads=" << threadLoads << "):\n"
+           << op << "\n";
     return failure();
   }
 
@@ -294,10 +331,45 @@ getVectorDistributeReductionConfig(
   int subgroup = partialReductionSize / subgroupStride;
   int64_t subgroupBasis = (subgroup == 0) ? 1 : subgroup;
 
-  partialReductionTileSizes[lastReductionDim] = partialReductionSize;
-  threadTileSizes[lastReductionDim] = threadLoads;
-  threadCounts[lastReductionDim] = threadBasis;
-  subGroupCounts[lastReductionDim] = subgroupBasis;
+  SmallVector<ReassociationIndices> reassociations;
+  SmallVector<int64_t> outputShape;
+
+  // We require the reduction dimension to be evenly divisible by threadLoads
+  // because the current expansion strategy doesn't support padding.
+  if (ShapedType::isStaticShape(bounds) && threadLoads > 1 &&
+      hasExpandCompatibleIndexing(op) &&
+      bounds[lastReductionDim] % threadLoads == 0) {
+    workgroupTileSizes.push_back(0);
+    partialReductionTileSizes.push_back(0);
+    threadTileSizes.push_back(0);
+    threadCounts.push_back(1);
+    subGroupCounts.push_back(1);
+    mapping.push_back(mapping.size());
+
+    int64_t outer = lastReductionDim;
+    int64_t inner = lastReductionDim + 1;
+
+    for (int64_t i = 0; i < op.getNumLoops(); ++i) {
+      if (i == lastReductionDim) {
+        int64_t idx = outputShape.size();
+        reassociations.push_back({idx, idx + 1});
+        outputShape.append({ShapedType::kDynamic, threadLoads});
+      } else {
+        reassociations.push_back({static_cast<int64_t>(outputShape.size())});
+        outputShape.push_back(ShapedType::kDynamic);
+      }
+    }
+
+    partialReductionTileSizes[outer] = partialReductionSize / threadLoads;
+    threadTileSizes[inner] = threadLoads;
+    threadCounts[outer] = threadBasis;
+    subGroupCounts[outer] = subgroupBasis;
+  } else {
+    partialReductionTileSizes[lastReductionDim] = partialReductionSize;
+    threadTileSizes[lastReductionDim] = threadLoads;
+    threadCounts[lastReductionDim] = threadBasis;
+    subGroupCounts[lastReductionDim] = subgroupBasis;
+  }
 
   ArrayAttr subgroupBasisAttr = b.getArrayAttr(
       {b.getI64ArrayAttr(subGroupCounts), b.getI64ArrayAttr(mapping)});
@@ -305,13 +377,20 @@ getVectorDistributeReductionConfig(
   ArrayAttr threadBasisAttr = b.getArrayAttr(
       {b.getI64ArrayAttr(threadCounts), b.getI64ArrayAttr(mapping)});
 
-  NamedAttribute configAttrs[] = {
-      NamedAttribute("workgroup", b.getI64ArrayAttr(workgroupTileSizes)),
-      NamedAttribute("partial_reduction",
+  SmallVector<NamedAttribute> configAttrs = {
+      b.getNamedAttr("workgroup", b.getI64ArrayAttr(workgroupTileSizes)),
+      b.getNamedAttr("partial_reduction",
                      b.getI64ArrayAttr(partialReductionTileSizes)),
-      NamedAttribute("thread", b.getI64ArrayAttr(threadTileSizes)),
-      NamedAttribute("lane_basis", threadBasisAttr),
-      NamedAttribute("subgroup_basis", subgroupBasisAttr)};
+      b.getNamedAttr("thread", b.getI64ArrayAttr(threadTileSizes)),
+      b.getNamedAttr("lane_basis", threadBasisAttr),
+      b.getNamedAttr("subgroup_basis", subgroupBasisAttr),
+  };
+
+  if (!reassociations.empty()) {
+    auto dimExpandAttr =
+        DimensionExpansionAttr::get(context, reassociations, outputShape);
+    configAttrs.emplace_back(b.getNamedAttr("expand_dims", dimExpandAttr));
+  }
 
   auto configDict = b.getDictionaryAttr(configAttrs);
   auto loweringConfig = IREE::GPU::LoweringConfigAttr::get(context, configDict);
@@ -382,6 +461,7 @@ populateConfigInfo(const llvm::SetVector<linalg::LinalgOp> &computeOps,
     return false;
   };
 
+  SmallVector<std::tuple<Operation *, LoweringConfigAttr>> loweringConfigs;
   for (linalg::LinalgOp linalgOp : computeOps) {
     if (hasReductionIterator(linalgOp) ||
         shouldAttachLoweringConfig(linalgOp)) {
@@ -391,8 +471,13 @@ populateConfigInfo(const llvm::SetVector<linalg::LinalgOp> &computeOps,
       if (failed(loweringConfig)) {
         return failure();
       }
-      setLoweringConfig(linalgOp, *loweringConfig);
+      loweringConfigs.push_back({linalgOp, *loweringConfig});
     }
+  }
+  // Only set lowering configs once we've successfully determined them for all
+  // operations, to avoid leaving the IR in an inconsistent state on failure.
+  for (auto &[linalgOp, loweringConfig] : loweringConfigs) {
+    setLoweringConfig(linalgOp, loweringConfig);
   }
   return success();
 }
@@ -591,7 +676,7 @@ LogicalResult setReductionConfig(IREE::GPU::TargetAttr target,
   // reductions in scaled matmul with the last dimension being the block size
   // (32 for gfx950).
   int64_t reductionSize = bounds[reductionDims.back()];
-  if (!ShapedType::isDynamic(reductionSize) &&
+  if (ShapedType::isStatic(reductionSize) &&
       reductionSize % target.getPreferredSubgroupSize() != 0) {
     // Consider the entire reduction dimension.
     reductionSize = 1;
@@ -623,8 +708,9 @@ LogicalResult setReductionConfig(IREE::GPU::TargetAttr target,
     }
   }
 
-  if (subgroupSize == 0)
+  if (subgroupSize == 0) {
     return failure();
+  }
 
   FailureOr<int64_t> bitWidth = getBitWidth(op);
   if (failed(bitWidth)) {
@@ -643,6 +729,20 @@ LogicalResult setReductionConfig(IREE::GPU::TargetAttr target,
   if (!hasDynamicReductionDim) {
     while ((reductionSize / threadLoads) % subgroupSize != 0) {
       threadLoads /= 2;
+    }
+  }
+
+  // Adjust threadLoads to satisfy constraints from all compute ops in the
+  // dispatch.
+  for (linalg::LinalgOp linalgOp : *computeOps) {
+    int64_t constraint = getThreadLoadsConstraint(linalgOp);
+    if (ShapedType::isStatic(constraint)) {
+      while (threadLoads > 1 && constraint % threadLoads != 0) {
+        threadLoads /= 2;
+      }
+    }
+    if (threadLoads <= 1) {
+      break;
     }
   }
 
@@ -696,9 +796,6 @@ LogicalResult setReductionConfig(IREE::GPU::TargetAttr target,
     *parallelSize /= 2;
   }
 
-  // TODO(pashu123): Currently, the threadLoads is done on the basis of
-  // the root operation and ignores other operation within a dispatch.
-  // Extend it to use per operation within a dispatch.
   if (failed(populateConfigInfo(*computeOps, target, workgroupSize,
                                 subgroupSize, threadLoads))) {
     return failure();
@@ -714,7 +811,7 @@ LogicalResult setReductionConfig(IREE::GPU::TargetAttr target,
       context, CodeGenPipeline::LLVMGPUVectorDistribute, SymbolRefAttr(),
       {workgroupSize, 1, 1}, subgroupSize, pipelineConfig);
 
-  if (clSetTunerAttr) {
+  if (shouldSetTunerAttributes()) {
     setRootOpInfo(op);
   }
   return setTranslationInfo(entryPoint, translationInfo);

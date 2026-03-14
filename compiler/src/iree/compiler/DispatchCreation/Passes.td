@@ -36,8 +36,8 @@ def BubbleUpExpandShapesPass :
     Pass<"iree-dispatch-creation-bubble-up-expand-shapes"> {
   let summary = "Propagate expand_shapes up the program (and collapse_shapes down).";
   let options = [
-    Option<"enableBubbleUpExpandShapesAcrossReductionOps", "enable-bubble-up-expand-shapes-across-reduction-ops", "bool",
-           /*default=*/"false", "Enables propagation of 'expand_shape's through 'linalg.generic's with reductions">
+    Option<"enableReshapeMovementAcrossReductions", "enable-reshape-movement-across-reductions", "bool",
+           /*default=*/"false", "Enables propagation of 'expand_shape's and 'collapse_shape's through 'linalg.generic's with reductions">
   ];
   let dependentDialects = [
     "mlir::affine::AffineDialect",
@@ -96,6 +96,21 @@ def ElementwiseOpFusionPass :
   ];
   let dependentDialects = [
     "mlir::affine::AffineDialect",
+  ];
+}
+
+def FoldReshapesIntoTensorBarriersPass :
+    InterfacePass<"iree-dispatch-creation-fold-reshapes-into-tensor-barriers",
+                  "mlir::FunctionOpInterface"> {
+  let summary = "Fold reshape operations into tensor barriers.";
+  let description = [{
+    Moves tensor.expand_shape and tensor.collapse_shape operations through
+    iree_tensor_ext.compute_barrier.start and iree_tensor_ext.compute_barrier.end operations.
+    This blocks reshapes on the edge of the program from being propagated.
+  }];
+  let dependentDialects = [
+    "IREE::TensorExt::IREETensorExtDialect",
+    "mlir::tensor::TensorDialect",
   ];
 }
 

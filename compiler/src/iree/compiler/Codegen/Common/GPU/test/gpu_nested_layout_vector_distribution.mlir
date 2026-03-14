@@ -29,7 +29,7 @@ builtin.module attributes { transform.with_named_sequence } {
   }
 }
 
-// CHECK: %[[IDX:.+]] = gpu.thread_id  x
+// CHECK: %[[IDX:.+]] = gpu.thread_id x
 // CHECK: %[[YX:.+]]:3 = affine.delinearize_index %[[IDX]] into (4, 8)
 // CHECK: %[[Y_SCALED:.+]] = affine.linearize_index disjoint [%[[YX]]#1, %c0] by (4, 4)
 // CHECK: %[[RD00:.+]] = vector.transfer_read %arg0[%[[Y_SCALED]], %[[YX]]#2], {{.*}} : memref<32x32xf16>, vector<4x1xf16>
@@ -73,7 +73,7 @@ builtin.module attributes { transform.with_named_sequence } {
 // CHECK-LABEL: @distribute_transfer_read_row_major_with_nontrivial_index
 // CHECK-SAME:    %[[I0:.+]]: index, %[[I1:.+]]: index
 
-// CHECK: %[[IDX:.+]] = gpu.thread_id  x
+// CHECK: %[[IDX:.+]] = gpu.thread_id x
 // CHECK: %[[X:.+]]:2 = affine.delinearize_index %[[IDX]] into (8) : index, index
 // CHECK: %[[OFF0:.+]] = affine.linearize_index [%[[X]]#1, %[[I0]]]  by (8, 1)
 // CHECK: vector.transfer_read %{{.*}}[%c0, %c0, %[[OFF0]], %[[I1]]]
@@ -161,7 +161,7 @@ builtin.module attributes { transform.with_named_sequence } {
 // CHECK-LABEL: @distribute_transfer_read_row_major_transpose
 // CHECK-SAME:    %[[I0:.+]]: index, %[[I1:.+]]: index
 
-// CHECK: %[[IDX:.+]] = gpu.thread_id  x
+// CHECK: %[[IDX:.+]] = gpu.thread_id x
 // CHECK: %[[X:.+]]:2 = affine.delinearize_index %[[IDX]] into (8) : index, index
 // CHECK: %[[LIN_ID0:.+]] = affine.linearize_index [%[[X]]#1, %[[I1]]] by (8, 1)
 // CHECK: vector.transfer_read %{{.*}}[%c0, %c0, %[[I0]], %[[LIN_ID0]]], {{.*}} permutation_map = #[[$PERM]]
@@ -278,7 +278,7 @@ builtin.module attributes { transform.with_named_sequence } {
   }
 }
 
-// CHECK: %[[IDX:.+]] = gpu.thread_id  x
+// CHECK: %[[IDX:.+]] = gpu.thread_id x
 // CHECK: %[[YX:.+]]:3 = affine.delinearize_index %[[IDX]] into (4, 16)
 // CHECK: %[[LANEY:.+]] = affine.linearize_index disjoint [%[[YX]]#1, %c0] by (4, 4)
 // CHECK: %[[RD:.+]] = vector.transfer_read %{{.*}}[%c0, %[[LANEY:.+]]], {{.*}} : memref<32x32xf16>, vector<4xf16>
@@ -314,7 +314,7 @@ builtin.module attributes { transform.with_named_sequence } {
   }
 }
 
-// CHECK: %[[IDX:.+]] = gpu.thread_id  x
+// CHECK: %[[IDX:.+]] = gpu.thread_id x
 // CHECK: %[[YX:.+]]:3 = affine.delinearize_index %[[IDX]] into (2, 64)
 // CHECK: %[[SUBGROUP:.+]]:2 = affine.delinearize_index %[[IDX]] into (16)
 // CHECK: %[[LANEY:.+]] = affine.linearize_index disjoint [%[[YX]]#1, %[[SUBGROUP]]#1, %c0] by (2, 16, 4)
@@ -387,7 +387,7 @@ builtin.module attributes { transform.with_named_sequence } {
   }
 }
 
-// CHECK: %[[IDX:.+]] = gpu.thread_id  x
+// CHECK: %[[IDX:.+]] = gpu.thread_id x
 // CHECK: %[[LANEX:.+]]:2 = affine.delinearize_index %[[IDX]] into (8)
 // CHECK: %[[SLICE:.+]] = vector.extract %{{.*}}[0, 0, 0, 0] : vector<1x8xf16> from vector<2x2x1x1x1x8xf16>
 // CHECK: vector.transfer_write %[[SLICE]], %{{.*}}[%[[LANEX]]#1, %c0] {in_bounds = [true, true]} : vector<1x8xf16>, memref<64x64xf16>
@@ -430,7 +430,7 @@ builtin.module attributes { transform.with_named_sequence } {
   }
 }
 
-// CHECK: %[[IDX:.+]] = gpu.thread_id  x
+// CHECK: %[[IDX:.+]] = gpu.thread_id x
 // CHECK: %[[YX:.+]]:3 = affine.delinearize_index %[[IDX]] into (4, 8)
 // CHECK: %[[LANEY:.+]] = affine.linearize_index disjoint [%[[YX]]#1, %c0] by (4, 4)
 // CHECK: vector.extract %{{.*}}[0, 0, 0, 0]
@@ -475,7 +475,7 @@ builtin.module attributes { transform.with_named_sequence } {
 // CHECK-LABEL: @distribute_transfer_write_row_major_with_nontrivial_index
 // CHECK-SAME:    vector<16x16xf16>, %[[I0:.+]]: index, %[[I1:.+]]: index
 
-// CHECK: %[[IDX:.+]] = gpu.thread_id  x
+// CHECK: %[[IDX:.+]] = gpu.thread_id x
 // CHECK: %[[LANE:.+]]:2 = affine.delinearize_index %[[IDX]] into (8)
 // CHECK: %[[LIN_ID0:.+]] = affine.linearize_index [%[[LANE]]#1, %[[I1]]] by (8, 1)
 // CHECK: vector.extract %{{.*}}[0, 0, 0, 0]
@@ -585,7 +585,7 @@ func.func @mfma_64x128x8_read(%mem: memref<128x8xf16>,
   %c0 = arith.constant 0 : index
   %cst = arith.constant 0.0 : f16
 
-  // CHECK: %[[IDX:.+]] = gpu.thread_id  x
+  // CHECK: %[[IDX:.+]] = gpu.thread_id x
   // CHECK-DAG: %[[WG:.+]]:4 = affine.delinearize_index %[[IDX]] into (4, 2, 64)
   // CHECK-DAG: %[[LANE:.+]]:3 = affine.delinearize_index %[[IDX]] into (2, 32)
   // This doesn't canonicalize away currently, but could be equivalent to %WG
@@ -611,7 +611,7 @@ func.func @mfma_64x128x8_read(%mem: memref<128x8xf16>,
   // CHECK-DAG: transfer_read %{{.*}}[%[[ACCM0]], %[[RHSN]]]
   // CHECK-DAG: transfer_read %{{.*}}[%[[ACCM1]], %[[RHSN]]]
   // CHECK-DAG: transfer_read %{{.*}}[%[[ACCM2]], %[[RHSN]]]
-  // CHECK-DAG: transfer_read %{{.*}}[%[[ACCM3]], %[[RHSN]]
+  // CHECK-DAG: transfer_read %{{.*}}[%[[ACCM3]], %[[RHSN]]]
 
   %a = vector.transfer_read %mem[%c0, %c0], %cst
           {in_bounds = [true, true]}
@@ -675,7 +675,7 @@ builtin.module attributes { transform.with_named_sequence } {
 
 // CHECK-LABEL: @transposed_read_64x8
 
-// CHECK: %[[IDX:.+]] = gpu.thread_id  x
+// CHECK: %[[IDX:.+]] = gpu.thread_id x
 // CHECK-DAG: %[[WG:.+]]:4 = affine.delinearize_index %[[IDX]] into (2, 2, 64)
 // CHECK-DAG: %[[LANE:.+]]:3 = affine.delinearize_index %[[IDX]] into (2, 32)
 // CHECK-DAG: %[[M:.+]] = affine.linearize_index disjoint [%[[WG]]#1, %[[LANE]]#2] by (2, 32)
@@ -916,7 +916,6 @@ builtin.module attributes { transform.with_named_sequence } {
 func.func @transpose_3d(%arr: memref<32x32x32xf16>) -> () {
   %c0 = arith.constant 0 : index
   %cst_0 = arith.constant 0.0 : f16
-  %cst0_1 = arith.constant dense<0.0> : vector<16xf16>
   %root = vector.transfer_read %arr[%c0, %c0, %c0], %cst_0 {
     in_bounds = [true, true, true]
   } : memref<32x32x32xf16>, vector<32x16x16xf16>
@@ -935,7 +934,7 @@ builtin.module attributes { transform.with_named_sequence } {
 }
 
 // CHECK-LABEL: func @transpose_3d
-// CHECK-DAG:         %[[IDX:.+]] = gpu.thread_id  x
+// CHECK-DAG:         %[[IDX:.+]] = gpu.thread_id x
 // CHECK-DAG:         %[[WG:.+]]:3 = affine.delinearize_index %[[IDX]] into (2, 64)
 // CHECK-DAG:         %[[LANE:.+]]:4 = affine.delinearize_index %[[IDX]] into (4, 8, 2)
 // CHECK-DAG:         %[[DIM:.+]]  = affine.linearize_index disjoint [%[[WG]]#1, %[[LANE]]#1, %c0] by (2, 4, 4)
@@ -1267,14 +1266,12 @@ func.func @paged_transfer_gather(%indices: vector<16xindex>,
 
   %cst0 = arith.constant 0.0 : f16
   %c0 = arith.constant 0 : index
-  %dim = memref.dim %source, %c0 : memref<4096x512x8xf16>
 
   %out = iree_vector_ext.transfer_gather %source[%c0, %c0, %c0]
-  [None, %indices: vector<16xindex>, None], %cst0 { indexed_maps = [
-                                             affine_map<(d0, d1, d2) -> (d1)>],
-    permutation_map = affine_map<(d0, d1, d2) -> (d1, d2)>,
-    in_bounds = [true, true] }
-  : memref<4096x512x8xf16>, vector<16x8xf16>
+  [%indices : vector<16xindex>], %cst0 {
+    indexing_maps = [affine_map<(d0, d1)[s0] -> (0, s0, d1)>,
+                     affine_map<(d0, d1)[s0] -> (d0)>]
+  } : memref<4096x512x8xf16>, vector<16x8xf16>
 
   %l_out = iree_vector_ext.to_layout %out to layout(#layout) : vector<16x8xf16>
 
@@ -1320,16 +1317,13 @@ func.func @paged_transfer_gather_multi_index(%indices: vector<16xindex>,
 
   %cst0 = arith.constant 0.0 : f16
   %c0 = arith.constant 0 : index
-  %dim = memref.dim %source, %c0 : memref<4096x512x8xf16>
 
   %out = iree_vector_ext.transfer_gather %source[%c0, %c0, %c0]
-  [None, %indices: vector<16xindex>, %indices2: vector<8x16xindex>], %cst0
-                                           { indexed_maps = [
-                                             affine_map<(d0, d1, d2) -> (d1)>,
-                                             affine_map<(d0, d1, d2) -> (d2, d1)>],
-    permutation_map = affine_map<(d0, d1, d2) -> (d1, d2)>,
-    in_bounds = [true, true] }
-  : memref<4096x512x8xf16>, vector<16x8xf16>
+  [%indices, %indices2 : vector<16xindex>, vector<8x16xindex>], %cst0 {
+    indexing_maps = [affine_map<(d0, d1)[s0, s1] -> (0, s0, s1)>,
+                     affine_map<(d0, d1)[s0, s1] -> (d0)>,
+                     affine_map<(d0, d1)[s0, s1] -> (d1, d0)>]
+  } : memref<4096x512x8xf16>, vector<16x8xf16>
 
   %l_out = iree_vector_ext.to_layout %out to layout(#layout) : vector<16x8xf16>
 
@@ -1360,9 +1354,9 @@ builtin.module attributes { transform.with_named_sequence } {
   thread_strides          = [1, 1]
 >
 
-func.func @distribute_map_scatter_row_major(%root: vector<16x16xf16>, %output: memref<64x64xf16>) {
+func.func @distribute_map_store_row_major(%root: vector<16x16xf16>, %output: memref<64x64xf16>) {
   %rootl = iree_vector_ext.to_layout %root to layout(#layout_row_major) : vector<16x16xf16>
-  iree_linalg_ext.map_scatter %rootl into %output {
+  iree_linalg_ext.map_store %rootl into %output {
     ^bb0(%idx0: index, %idx1: index):
       %mask = arith.constant true
       iree_linalg_ext.yield %idx0, %idx1, %mask : index, index, i1
@@ -1378,18 +1372,18 @@ builtin.module attributes { transform.with_named_sequence } {
   }
 }
 
-// CHECK-LABEL: @distribute_map_scatter_row_major
-//   CHECK-DAG:   %[[IDX:.+]] = gpu.thread_id  x
+// CHECK-LABEL: @distribute_map_store_row_major
+//   CHECK-DAG:   %[[IDX:.+]] = gpu.thread_id x
 //   CHECK-DAG:   %[[C8:.+]] = arith.constant 8 : index
 //   CHECK-DAG:   %[[LANEX:.+]]:2 = affine.delinearize_index %[[IDX]] into (8)
 //   CHECK-DAG:   %[[SLICE0:.+]] = vector.extract %{{.*}}[0, 0, 0, 0]
-//       CHECK:   iree_linalg_ext.map_scatter %[[SLICE0]]
+//       CHECK:   iree_linalg_ext.map_store %[[SLICE0]]
 //       CHECK:     ^bb0(%[[IDX0:.+]]: index, %[[IDX1:.+]]: index):
 //       CHECK:       %[[DISTRIBUTED_IDX0:.+]] = arith.addi %[[IDX0]], %[[LANEX]]#1
 //       CHECK:       iree_linalg_ext.yield %[[DISTRIBUTED_IDX0]], %[[IDX1]]
 //       CHECK:     : vector<1x8xf16> into memref<64x64xf16>
 //       CHECK:   %[[SLICE1:.+]] = vector.extract %{{.*}}[0, 1, 0, 0]
-//       CHECK:   iree_linalg_ext.map_scatter %[[SLICE1]]
+//       CHECK:   iree_linalg_ext.map_store %[[SLICE1]]
 //       CHECK:     ^bb0(%[[IDX0:.+]]: index, %[[IDX1:.+]]: index):
 //   CHECK-DAG:       %[[DISTRIBUTED_IDX0:.+]] = arith.addi %[[IDX0]], %[[LANEX]]#1
 //   CHECK-DAG:       %[[DISTRIBUTED_IDX1:.+]] = arith.addi %[[IDX1]], %[[C8]]
@@ -1397,13 +1391,13 @@ builtin.module attributes { transform.with_named_sequence } {
 //       CHECK:     : vector<1x8xf16> into memref<64x64xf16>
 //   CHECK-DAG:   %[[LANEX_PLUS_VECDIMX:.+]] = affine.linearize_index disjoint [%c1, %[[LANEX]]#1] by (2, 8)
 //   CHECK-DAG:   %[[SLICE2:.+]] = vector.extract %{{.*}}[1, 0, 0, 0]
-//       CHECK:   iree_linalg_ext.map_scatter %[[SLICE2]]
+//       CHECK:   iree_linalg_ext.map_store %[[SLICE2]]
 //       CHECK:     ^bb0(%[[IDX0:.+]]: index, %[[IDX1:.+]]: index):
 //       CHECK:       %[[DISTRIBUTED_IDX0:.+]] = arith.addi %[[IDX0]], %[[LANEX_PLUS_VECDIMX]]
 //       CHECK:       iree_linalg_ext.yield %[[DISTRIBUTED_IDX0]], %[[IDX1]]
 //       CHECK:     : vector<1x8xf16> into memref<64x64xf16>
 //       CHECK:   %[[SLICE3:.+]] = vector.extract %{{.*}}[1, 1, 0, 0]
-//       CHECK:   iree_linalg_ext.map_scatter %[[SLICE3]]
+//       CHECK:   iree_linalg_ext.map_store %[[SLICE3]]
 //       CHECK:     ^bb0(%[[IDX0:.+]]: index, %[[IDX1:.+]]: index):
 //   CHECK-DAG:       %[[DISTRIBUTED_IDX0:.+]] = arith.addi %[[IDX0]], %[[LANEX_PLUS_VECDIMX]]
 //   CHECK-DAG:       %[[DISTRIBUTED_IDX1:.+]] = arith.addi %[[IDX1]], %[[C8]]
@@ -1417,7 +1411,7 @@ builtin.module attributes { transform.with_named_sequence } {
 // CHECK-LABEL: @undistributed_write
 func.func @undistributed_write(%out: memref<f32, #amdgpu.address_space<fat_raw_buffer>>, %v: vector<f32>) {
   //  CHECK-DAG: %[[ZERO:.*]] = arith.constant 0 : index
-  //  CHECK-DAG: %[[TID:.*]] = gpu.thread_id  x
+  //  CHECK-DAG: %[[TID:.*]] = gpu.thread_id x
   //  CHECK-DAG: %[[COND:.+]] = arith.cmpi eq, %[[TID]], %[[ZERO]] : index
   // CHECK-NEXT: scf.if %[[COND]] {
   //      CHECK:   vector.transfer_write
@@ -1452,7 +1446,7 @@ builtin.module attributes { transform.with_named_sequence } {
 // across all threads (note the thread strides). This test checks if we account
 // for such broadcasts when generating conditional writes.
 // CHECK-LABEL: @partially_distributed_write
-//   CHECK-DAG:    %[[TID:.+]] = gpu.thread_id  x
+//   CHECK-DAG:    %[[TID:.+]] = gpu.thread_id x
 //   CHECK-DAG:    %[[C0:.+]] = arith.constant 0 : index
 //       CHECK:    %[[DELIN:.*]]:5 = affine.delinearize_index %[[TID:.+]] into (4, 2, 4, 8)
 //   CHECK-DAG:    %[[SUBGROUP_COND:.+]] = arith.cmpi eq, %[[DELIN]]#0, %[[C0]] : index
@@ -1545,6 +1539,106 @@ builtin.module attributes { transform.with_named_sequence } {
   transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
     %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
     transform.iree.test_gpu_vector_distribution %top_level_func {workgroup_size = array<i64: 64, 1, 1>} : !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+#contract = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1],
+  batch_tile = [4, 4],
+  outer_tile = [1, 1],
+  thread_tile = [16, 4],
+  element_tile = [1, 4],
+
+  subgroup_strides = [0, 0],
+  thread_strides = [4, 1]
+>
+
+#expand = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1, 1, 1],
+  batch_tile = [4, 1, 4, 1],
+  outer_tile = [1, 1, 1, 1],
+  thread_tile = [4, 4, 4, 1],
+  element_tile = [1, 1, 1, 4],
+
+  subgroup_strides = [0, 0, 0, 0],
+  thread_strides = [16, 4, 1, 0]
+>
+
+// CHECK-LABEL: @distribute_shape_cast_expand_2D
+func.func @distribute_shape_cast_expand_2D(%arg0: vector<64x64xf16>) -> vector<16x4x16x4xf16> {
+  %source = iree_vector_ext.to_layout %arg0 to layout(#contract) : vector<64x64xf16>
+  //CHECK: vector.shape_cast %{{.+}} : vector<4x4x1x1x1x4xf16> to vector<4x1x4x1x1x1x1x1x1x1x1x4xf16>
+  %reshape = vector.shape_cast %source : vector<64x64xf16> to vector<16x4x16x4xf16>
+  %dst = iree_vector_ext.to_layout %reshape to layout(#expand) : vector<16x4x16x4xf16>
+  func.return %dst : vector<16x4x16x4xf16>
+}
+
+// CHECK-LABEL: @distribute_shape_cast_contract_2D
+func.func @distribute_shape_cast_contract_2D(%arg0: vector<16x4x16x4xf16>) -> vector<64x64xf16> {
+  %source = iree_vector_ext.to_layout %arg0 to layout(#expand) : vector<16x4x16x4xf16>
+  // CHECK: vector.shape_cast %{{.+}} : vector<4x1x4x1x1x1x1x1x1x1x1x4xf16> to vector<4x4x1x1x1x4xf16>
+  %reshape = vector.shape_cast %source : vector<16x4x16x4xf16> to vector<64x64xf16>
+  %dst = iree_vector_ext.to_layout %reshape to layout(#contract) : vector<64x64xf16>
+  func.return %dst : vector<64x64xf16>
+}
+
+builtin.module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
+    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func : !transform.any_op
+    transform.yield
+  }
+}
+
+// -----
+
+#contract = #iree_vector_ext.nested_layout<
+  subgroup_tile = [2],
+  batch_tile = [4],
+  outer_tile = [1],
+  thread_tile = [4],
+  element_tile = [4],
+
+  subgroup_strides = [1],
+  thread_strides = [1]
+>
+
+#expand = #iree_vector_ext.nested_layout<
+  subgroup_tile = [2, 1],
+  batch_tile = [2, 2],
+  outer_tile = [1, 1],
+  thread_tile = [1, 4],
+  element_tile = [1, 4],
+
+  subgroup_strides = [1, 0],
+  thread_strides = [0, 1]
+>
+
+// CHECK-LABEL: @distribute_shape_cast_expand_1D
+func.func @distribute_shape_cast_expand_1D(%arg0: vector<128xf16>) -> vector<4x32xf16> {
+  %source = iree_vector_ext.to_layout %arg0 to layout(#contract) : vector<128xf16>
+  // CHECK: vector.shape_cast %{{.+}} : vector<4x1x4xf16> to vector<2x2x1x1x1x4xf16>
+  %reshape = vector.shape_cast %source : vector<128xf16> to vector<4x32xf16>
+  %dst = iree_vector_ext.to_layout %reshape to layout(#expand) : vector<4x32xf16>
+  func.return %dst : vector<4x32xf16>
+}
+
+// CHECK-LABEL: @distribute_shape_cast_contract_1D
+func.func @distribute_shape_cast_contract_1D(%arg0: vector<4x32xf16>) -> vector<128xf16> {
+  %source = iree_vector_ext.to_layout %arg0 to layout(#expand) : vector<4x32xf16>
+  // CHECK: vector.shape_cast %{{.+}} : vector<2x2x1x1x1x4xf16> to vector<4x1x4xf16>
+  %reshape = vector.shape_cast %source : vector<4x32xf16> to vector<128xf16>
+  %dst = iree_vector_ext.to_layout %reshape to layout(#contract) : vector<128xf16>
+  func.return %dst : vector<128xf16>
+}
+
+builtin.module attributes { transform.with_named_sequence } {
+  transform.named_sequence @__transform_main(%variant_op: !transform.any_op {transform.readonly}) {
+    %top_level_func = transform.structured.match ops{["func.func"]} in %variant_op : (!transform.any_op) -> !transform.any_op
+    transform.iree.test_gpu_vector_distribution %top_level_func : !transform.any_op
     transform.yield
   }
 }

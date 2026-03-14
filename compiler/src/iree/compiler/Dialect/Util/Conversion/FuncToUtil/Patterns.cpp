@@ -20,7 +20,7 @@ namespace mlir::iree_compiler {
 
 namespace {
 
-struct FuncFuncOpPattern : public OpConversionPattern<func::FuncOp> {
+struct FuncFuncOpPattern : OpConversionPattern<func::FuncOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(func::FuncOp srcOp, OpAdaptor adaptor,
@@ -98,8 +98,9 @@ struct FuncFuncOpPattern : public OpConversionPattern<func::FuncOp> {
     for (auto retainAttrName : retainedAttributes) {
       StringRef attrName(retainAttrName);
       Attribute attr = srcOp->getAttr(attrName);
-      if (attr)
+      if (attr) {
         newFuncOp->setAttr(attrName, attr);
+      }
     }
 
     // Copy all arg/result attrs. We could filter these.
@@ -123,7 +124,7 @@ struct FuncFuncOpPattern : public OpConversionPattern<func::FuncOp> {
   }
 };
 
-struct FuncCallOpPattern : public OpConversionPattern<func::CallOp> {
+struct FuncCallOpPattern : OpConversionPattern<func::CallOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(func::CallOp srcOp, OpAdaptor adaptor,
@@ -142,7 +143,7 @@ struct FuncCallOpPattern : public OpConversionPattern<func::CallOp> {
   }
 };
 
-struct FuncReturnOpPattern : public OpConversionPattern<func::ReturnOp> {
+struct FuncReturnOpPattern : OpConversionPattern<func::ReturnOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(func::ReturnOp srcOp, OpAdaptor adaptor,

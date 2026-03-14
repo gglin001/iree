@@ -121,7 +121,7 @@ buildTransposeConvolutionPassPipeline(OpPassManager &passManager,
       .addPass(GlobalOptimization::createDetachElementwiseFromNamedOpsPass)
       .addPass(mlir::createSimplifyDepthwiseConvPass)
       .addPass(createConvertConvToChannelsLastPass)
-      .addPass(GlobalOptimization::createConvert1X1FilterConv2DToMatmulPass)
+      .addPass(createConvert1X1FilterConv2DToMatmulPass)
       .addPass(createConvertConvFilterToChannelsLastPass);
   passManager.addPass(DispatchCreation::createFoldUnitExtentDimsPass());
   passManager.addPass(createCanonicalizerPass());
@@ -153,7 +153,7 @@ buildMakeSingleDispatchPassPipeline(OpPassManager &passManager,
   passManager.addPass(DispatchCreation::createFusionPreprocessingPass());
   passManager.addPass(mlir::createCSEPass());
   DispatchCreation::BubbleUpExpandShapesPassOptions bubbleOptions;
-  bubbleOptions.enableBubbleUpExpandShapesAcrossReductionOps = true;
+  bubbleOptions.enableReshapeMovementAcrossReductions = true;
   passManager.addPass(
       DispatchCreation::createBubbleUpExpandShapesPass(bubbleOptions));
   passManager.addPass(DispatchCreation::createElementwiseOpFusionPass(

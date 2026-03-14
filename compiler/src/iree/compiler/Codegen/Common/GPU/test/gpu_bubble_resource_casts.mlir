@@ -3,7 +3,6 @@
 #pipeline_layout = #hal.pipeline.layout<bindings = [#hal.pipeline.binding<storage_buffer>]>
 func.func @simple_cast() -> (tensor<2xf32>, tensor<2xf32>) {
   %c0 = arith.constant 0 : index
-  %c2 = arith.constant 2 : index
   %arg0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0)
     : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2xf32>>
   %0 = iree_tensor_ext.dispatch.tensor.load %arg0, offsets=[0], sizes=[2], strides=[1]
@@ -73,7 +72,7 @@ func.func @bubble_pad(%arg0: tensor<1xf32>) -> tensor<2xf32> {
 
 func.func @bubble_expand_and_collapse(%arg0: tensor<3x2xf32>) -> tensor<2x3xf32> {
   %0 = tensor.collapse_shape %arg0 [[0, 1]] : tensor<3x2xf32> into tensor<6xf32>
-  %1 = tensor.expand_shape %0 [[0, 1]] output_shape [3, 2]
+  %1 = tensor.expand_shape %0 [[0, 1]] output_shape [2, 3]
       : tensor<6xf32> into tensor<2x3xf32>
   %2 = iree_gpu.buffer_resource_cast %1 : tensor<2x3xf32>
   return %2 : tensor<2x3xf32>

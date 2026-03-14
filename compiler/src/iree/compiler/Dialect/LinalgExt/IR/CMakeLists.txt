@@ -44,6 +44,7 @@ iree_cc_library(
     LLVMSupport
     MLIRAffineDialect
     MLIRAffineUtils
+    MLIRAnalysis
     MLIRArithDialect
     MLIRArithUtils
     MLIRControlFlowInterfaces
@@ -64,6 +65,8 @@ iree_cc_library(
     MLIRTensorDialect
     MLIRTensorUtils
     MLIRTilingInterface
+    MLIRUBDialect
+    MLIRValueBoundsOpInterface
     MLIRViewLikeInterface
     iree::compiler::Dialect::LinalgExt::Utils
   PUBLIC

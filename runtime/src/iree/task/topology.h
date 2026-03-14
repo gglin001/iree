@@ -12,7 +12,7 @@
 #include <stdint.h>
 
 #include "iree/base/api.h"
-#include "iree/base/internal/threading.h"
+#include "iree/base/threading/thread.h"
 #include "iree/task/tuning.h"
 
 #ifdef __cplusplus
@@ -206,7 +206,7 @@ typedef enum iree_task_topology_performance_level_e {
   IREE_TASK_TOPOLOGY_PERFORMANCE_LEVEL_ANY = 0,
   // Selects "E(fficiency)" cores that favor lower power/thermal load.
   IREE_TASK_TOPOLOGY_PERFORMANCE_LEVEL_LOW,
-  // Selects "P(erformance)" cores that favor higher power/thermal load.
+  // Selects "P(performance)" cores that favor higher power/thermal load.
   IREE_TASK_TOPOLOGY_PERFORMANCE_LEVEL_HIGH,
 } iree_task_topology_performance_level_t;
 

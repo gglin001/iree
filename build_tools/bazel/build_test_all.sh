@@ -46,6 +46,9 @@ fi
 if ! [[ -v IREE_HIP_DISABLE ]]; then
   IREE_HIP_DISABLE=1
 fi
+if ! [[ -v IREE_AMDGPU_DISABLE ]]; then
+  IREE_AMDGPU_DISABLE=1
+fi
 if ! [[ -v IREE_METAL_DISABLE ]]; then
   IREE_METAL_DISABLE=1
 fi
@@ -69,6 +72,7 @@ declare -a test_env_args=(
   --test_env="LD_PRELOAD=libvulkan.so.1"
   --test_env=IREE_CUDA_DISABLE="${IREE_CUDA_DISABLE}"
   --test_env=IREE_HIP_DISABLE="${IREE_HIP_DISABLE}"
+  --test_env=IREE_AMDGPU_DISABLE="${IREE_AMDGPU_DISABLE}"
   --test_env=IREE_METAL_DISABLE="${IREE_METAL_DISABLE}"
   --test_env=IREE_VULKAN_DISABLE="${IREE_VULKAN_DISABLE}"
   --test_env=IREE_NVIDIA_GPU_TESTS_DISABLE="${IREE_NVIDIA_GPU_TESTS_DISABLE}"
@@ -92,6 +96,9 @@ if (( IREE_CUDA_DISABLE == 1 )); then
 fi
 if (( IREE_HIP_DISABLE == 1 )); then
   default_test_tag_filters+=("-driver=hip")
+fi
+if (( IREE_AMDGPU_DISABLE == 1 )); then
+  default_test_tag_filters+=("-driver=amdgpu")
 fi
 if (( IREE_METAL_DISABLE == 1 )); then
   default_test_tag_filters+=("-driver=metal")
@@ -126,10 +133,22 @@ fi
 #
 # Note that somewhat contrary to its name `bazel test` will also build
 # any non-test targets specified.
-# We use `bazel query //...` piped to `bazel test` rather than the simpler
+#
+# We use `bazel cquery //...` piped to `bazel test` rather than the simpler
 # `bazel test //...` because the latter excludes targets tagged "manual". The
 # "manual" tag allows targets to be excluded from human wildcard builds, but we
 # want them built by CI unless they are excluded with tags.
+#
+# The cquery uses Starlark output to solve two problems:
+#   - Clean labels: --output=label includes config hashes (e.g. "(a1b2c3)")
+#     that xargs splits into spurious target patterns causing parse errors.
+#     Starlark's str(target.label) produces clean canonical labels.
+#   - Platform filtering: targets with target_compatible_with for a different
+#     platform (e.g. Windows-only IOCP targets on a Linux host) have
+#     IncompatiblePlatformProvider and are excluded by the Starlark expression.
+#     Without this, the cquery-to-xargs pipeline turns them into explicitly-
+#     listed targets, which Bazel treats as errors (unlike wildcard builds
+#     where incompatible targets are silently skipped).
 #
 # Explicitly list bazelrc so that builds are reproducible and get cache hits
 # when this script is invoked locally.
@@ -169,9 +188,12 @@ BAZEL_TEST_CMD+=(
   --test_tag_filters="${TEST_TAG_FILTERS?}"
   --keep_going
   --test_output=errors
-  --config=generic_clang
+  --config=generic_clang_ci
 )
 
-"${BAZEL_STARTUP_CMD[@]}" query //... | \
+CQUERY_STARLARK='str(target.label) if "IncompatiblePlatformProvider" not in providers(target) else ""'
+"${BAZEL_STARTUP_CMD[@]}" cquery //... \
+    --output=starlark --starlark:expr="${CQUERY_STARLARK}" 2>/dev/null | \
+  grep -v '^$' | \
   xargs --max-args 1000000 --max-chars 1000000 --exit \
     "${BAZEL_TEST_CMD[@]}"

@@ -11,9 +11,9 @@
 //  iree-reduce <interesting-script> <test-case>.mlir
 //
 // The interesting-script must be an executable, which takes an input file as
-// the first arguement. The script should return 0 if the input file produces
+// the first argument. The script should return 0 if the input file produces
 // the required error as the original file and 1 otherwise.
 
 #include "iree/compiler/tool_entry_points_api.h"
 
-int main(int argc, char **argv) { return ireeReduceRunMain(argc, argv); }
+int main(int argc, char** argv) { return ireeReduceRunMain(argc, argv); }

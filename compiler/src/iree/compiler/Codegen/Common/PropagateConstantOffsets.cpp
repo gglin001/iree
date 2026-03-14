@@ -20,8 +20,7 @@ namespace mlir::iree_compiler {
 
 namespace {
 struct PropagateConstantOffsetsPass final
-    : public impl::PropagateConstantOffsetsPassBase<
-          PropagateConstantOffsetsPass> {
+    : impl::PropagateConstantOffsetsPassBase<PropagateConstantOffsetsPass> {
   using Base::Base;
   void runOnOperation() override;
 };
@@ -105,8 +104,9 @@ struct FoldApplySymbolOrDimSum final : OpRewritePattern<affine::AffineApplyOp> {
     replacements.reserve(map.getNumInputs());
     int64_t numDims = map.getNumDims();
     auto getCurrExpr = [&](int64_t i) -> AffineExpr {
-      if (i >= numDims)
+      if (i >= numDims) {
         return rewriter.getAffineSymbolExpr(i - numDims);
+      }
       return rewriter.getAffineDimExpr(i);
     };
     bool didReplace = false;
@@ -157,8 +157,9 @@ struct PropagateConstantAddsThroughLinearize final
     int64_t runningOffset = 0;
     Value zero = nullptr;
     auto getZero = [&]() {
-      if (zero)
+      if (zero) {
         return zero;
+      }
       zero = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
       return zero;
     };
@@ -252,8 +253,9 @@ struct FoldDivisibleConstantMulsIntoLinearize final
     SmallVector<int64_t> newStaticBasis;
     Value zero = nullptr;
     auto getZero = [&]() {
-      if (zero)
+      if (zero) {
         return zero;
+      }
       zero = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
       return zero;
     };

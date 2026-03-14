@@ -36,7 +36,7 @@ namespace {
 // from the new global op for the requested affinity.
 class ValuePerAffinityHelper {
 public:
-  explicit ValuePerAffinityHelper(mlir::ModuleOp moduleOp);
+  explicit ValuePerAffinityHelper(mlir::ModuleOp moduleOp, bool useTransfers);
   ~ValuePerAffinityHelper() = default;
 
   using OpAffinityPair = std::tuple<Operation *, IREE::Stream::AffinityAttr>;
@@ -68,6 +68,7 @@ private:
 
   OpBuilder builder;
   SymbolTable symbolTable;
+  bool useTransfers;
   DenseMap<OpAffinityPair, IREE::Util::GlobalOpInterface> cachedGlobals;
   DenseMap<ValueAffinityPair, Value> cachedValuePerAffinity;
 
@@ -76,8 +77,14 @@ private:
   DenseMap<Operation *, Operation *> cachedInsertionPointForGlobal;
 };
 
-ValuePerAffinityHelper::ValuePerAffinityHelper(mlir::ModuleOp moduleOp)
-    : builder(moduleOp), symbolTable(moduleOp) {
+ValuePerAffinityHelper::ValuePerAffinityHelper(mlir::ModuleOp moduleOp,
+                                               bool useTransfers)
+    : builder(moduleOp), symbolTable(moduleOp), useTransfers(useTransfers) {
+  // If we are using transfers, we don't need to pre-compute the insertion
+  // points to replicate globals.
+  if (useTransfers) {
+    return;
+  }
   // Pre-compute the insertion point for each global for performance.
   // This avoids scanning all initializers multiple times during transformation.
   IREE::Util::GlobalTable globalTable(moduleOp);
@@ -113,14 +120,14 @@ Value ValuePerAffinityHelper::getOrCreateValueForAffinity(
   }
 
   return TypeSwitch<Operation *, Value>(opOperand->get().getDefiningOp())
-      .Case<IREE::Util::GlobalLoadOpInterface>([&](auto loadOp) {
+      .Case([&](IREE::Util::GlobalLoadOpInterface loadOp) {
         return getOrCreateGlobalLoadForAffinity(loadOp, affinityAttr);
       })
-      .Case<IREE::Stream::AffinityOpInterface>([&](auto affinityOp) {
+      .Case([&](IREE::Stream::AffinityOpInterface affinityOp) {
         return getOrCreateAffinityOpForAffinity(
             affinityOp, cast<OpResult>(opOperand->get()), affinityAttr);
       })
-      .Case<IREE::Flow::TensorReshapeOp>([&](auto reshapeOp) {
+      .Case([&](IREE::Flow::TensorReshapeOp reshapeOp) {
         builder.setInsertionPoint(reshapeOp);
         Value source = getOrCreateValueForAffinity(
             &reshapeOp.getSourceMutable(), affinityAttr);
@@ -138,10 +145,10 @@ Value ValuePerAffinityHelper::getOrCreateValueForAffinity(
 
 static std::string getNewGlobalName(StringRef originalName,
                                     IREE::Stream::AffinityAttr affinityAttr) {
-  std::string resul = originalName.str();
-  llvm::raw_string_ostream sstream(resul);
+  std::string result = originalName.str();
+  llvm::raw_string_ostream sstream(result);
   sstream << "_" << affinityAttr;
-  return resul;
+  return result;
 }
 
 IREE::Util::GlobalOpInterface
@@ -151,6 +158,11 @@ ValuePerAffinityHelper::getOrCreateGlobalForAffinity(
   auto affinityOp = dyn_cast_if_present<IREE::Stream::AffinityOpInterface>(
       globalOp.getOperation());
   if (affinityOp.getAffinityAttr() == affinityAttr) {
+    return globalOp;
+  }
+
+  // If we are using transfers, we don't need to replicate the global.
+  if (useTransfers) {
     return globalOp;
   }
 
@@ -195,11 +207,19 @@ Value ValuePerAffinityHelper::getOrCreateGlobalLoadForAffinity(
     IREE::Stream::AffinityAttr affinityAttr) {
   IREE::Util::GlobalOpInterface globalOp =
       getOrCreateGlobalForAffinity(loadOp.getGlobalName(), affinityAttr);
+  ValueAffinityPair key = {loadOp.getLoadedGlobalValue(), affinityAttr};
+  if (useTransfers) {
+    builder.setInsertionPointAfter(loadOp);
+    Value loadedValue = loadOp.getLoadedGlobalValue();
+    Value transferOp = IREE::Flow::TensorTransferOp::create(
+        builder, loadOp->getLoc(), loadedValue, affinityAttr);
+    cachedValuePerAffinity[key] = transferOp;
+    return transferOp;
+  }
   builder.setInsertionPoint(loadOp);
   auto newLoadOp =
       IREE::Util::GlobalLoadOp::create(builder, loadOp.getLoc(), globalOp);
   newLoadOp.setIsImmutable(true);
-  ValueAffinityPair key = {loadOp.getLoadedGlobalValue(), affinityAttr};
   cachedValuePerAffinity[key] = newLoadOp.getLoadedGlobalValue();
   return newLoadOp.getLoadedGlobalValue();
 }
@@ -224,17 +244,17 @@ Value ValuePerAffinityHelper::getOrCreateAffinityOpForAffinity(
       clone(builder, affinityOp, affinityOp->getResultTypes(), newOperands);
   newAffinityOp->setDiscardableAttrs(
       affinityOp->getDiscardableAttrDictionary());
-  // Cache all the results, so it won't create new operations when querying for
-  // other results that have the same affinity.
+  // Cache all the resultts, so it won't create new operations when querying for
+  // other resultts that have the same affinity.
   for (auto [oldResult, newResult] :
        llvm::zip_equal(affinityOp->getResults(), newAffinityOp->getResults())) {
-    ValueAffinityPair resultKey = {oldResult, affinityAttr};
-    cachedValuePerAffinity[resultKey] = newResult;
+    ValueAffinityPair resulttKey = {oldResult, affinityAttr};
+    cachedValuePerAffinity[resulttKey] = newResult;
   }
   return cachedValuePerAffinity[key];
 }
 
-// Tracks which operands of an operation are avaialble for affinity analysis.
+// Tracks which operands of an operation are available for affinity analysis.
 // Some operands may come from globals that do not have specified affinity. It
 // can be used to prioritize the operand affinities for the operation.
 class OpOperandAffinityState {
@@ -316,13 +336,14 @@ private:
 };
 
 struct ReplicateGlobalsPerAffinityPass
-    : public impl::ReplicateGlobalsPerAffinityPassBase<
+    : impl::ReplicateGlobalsPerAffinityPassBase<
           ReplicateGlobalsPerAffinityPass> {
+  using Base::Base;
   void runOnOperation() override;
 };
 } // namespace
 
-// Dumps the operand affinities and result usage affinities of the given op.
+// Dumps the operand affinities and resultt usage affinities of the given op.
 static void
 dumpOpAffinityStatus(IREE::Stream::AffinityOpInterface affinityOp,
                      ArrayRef<IREE::Stream::AffinityAttr> affinityAttrs,
@@ -348,18 +369,18 @@ dumpOpAffinityStatus(IREE::Stream::AffinityOpInterface affinityOp,
     auto attr = affinityAnalysis.lookupResourceAffinity(value);
     LDBG() << "\toperand #" << idx << " affinity: " << attr;
   }
-  for (auto result : affinityOp->getResults()) {
+  for (auto resultt : affinityOp->getResults()) {
     SmallVector<IREE::Stream::AffinityAttr> usageAffinities;
-    if (affinityAnalysis.tryLookupResourceUsageAffinity(result,
+    if (affinityAnalysis.tryLookupResourceUsageAffinity(resultt,
                                                         usageAffinities)) {
       LDBG_OS([&](raw_ostream &os) {
-        os << "\tresult type: " << result.getType() << " affinities: [";
+        os << "\tresultt type: " << resultt.getType() << " affinities: [";
         llvm::interleaveComma(usageAffinities, os);
         os << "]";
       });
     } else {
       LDBG_OS([&](raw_ostream &os) {
-        os << "\tresult type: " << result.getType() << " affinities: failed";
+        os << "\tresultt type: " << resultt.getType() << " affinities: failed";
       });
     }
   }
@@ -409,14 +430,14 @@ void ReplicateGlobalsPerAffinityPass::runOnOperation() {
     LDBG() << "processing op: " << *currentOp;
     worklist.erase(worklist.begin());
     TypeSwitch<Operation *>(currentOp)
-        .Case<IREE::Util::GlobalOpInterface>([&](auto globalOp) {
+        .Case([&](IREE::Util::GlobalOpInterface globalOp) {
           const Explorer::GlobalInfo *globalInfo =
               explorer.getGlobalInfo(globalOp);
           for (auto loadOp : globalInfo->getLoads()) {
             worklist.insert(loadOp);
           }
         })
-        .Case<IREE::Util::GlobalLoadOpInterface>([&](auto loadOp) {
+        .Case([&](IREE::Util::GlobalLoadOpInterface loadOp) {
           explorer.walkTransitiveUses(
               loadOp.getLoadedGlobalValue(), [&](OpOperand &operand) {
                 if (isa<IREE::Util::InitializerOp>(
@@ -449,12 +470,12 @@ void ReplicateGlobalsPerAffinityPass::runOnOperation() {
         })
         .Case<IREE::Stream::AffinityOpInterface, IREE::Flow::TensorReshapeOp>(
             [&](auto affinityOp) {
-              for (OpResult result : affinityOp->getResults()) {
+              for (OpResult resultt : affinityOp->getResults()) {
                 if (!isa<IREE::Stream::AffinityTypeInterface>(
-                        result.getType())) {
+                        resultt.getType())) {
                   continue;
                 }
-                explorer.walkTransitiveUses(result, [&](OpOperand &operand) {
+                explorer.walkTransitiveUses(resultt, [&](OpOperand &operand) {
                   LDBG() << "\tuse: " << *operand.getOwner();
                   Operation *consumerOp = operand.getOwner();
                   opOperandAffinityStateMap.setUnavailableOperand(
@@ -472,13 +493,13 @@ void ReplicateGlobalsPerAffinityPass::runOnOperation() {
   }
 
   // We have to update the operands in topological order, because they may
-  // depend on each other. It can lead to ambigious affinity if an op queries
+  // depend on each other. It can lead to ambiguous affinity if an op queries
   // the affinity from unresolved operations. In this context, it can return
   // multiple affinities and fail to replicate the global for its uses.
   SetVector<Operation *> sortedAffinityOps(opToGlobalUseMap.keys().begin(),
                                            opToGlobalUseMap.keys().end());
   sortedAffinityOps = mlir::topologicalSort(sortedAffinityOps);
-  ValuePerAffinityHelper globalPerAffinityHelper(moduleOp);
+  ValuePerAffinityHelper globalPerAffinityHelper(moduleOp, useTransfers);
 
   IRRewriter rewriter(&getContext());
   for (auto operation : sortedAffinityOps) {
@@ -541,7 +562,18 @@ void ReplicateGlobalsPerAffinityPass::runOnOperation() {
         auto newLoadOp = IREE::Util::GlobalLoadOp::create(
             rewriter, affinityOp.getLoc(), newGlobalOp);
         newLoadOp.setIsImmutable(true);
-        updateList.push_back({operand, newLoadOp.getLoadedGlobalValue()});
+        if (useTransfers) {
+          // If transfers are used instead of replicating globals, the global
+          // operation returned from 'getOrCreateGlobalForAffinity' above will
+          // be the same as the original global and we need to transfer to the
+          // right device after loading.
+          Value transferOp = IREE::Flow::TensorTransferOp::create(
+              rewriter, affinityOp->getLoc(), newLoadOp.getLoadedGlobalValue(),
+              executionAffinityAttr);
+          updateList.push_back({operand, transferOp});
+        } else {
+          updateList.push_back({operand, newLoadOp.getLoadedGlobalValue()});
+        }
       } else {
         updateList.push_back(
             {operand, globalPerAffinityHelper.getOrCreateValueForAffinity(

@@ -10,18 +10,12 @@ on:
   schedule:
     # Weekday mornings at 09:15 UTC = 01:15 PST (UTC - 8).
     - cron: "15 9 * * 1-5"
+  workflow_call:
   workflow_dispatch:
-
-concurrency:
-  # A PR number if a pull request and otherwise the commit hash. This cancels
-  # queued and in-progress runs for the same PR (presubmit) or commit
-  # (postsubmit). The workflow name is prepended to avoid conflicts between
-  # different workflows.
-  group: ${{ github.workflow }}-${{ github.event.number || github.sha }}
-  cancel-in-progress: true
 
 jobs:
   macos_arm64_clang:
+    # Prevent scheduled runs in forks (only allow for iree-org or non-schedule triggers).
     if: ${{ github.repository_owner == 'iree-org' || github.event_name != 'schedule' }}
     runs-on: macos-14
     env:
@@ -31,7 +25,7 @@ jobs:
         shell: bash
     steps:
       - name: "Checking out repository"
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: "Updating git submodules"
         run: git submodule update --init --jobs 8 --depth 1
       # There may be multiple versions of Xcode and SDKs installed.
@@ -42,10 +36,37 @@ jobs:
           xcrun metal --version
           xcrun metallib --version
       - name: "Setting up Python"
-        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.11"
           cache: "pip"
+      - name: "Reclaim disk space"
+        run: |
+          echo "=== Free space before ==="
+          df -h /
+          echo "=== Removing unused SDKs and tools ==="
+          # Android SDK (~13Gi)
+          sudo rm -rf /Users/runner/Library/Android/sdk
+          # iOS simulators (~13Gi)
+          sudo rm -rf /Library/Developer/CoreSimulator/Volumes/iOS_*
+          # .NET SDK (~3Gi)
+          sudo rm -rf /usr/local/share/dotnet
+          # Haskell / GHC (~3Gi)
+          sudo rm -rf /opt/ghc
+          # Cached tool archives (~2Gi)
+          sudo rm -rf /opt/hostedtoolcache
+          # Old Xcode versions if present (~10Gi+ each).
+          # Resolve the symlink since /Applications/Xcode.app is typically a
+          # symlink to one of the versioned Xcode_*.app directories.
+          ACTIVE_XCODE="$(readlink -f "$(xcode-select -p)/../..")"
+          for xcode in /Applications/Xcode_*.app; do
+            if [ -d "$xcode" ] && [ "$(readlink -f "$xcode")" != "$ACTIVE_XCODE" ]; then
+              echo "Removing unused Xcode: $xcode"
+              sudo rm -rf "$xcode"
+            fi
+          done
+          echo "=== Free space after ==="
+          df -h /
       - name: "Installing Python packages"
         run: pip install -r runtime/bindings/python/iree/runtime/build_requirements.txt
       - name: "Installing requirements"
@@ -57,7 +78,7 @@ jobs:
         run: bash ./build_tools/cmake/build_all.sh "${BUILD_DIR}"
 
       - name: Post to Discord on Failure
-        uses: sarisia/actions-status-discord@b8381b25576cb341b2af39926ab42c5056cc44ed # v1.15.5
+        uses: sarisia/actions-status-discord@eb045afee445dc055c18d3d90bd0f244fd062708 # v1.16.0
         if: failure() && github.ref_name == 'main' && github.repository_owner == 'iree-org'
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}

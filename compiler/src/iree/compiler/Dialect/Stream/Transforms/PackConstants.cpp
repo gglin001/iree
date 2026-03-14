@@ -145,8 +145,9 @@ static void packStorageResourceData(StorageResource &storageBuffer,
   SmallVector<Attribute> values;
   int64_t offset = 0;
   for (auto &constantSpan : storageBuffer.spans) {
-    if (constantSpan.length == 0)
+    if (constantSpan.length == 0) {
       continue;
+    }
 
     int64_t start = constantSpan.offset;
     int64_t end = start + constantSpan.length;
@@ -283,7 +284,7 @@ static Value buildParameterLoad(Value awaitTimepoint,
                                 IntegerSet<int64_t> &i64Set, IndexSet &indexSet,
                                 OpBuilder &builder) {
   SmallVector<Location> spanLocs;
-  SmallVector<Attribute> sourceKeys;
+  SmallVector<Value> sourceKeyValues;
   SmallVector<Value> sourceOffsets;
   SmallVector<Type> targetTypes;
   SmallVector<Value> targetLengths;
@@ -295,20 +296,28 @@ static Value buildParameterLoad(Value awaitTimepoint,
       auto parameterSlice = getParameterSlice(spanLoc, packedSpan.slice.value,
                                               i64Set, indexSet, builder);
       spanLocs.push_back(spanLoc);
-      sourceKeys.push_back(parameterSlice.parameterAttr.getKey());
+      sourceKeyValues.push_back(IREE::Util::BufferConstantOp::create(
+          builder, spanLoc, parameterSlice.parameterAttr.getKey().getValue()));
       sourceOffsets.push_back(parameterSlice.sourceOffset);
       targetTypes.push_back(targetType);
       targetLengths.push_back(indexSet.get(packedSpan.length));
     }
   }
 
+  // Materialize scope as util.buffer.constant (null Value for no scope).
+  Value scopeValue;
+  if (scope) {
+    scopeValue = IREE::Util::BufferConstantOp::create(
+        builder, builder.getFusedLoc(spanLocs), scope.getValue());
+  }
+
   // Load all in a batch. One resource is returned per parameter but they may
   // alias depending on the runtime implementation.
   auto loadOp = IREE::Stream::CmdParameterLoadOp::create(
       builder, builder.getFusedLoc(spanLocs), targetTypes,
-      builder.getType<IREE::Stream::TimepointType>(), scope,
-      builder.getArrayAttr(sourceKeys), sourceOffsets, targetLengths,
-      awaitTimepoint, affinityAttr);
+      builder.getType<IREE::Stream::TimepointType>(), scopeValue,
+      sourceKeyValues, sourceOffsets, targetLengths, awaitTimepoint,
+      affinityAttr);
 
   // Slice out each span from the allocation.
   // Note that access must be guarded by the final ready timepoint.
@@ -348,22 +357,29 @@ static TimepointResource buildParameterGather(
   // Gather from each unique scope.
   SmallVector<Value> gatherTimepoints;
   for (auto &[scope, packedSpans] : scopeSpans) {
-    SmallVector<Attribute> sourceKeys;
+    SmallVector<Value> sourceKeyValues;
     SmallVector<Value> sourceOffsets;
     SmallVector<Value> targetOffsets;
     SmallVector<Value> targetLengths;
-    sourceKeys.reserve(packedSpans.size());
+    sourceKeyValues.reserve(packedSpans.size());
     for (auto &packedSpan : packedSpans) {
       auto parameterSlice = getParameterSlice(loc, packedSpan.slice.value,
                                               i64Set, indexSet, builder);
-      sourceKeys.push_back(parameterSlice.parameterAttr.getKey());
+      sourceKeyValues.push_back(IREE::Util::BufferConstantOp::create(
+          builder, loc, parameterSlice.parameterAttr.getKey().getValue()));
       sourceOffsets.push_back(parameterSlice.sourceOffset);
       targetOffsets.push_back(indexSet.get(packedSpan.offset));
       targetLengths.push_back(indexSet.get(packedSpan.length));
     }
+    // Materialize scope as util.buffer.constant (null Value for no scope).
+    Value scopeValue;
+    if (scope) {
+      scopeValue =
+          IREE::Util::BufferConstantOp::create(builder, loc, scope.getValue());
+    }
     auto gatherOp = IREE::Stream::CmdParameterGatherOp::create(
-        builder, loc, builder.getType<IREE::Stream::TimepointType>(), scope,
-        builder.getArrayAttr(sourceKeys), sourceOffsets, allocOp.getResult(),
+        builder, loc, builder.getType<IREE::Stream::TimepointType>(),
+        scopeValue, sourceKeyValues, sourceOffsets, allocOp.getResult(),
         allocOp.getResultSize(0), targetOffsets, targetLengths, awaitTimepoint,
         affinityAttr);
     gatherTimepoints.push_back(gatherOp.getResultTimepoint());
@@ -465,8 +481,9 @@ static Value generateSerializedUpload(
   // will need and where each value will be placed.
   auto storageResources =
       computePackingMap(slices, resourceConfig, builder.getContext());
-  if (storageResources.empty())
+  if (storageResources.empty()) {
     return nullptr;
+  }
 
   // TODO(benvanik): should be able to have a single buffer constant and
   // subrange it so that we don't need so many files.
@@ -551,8 +568,9 @@ static Value generateParameterUpload(
     storageResources =
         computePackingMap(slices, resourceConfig, builder.getContext());
   }
-  if (storageResources.empty())
+  if (storageResources.empty()) {
     return nullptr;
+  }
 
   // Sort resources by type so we can batch them.
   // Loads are only possible if we are using the parameter as a constant and
@@ -652,7 +670,7 @@ static Value generateUploads(Value awaitTimepoint,
 // never a case where this matters by construction; which is a feature :P
 
 struct PackConstantsPass
-    : public IREE::Stream::impl::PackConstantsPassBase<PackConstantsPass> {
+    : IREE::Stream::impl::PackConstantsPassBase<PackConstantsPass> {
   void runOnOperation() override {
     mlir::CallableOpInterface parentOp = getOperation();
     if (!parentOp || !parentOp.getCallableRegion() ||

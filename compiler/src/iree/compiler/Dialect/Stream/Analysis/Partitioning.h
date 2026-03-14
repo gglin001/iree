@@ -60,6 +60,15 @@ struct PartitionSet {
 };
 
 //===----------------------------------------------------------------------===//
+// Utilities
+//===----------------------------------------------------------------------===//
+
+// Collects all values consumed by an operation, including those used in nested
+// regions (e.g. scf.for bodies). Uses a worklist-based approach to avoid stack
+// overflow on deeply nested regions.
+void collectConsumedValues(Operation *rootOp, SetVector<Value> &consumedValues);
+
+//===----------------------------------------------------------------------===//
 // Stream partitioning algorithms
 //===----------------------------------------------------------------------===//
 //
@@ -76,7 +85,7 @@ struct PartitionSet {
 // separating non-interfering subgraphs, etc.
 //
 // This is a well-researched area and there are many algorithms to choose from.
-// We'll mostly want to focus on ones that are able to handle multiple critera
+// We'll mostly want to focus on ones that are able to handle multiple criteria
 // (like memory consumption, compute utilization, available capacity, etc).
 //
 // See for example:

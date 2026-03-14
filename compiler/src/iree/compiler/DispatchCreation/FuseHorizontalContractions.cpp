@@ -50,8 +50,7 @@ static bool operator!=(const linalg::ContractionDimensions &lhs,
 }
 
 struct FuseHorizontalContractionsPass final
-    : public impl::FuseHorizontalContractionsPassBase<
-          FuseHorizontalContractionsPass> {
+    : impl::FuseHorizontalContractionsPassBase<FuseHorizontalContractionsPass> {
   using Base::Base;
   void runOnOperation() override;
 };
@@ -171,12 +170,12 @@ static bool checkContractionOpEquivalence(MLIRContext *context, Operation *aOp,
 
   FailureOr<linalg::ContractionDimensions> aContractionDims =
       linalg::inferContractionDims(aIndexingMaps);
-  FailureOr<linalg::ContractionDimensions> bContactionDims =
+  FailureOr<linalg::ContractionDimensions> bContractionDims =
       linalg::inferContractionDims(bIndexingMaps);
-  if (failed(aContractionDims) || failed(bContactionDims)) {
+  if (failed(aContractionDims) || failed(bContractionDims)) {
     return false;
   }
-  if (aContractionDims.value() != bContactionDims.value()) {
+  if (aContractionDims.value() != bContractionDims.value()) {
     return false;
   }
 
@@ -253,7 +252,7 @@ static bool isHorizontalToGroup(Operation *op,
   llvm::SetVector<Operation *> slice;
   [[maybe_unused]] LogicalResult result = getBackwardSlice(op, &slice, options);
   assert(result.succeeded());
-  return !llvm::any_of(currGroup, [&](Operation *groupedOp) {
+  return llvm::none_of(currGroup, [&](Operation *groupedOp) {
     return slice.contains(groupedOp);
   });
 }

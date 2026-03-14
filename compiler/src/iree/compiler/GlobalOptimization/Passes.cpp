@@ -106,18 +106,17 @@ void buildGlobalOptimizationPassPipeline(
         importParametersOptions));
   }
 
-  if (clWarnOnUninitializedValues) {
-    FunctionLikeNest(mainPassManager)
-        .addPass(createWarnOnUninitializedValuesPass);
-  }
-
   // Preprocessing passes to get the program into a canonical state.
   FunctionLikeNest(mainPassManager)
+      .addPredicatedPass(clWarnOnUninitializedValues,
+                         createWarnOnUninitializedValuesPass)
       .addPredicatedPass(transformOptions.stripAssertions,
                          IREE::Util::createStripDebugOpsPass)
       .addPass(IREE::Util::createOptimizeIntArithmeticPass)
       .addPass(createLinalgQuantizedConvToConvPass)
       .addPass(createLinalgQuantizedMatmulToMatmulPass)
+      .addPredicatedPass(transformOptions.useIm2colForConvs,
+                         createConvertConv2DToImg2ColPass)
       .addPass(IREE::Flow::createCanonicalizePass)
       .addPass(createRemoveZeroExtentTensorsPass)
       .addPass(createDetachElementwiseFromNamedOpsPass)
@@ -152,13 +151,12 @@ void buildGlobalOptimizationPassPipeline(
         GeneralizeLinalgNamedOpsPassOptions opt;
         opt.enableGeneralizeMatmul = transformOptions.generalizeMatmul;
         return createGeneralizeLinalgNamedOpsPass(opt);
-      });
-
-  FunctionLikeNest(mainPassManager)
+      })
       .addPredicatedPass(!clEnableEdgeReshapePropagation,
                          DispatchCreation::createInsertTensorBarriersPass);
   mainPassManager.addPass(DispatchCreation::createFoldUnitExtentDimsPass());
   FunctionLikeNest(mainPassManager)
+      .addPass(DispatchCreation::createFoldReshapesIntoTensorBarriersPass)
       .addPass([&]() {
         return createDemoteContractionInputsToBF16Pass(
             clDemoteContractionInputsToBF16Strategy);
@@ -178,6 +176,10 @@ void buildGlobalOptimizationPassPipeline(
                            PropagateLinalgTransposePassOptions options;
                            options.enableAggressivePropagation =
                                transformOptions.aggressiveTransposePropagation;
+                           options.enableConvolutionPropagation =
+                               transformOptions.propagateTransposesThroughConv;
+                           options.enableSinkTransposeThroughPad =
+                               transformOptions.sinkTransposeThroughPad;
                            options.enableAttentionVTranspose =
                                clEnableAttentionVTranspose;
                            options.enableEdgeReshapePropagation =
@@ -205,12 +207,12 @@ void buildGlobalOptimizationPassPipeline(
     mainPassManager.addPass(createSimplifyPackUnpackPass());
     FunctionLikeNest(mainPassManager).addPass(createDataLayoutPropagationPass);
   }
-  // Generalize transposes and any other remaining named linalg ops that can
-  // now be represented as generics.
-  FunctionLikeNest(mainPassManager).addPass(createGeneralizeLinalgNamedOpsPass);
 
-  // Hoist loop invariants (e.g. from scf loops) with zero-trip-check.
   FunctionLikeNest(mainPassManager)
+      // Generalize transposes and any other remaining named linalg ops that can
+      // now be represented as generics.
+      .addPass(createGeneralizeLinalgNamedOpsPass)
+      // Hoist loop invariants (e.g. from scf loops) with zero-trip-check.
       .addPass(createGlobalLoopInvariantCodeMotionPass)
       .addPass(IREE::Flow::createCanonicalizePass)
       .addPass(mlir::createCSEPass)
@@ -269,10 +271,10 @@ void buildGlobalOptimizationPassPipeline(
         exportParametersOptions));
   }
 
-  if (!transformOptions.parameterSplatExportFile.empty()) {
+  if (!transformOptions.parameterSplatPath.empty()) {
     IREE::IO::Parameters::GenerateSplatParameterArchivePassOptions
         generateSplatOptions;
-    generateSplatOptions.filePath = transformOptions.parameterSplatExportFile;
+    generateSplatOptions.filePath = transformOptions.parameterSplatPath;
     mainPassManager.addPass(
         IREE::IO::Parameters::createGenerateSplatParameterArchivePass(
             generateSplatOptions));

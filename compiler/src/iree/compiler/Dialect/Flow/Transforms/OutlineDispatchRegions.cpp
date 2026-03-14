@@ -155,7 +155,7 @@ static LogicalResult outlineDispatchWorkgroupsOp(
 }
 
 struct OutlineDispatchRegionsPass
-    : public IREE::Flow::impl::OutlineDispatchRegionsPassBase<
+    : IREE::Flow::impl::OutlineDispatchRegionsPassBase<
           OutlineDispatchRegionsPass> {
   void runOnOperation() override {
     // Convert each dispatch region into a flow.executable + dispatch op.
@@ -180,24 +180,24 @@ struct OutlineDispatchRegionsPass
       SmallVector<Operation *> deadOps;
       auto outlineOps = [&](Operation *op) {
         return TypeSwitch<Operation *, WalkResult>(op)
-            .Case<IREE::Flow::DispatchWorkgroupsOp>(
-                [&](auto dispatchWorkgroupsOp) {
-                  if (failed(outlineDispatchWorkgroupsOp(
-                          (namePrefix + "_dispatch_" +
-                           llvm::Twine(deadOps.size()))
-                              .str(),
-                          dispatchWorkgroupsOp))) {
-                    return WalkResult::interrupt();
-                  }
-                  deadOps.push_back(op);
-                  return WalkResult::advance();
-                })
+            .Case([&](IREE::Flow::DispatchWorkgroupsOp dispatchWorkgroupsOp) {
+              if (failed(outlineDispatchWorkgroupsOp(
+                      (namePrefix + "_dispatch_" + llvm::Twine(deadOps.size()))
+                          .str(),
+                      dispatchWorkgroupsOp))) {
+                return WalkResult::interrupt();
+              }
+              deadOps.push_back(op);
+              return WalkResult::advance();
+            })
             .Default(WalkResult::advance());
       };
-      if (funcOp.walk(outlineOps).wasInterrupted())
+      if (funcOp.walk(outlineOps).wasInterrupted()) {
         return signalPassFailure();
-      for (auto *deadOp : deadOps)
+      }
+      for (auto *deadOp : deadOps) {
         deadOp->erase();
+      }
     }
   }
 };

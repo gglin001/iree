@@ -24,15 +24,15 @@ bool ireeAttributeIsAGPUPipelineOptionsAttr(MlirAttribute attr) {
 }
 
 MlirAttribute
-ireeGPUPipelineOptionsAttrGet(MlirContext mlirCtx, bool *prefetchSharedMemory,
+ireeGPUPipelineOptionsAttrGet(MlirContext mlirCtx, int64_t *prefetchNumStages,
                               bool *noReduceSharedMemoryBankConflicts,
                               bool *useIgemmConvolution,
                               MlirAttribute *reorderWorkgroupsStrategy) {
   mlir::MLIRContext *ctx = unwrap(mlirCtx);
   mlir::Builder b(ctx);
-  auto prefetchSharedMemoryAttr = mlir::BoolAttr();
-  if (prefetchSharedMemory) {
-    prefetchSharedMemoryAttr = b.getBoolAttr(*prefetchSharedMemory);
+  std::optional<int64_t> prefetchNumStagesOpt;
+  if (prefetchNumStages) {
+    prefetchNumStagesOpt = *prefetchNumStages;
   }
   auto noReduceSharedMemoryBankConflictsAttr = mlir::BoolAttr();
   if (noReduceSharedMemoryBankConflicts) {
@@ -51,16 +51,21 @@ ireeGPUPipelineOptionsAttrGet(MlirContext mlirCtx, bool *prefetchSharedMemory,
         unwrap(*reorderWorkgroupsStrategy));
   }
   return wrap(mlir::iree_compiler::IREE::GPU::GPUPipelineOptionsAttr::get(
-      ctx, prefetchSharedMemoryAttr, noReduceSharedMemoryBankConflictsAttr,
+      ctx, prefetchNumStagesOpt, noReduceSharedMemoryBankConflictsAttr,
       useIgemmConvolutionAttr, strategyAttr));
 }
 
 MlirAttribute
-ireeGPUPipelineOptionsAttrGetPrefetchSharedMemory(MlirAttribute attr) {
+ireeGPUPipelineOptionsAttrGetPrefetchNumStages(MlirAttribute attr) {
   auto gpuAttr =
       llvm::cast<mlir::iree_compiler::IREE::GPU::GPUPipelineOptionsAttr>(
           unwrap(attr));
-  return wrap(gpuAttr.getPrefetchSharedMemory());
+  std::optional<int64_t> value = gpuAttr.getPrefetchNumStages();
+  if (!value) {
+    return {nullptr};
+  }
+  mlir::Builder b(unwrap(attr).getContext());
+  return wrap(b.getI64IntegerAttr(*value));
 }
 
 MlirAttribute ireeGPUPipelineOptionsAttrGetNoReduceSharedMemoryBankConflicts(
@@ -204,19 +209,33 @@ MlirTypeID ireeGPUVirtualMMAAttrGetTypeID() {
   return wrap(mlir::iree_compiler::IREE::GPU::VirtualMMAAttr::getTypeID());
 }
 
-MlirAttribute ireeGPUMMAAttrGet(MlirContext mlirCtx,
-                                mma_intrinsic_enum_t value) {
+MlirAttribute ireeGPUMMAAttrGet(MlirContext mlirCtx, mma_intrinsic_enum_t value,
+                                bool colMajor) {
   mlir::MLIRContext *ctx = unwrap(mlirCtx);
   return wrap(mlir::iree_compiler::IREE::GPU::MMAAttr::get(
-      ctx, static_cast<mlir::iree_compiler::IREE::GPU::MMAIntrinsic>(value)));
+      ctx, static_cast<mlir::iree_compiler::IREE::GPU::MMAIntrinsic>(value),
+      colMajor));
+}
+
+bool ireeGPUMMAAttrGetColMajor(MlirAttribute attr) {
+  return llvm::cast<mlir::iree_compiler::IREE::GPU::MMAAttr>(unwrap(attr))
+      .getColMajor();
 }
 
 MlirAttribute ireeGPUVirtualMMAAttrGet(MlirContext mlirCtx,
-                                       mma_intrinsic_enum_t value) {
+                                       mma_intrinsic_enum_t value,
+                                       bool colMajor) {
   mlir::MLIRContext *ctx = unwrap(mlirCtx);
   return wrap(mlir::iree_compiler::IREE::GPU::VirtualMMAAttr::get(
       ctx,
-      static_cast<mlir::iree_compiler::IREE::GPU::VirtualMMAIntrinsic>(value)));
+      static_cast<mlir::iree_compiler::IREE::GPU::VirtualMMAIntrinsic>(value),
+      colMajor));
+}
+
+bool ireeGPUVirtualMMAAttrGetColMajor(MlirAttribute attr) {
+  return llvm::cast<mlir::iree_compiler::IREE::GPU::VirtualMMAAttr>(
+             unwrap(attr))
+      .getColMajor();
 }
 
 ireeGPUMMAInfo ireeGPUMMAAttrGetInfo(MlirAttribute attr) {
@@ -524,4 +543,30 @@ void ireeGPUTargetInfoGetMMAIntrinsics(MlirAttribute mmaIntrinsics,
     }
     assert(false && "Unexpected attribute type in MMA intrinsics array");
   }
+}
+
+bool ireeGPUGetXorShuffleBounds(MlirAttribute mmaIntrinsic,
+                                int32_t operandIndex, int64_t *minAccessElems,
+                                int64_t *totalTileElems) {
+  assert(!mlirAttributeIsNull(mmaIntrinsic) && "mmaIntrinsic cannot be null");
+  auto innerTileDesc = llvm::dyn_cast<
+      mlir::iree_compiler::IREE::Codegen::InnerTileDescAttrInterface>(
+      unwrap(mmaIntrinsic));
+  assert(innerTileDesc && "innerTileDesc cannot be null");
+  assert(minAccessElems && "minAccessElems cannot be null");
+  assert(totalTileElems && "totalTileElems cannot be null");
+  mlir::FailureOr<mlir::iree_compiler::XorShuffleBounds> result =
+      mlir::iree_compiler::getXorShuffleBounds(innerTileDesc, operandIndex);
+  if (llvm::failed(result)) {
+    return false;
+  }
+  *minAccessElems = result->minAccessElems;
+  *totalTileElems = result->totalTileElems;
+  return true;
+}
+
+bool ireeGPUIsXORShuffleValid(int64_t numRowElems, int64_t numAccessElems,
+                              int64_t totalTileElems) {
+  return mlir::iree_compiler::isXORShuffleValid(numRowElems, numAccessElems,
+                                                totalTileElems);
 }

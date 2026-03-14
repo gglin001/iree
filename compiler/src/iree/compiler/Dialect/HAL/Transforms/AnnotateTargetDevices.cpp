@@ -24,7 +24,7 @@ namespace {
 // --iree-hal-annotate-target-devices
 //===----------------------------------------------------------------------===//
 
-// Sorts |attrs| in lexigraphical order.
+// Sorts |attrs| in lexicographical order.
 // We have to do this as the PVS elements we source from are unsorted.
 static void sortAttributes(SmallVectorImpl<Attribute> &attrs) {
   if (attrs.size() <= 1) {
@@ -91,8 +91,9 @@ static void annotateOperandsAndResults(Operation *op,
 
 static void annotateFuncOp(FunctionOpInterface funcOp,
                            DeviceAnalysis &deviceAnalysis) {
-  if (funcOp.empty())
+  if (funcOp.empty()) {
     return;
+  }
   for (auto arg : funcOp.front().getArguments()) {
     if (isa<IREE::HAL::DeviceType>(arg.getType())) {
       funcOp.setArgAttr(
@@ -106,7 +107,7 @@ static void annotateFuncOp(FunctionOpInterface funcOp,
 }
 
 struct AnnotateTargetDevicesPass
-    : public IREE::HAL::impl::AnnotateTargetDevicesPassBase<
+    : IREE::HAL::impl::AnnotateTargetDevicesPassBase<
           AnnotateTargetDevicesPass> {
   void runOnOperation() override {
     // Run device analysis on the whole module.
@@ -117,8 +118,9 @@ struct AnnotateTargetDevicesPass
 
     // Annotate all ops with derived affinities.
     for (auto &op : getOperation().getOps()) {
-      if (op.hasTrait<OpTrait::IREE::Util::ObjectLike>())
+      if (op.hasTrait<OpTrait::IREE::Util::ObjectLike>()) {
         continue;
+      }
       if (auto globalOp = dyn_cast<IREE::Util::GlobalOpInterface>(op)) {
         annotateGlobalOp(globalOp, deviceAnalysis);
       } else if (auto funcOp = dyn_cast<FunctionOpInterface>(op)) {

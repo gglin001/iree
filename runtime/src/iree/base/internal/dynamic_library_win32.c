@@ -9,9 +9,9 @@
 #include <string.h>
 
 #include "iree/base/internal/atomics.h"
-#include "iree/base/internal/call_once.h"
 #include "iree/base/internal/dynamic_library.h"
 #include "iree/base/internal/path.h"
+#include "iree/base/threading/call_once.h"
 
 #if defined(IREE_PLATFORM_WINDOWS)
 
@@ -67,9 +67,10 @@ static void iree_dynamic_library_init_temp_paths(void) {
 
   // Append the process ID to the path; this is like what _mktemp does but
   // without all the hoops.
-  snprintf(iree_dynamic_library_temp_path_base_,
-           sizeof(iree_dynamic_library_temp_path_base_), "%s\\iree_dylib_%08X",
-           temp_path, (uint32_t)GetCurrentProcessId());
+  iree_snprintf(iree_dynamic_library_temp_path_base_,
+                sizeof(iree_dynamic_library_temp_path_base_),
+                "%s\\iree_dylib_%08X", temp_path,
+                (uint32_t)GetCurrentProcessId());
 
   // Canonicalize away any double path separators.
   iree_file_path_canonicalize(iree_dynamic_library_temp_path_base_,
@@ -95,17 +96,18 @@ static iree_status_t iree_dynamic_library_make_temp_file_path(
       &next_unique_id, 1, iree_memory_order_relaxed);
 
   // Allocate storage for the full file path and format it in.
-  int file_path_length =
-      snprintf(NULL, 0, "%s_%s_%08X.%s", iree_dynamic_library_temp_path_base_,
-               prefix, unique_id, extension);
+  int file_path_length = iree_snprintf(NULL, 0, "%s_%s_%08X.%s",
+                                       iree_dynamic_library_temp_path_base_,
+                                       prefix, unique_id, extension);
   if (file_path_length < 0) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "unable to form temp path string");
   }
   IREE_RETURN_IF_ERROR(iree_allocator_malloc(
       allocator, file_path_length + /*NUL=*/1, (void**)out_file_path));
-  snprintf(*out_file_path, file_path_length + /*NUL=*/1, "%s_%s_%08X.%s",
-           iree_dynamic_library_temp_path_base_, prefix, unique_id, extension);
+  iree_snprintf(*out_file_path, file_path_length + /*NUL=*/1, "%s_%s_%08X.%s",
+                iree_dynamic_library_temp_path_base_, prefix, unique_id,
+                extension);
 
   return iree_ok_status();
 }
@@ -165,9 +167,23 @@ static iree_status_t iree_dynamic_library_create(
     iree_dynamic_library_t** out_library) {
   *out_library = NULL;
 
+  iree_host_size_t identifier_storage_size = 0;
+  iree_host_size_t module_path_storage_size = 0;
+  if (!iree_host_size_checked_add(identifier.size, 1,
+                                  &identifier_storage_size) ||
+      !iree_host_size_checked_add(module_path.size, 1,
+                                  &module_path_storage_size)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "path length overflow");
+  }
+  iree_host_size_t total_size = 0;
+  iree_host_size_t identifier_offset = 0;
+  iree_host_size_t module_path_offset = 0;
+  IREE_RETURN_IF_ERROR(IREE_STRUCT_LAYOUT(
+      iree_sizeof_struct(iree_dynamic_library_t), &total_size,
+      IREE_STRUCT_FIELD(identifier_storage_size, char, &identifier_offset),
+      IREE_STRUCT_FIELD(module_path_storage_size, char, &module_path_offset)));
+
   iree_dynamic_library_t* library = NULL;
-  iree_host_size_t total_size =
-      sizeof(*library) + (identifier.size + 1) + (module_path.size + 1);
   IREE_RETURN_IF_ERROR(
       iree_allocator_malloc(allocator, total_size, (void**)&library));
   memset(library, 0, total_size);
@@ -175,11 +191,11 @@ static iree_status_t iree_dynamic_library_create(
   library->allocator = allocator;
   library->module = module;
 
-  library->identifier = (char*)library + sizeof(*library);
+  library->identifier = (char*)library + identifier_offset;
   memcpy(library->identifier, identifier.data, identifier.size);
   library->identifier[identifier.size] = 0;  // NUL
 
-  library->module_path = library->identifier + (identifier.size + 1);
+  library->module_path = (char*)library + module_path_offset;
   memcpy(library->module_path, module_path.data, module_path.size);
   library->module_path[module_path.size] = 0;  // NUL
 
@@ -317,6 +333,13 @@ iree_status_t iree_dynamic_library_lookup_symbol(
   }
   *out_fn = fn;
   return iree_ok_status();
+}
+
+void* iree_dynamic_library_try_lookup_symbol(iree_dynamic_library_t* library,
+                                             const char* symbol_name) {
+  IREE_ASSERT_ARGUMENT(library);
+  IREE_ASSERT_ARGUMENT(symbol_name);
+  return (void*)GetProcAddress(library->module, symbol_name);
 }
 
 iree_status_t iree_dynamic_library_append_symbol_path_to_builder(

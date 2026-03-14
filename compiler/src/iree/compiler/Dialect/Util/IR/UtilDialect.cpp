@@ -28,7 +28,7 @@
 namespace mlir::iree_compiler::IREE::Util {
 
 // Used for custom printing support.
-struct UtilOpAsmInterface : public OpAsmDialectInterface {
+struct UtilOpAsmInterface : OpAsmDialectInterface {
   using OpAsmDialectInterface::OpAsmDialectInterface;
   /// Hooks for getting an alias identifier alias for a given symbol, that is
   /// not necessarily a part of this dialect. The identifier is used in place of
@@ -45,7 +45,7 @@ struct UtilOpAsmInterface : public OpAsmDialectInterface {
 };
 
 // Used to control inlining behavior.
-struct UtilInlinerInterface : public DialectInlinerInterface {
+struct UtilInlinerInterface : DialectInlinerInterface {
   using DialectInlinerInterface::DialectInlinerInterface;
 
   bool isLegalToInline(Operation *call, Operation *callable,
@@ -54,8 +54,9 @@ struct UtilInlinerInterface : public DialectInlinerInterface {
     if (auto inliningPolicy =
             callable->getAttrOfType<IREE::Util::InliningPolicyAttrInterface>(
                 "inlining_policy")) {
-      if (!inliningPolicy.isLegalToInline(call, callable))
+      if (!inliningPolicy.isLegalToInline(call, callable)) {
         return false;
+      }
     }
 
     // Check any extended inlining policies that may come from dialect
@@ -64,8 +65,9 @@ struct UtilInlinerInterface : public DialectInlinerInterface {
       if (auto inliningPolicy =
               dyn_cast<IREE::Util::InliningPolicyAttrInterface>(
                   attr.getValue())) {
-        if (!inliningPolicy.isLegalToInline(call, callable))
+        if (!inliningPolicy.isLegalToInline(call, callable)) {
           return false;
+        }
       }
     }
 
@@ -86,8 +88,9 @@ struct UtilInlinerInterface : public DialectInlinerInterface {
   }
 
   void handleTerminator(Operation *op, Block *newDest) const final {
-    if (!op->hasTrait<OpTrait::ReturnLike>())
+    if (!op->hasTrait<OpTrait::ReturnLike>()) {
       return;
+    }
 
     OpBuilder builder(op);
     if (auto returnOp = dyn_cast<IREE::Util::ReturnOp>(op)) {
@@ -140,6 +143,8 @@ Operation *UtilDialect::materializeConstant(OpBuilder &builder, Attribute value,
                                             Type type, Location loc) {
   if (isa<IREE::Util::NullAttr>(value)) {
     return IREE::Util::NullOp::create(builder, loc, type);
+  } else if (isa<IREE::Util::BufferType>(type)) {
+    return IREE::Util::BufferConstantOp::create(builder, loc, value);
   } else if (arith::ConstantOp::isBuildableWith(value, type)) {
     return arith::ConstantOp::create(builder, loc, type,
                                      cast<TypedAttr>(value));
@@ -148,7 +153,7 @@ Operation *UtilDialect::materializeConstant(OpBuilder &builder, Attribute value,
 }
 
 template <typename DimOp>
-struct FoldDimOp : public OpRewritePattern<DimOp> {
+struct FoldDimOp : OpRewritePattern<DimOp> {
   using OpRewritePattern<DimOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(DimOp op,
                                 PatternRewriter &rewriter) const override {
@@ -159,8 +164,9 @@ struct FoldDimOp : public OpRewritePattern<DimOp> {
     }
     auto shapeAwareOp =
         dyn_cast_if_present<ShapeAwareOpInterface>(source.getDefiningOp());
-    if (!shapeAwareOp)
+    if (!shapeAwareOp) {
       return failure();
+    }
 
     // We only support static dimension indices today (as in general we only
     // support ranked shapes). If we find dynamic indices sneaking in we will

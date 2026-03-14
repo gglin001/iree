@@ -21,8 +21,7 @@ namespace mlir::iree_compiler {
 
 namespace {
 
-struct CanonicalizeForOpInductionVarShape final
-    : public OpRewritePattern<scf::ForOp> {
+struct CanonicalizeForOpInductionVarShape final : OpRewritePattern<scf::ForOp> {
   using Base::Base;
 
   // Return true if it might be possible to yield the operand of `op` instead of
@@ -144,7 +143,7 @@ struct CanonicalizeForOpInductionVarShape final
       //   %to_clone = vector.extract %arg1[%arg0] : f32 from vector<4xf32>
       //   ...
       // }
-      // %new_clone = vector.extact %cst[%c1] : f32 from vector<4xf32>
+      // %new_clone = vector.extract %cst[%c1] : f32 from vector<4xf32>
       // ```
       IRMapping mapping;
       mapping.map(iterArg, initArgs[index]);
@@ -158,8 +157,9 @@ struct CanonicalizeForOpInductionVarShape final
       mapping.map(loopIndVar, start);
       initArgs[index] = rewriter.clone(*finalIvUser, mapping)->getResult(0);
     }
-    if (iteratorFolded.empty())
+    if (iteratorFolded.empty()) {
       return failure();
+    }
 
     auto newLoop =
         scf::ForOp::create(rewriter, forOp.getLoc(), forOp.getLowerBound(),
@@ -199,7 +199,7 @@ struct CanonicalizeForOpInductionVarShape final
 /// Those loop-carried values will be lowered into SPIR-V local variables. This
 /// pattern allows packing i4/i8/f16 values into i32 variables tightly so that
 /// we can generate shader conformant SPIR-V.
-struct PackForOpInductionVarVector final : public OpRewritePattern<scf::ForOp> {
+struct PackForOpInductionVarVector final : OpRewritePattern<scf::ForOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(scf::ForOp forOp,
@@ -230,8 +230,9 @@ struct PackForOpInductionVarVector final : public OpRewritePattern<scf::ForOp> {
         targetTypes.push_back(targetType);
       }
     }
-    if (ivIndices.empty())
+    if (ivIndices.empty()) {
       return failure();
+    }
 
     // Bit cast all init values to the smaller vector (fewer elements).
     auto ivInitValues = llvm::to_vector<8>(forOp.getInitArgs());
@@ -287,8 +288,9 @@ struct PackForOpInductionVarVector final : public OpRewritePattern<scf::ForOp> {
     yieldOp->setOperands(ivRetValues);
 
     SmallVector<Value, 8> forRetValues;
-    for (Value result : newLoop.getResults())
+    for (Value result : newLoop.getResults()) {
       forRetValues.push_back(result);
+    }
 
     // Bit cast return values to the old type to fix for op uses.
     rewriter.setInsertionPointAfter(newLoop);

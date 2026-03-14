@@ -15,6 +15,7 @@ iree_cc_library(
     Transforms
   HDRS
     "Passes.h"
+    "Utils.h"
   SRCS
     "AnnotateAffinities.cpp"
     "AnnotateConstantTransientSize.cpp"
@@ -25,7 +26,6 @@ iree_cc_library(
     "ConvertToStream.cpp"
     "DumpStatistics.cpp"
     "ElideAsyncCopies.cpp"
-    "ElideAsyncTransfers.cpp"
     "ElideTimepoints.cpp"
     "EmplaceAllocations.cpp"
     "EmplaceTransients.cpp"
@@ -49,7 +49,10 @@ iree_cc_library(
     "ScheduleExecution.cpp"
     "SpecializeDispatches.cpp"
     "SpecializeEncodings.cpp"
+    "SplitParameterEncoder.cpp"
     "SyncInitializers.cpp"
+    "UnifyEncodingForGlobals.cpp"
+    "Utils.cpp"
     "VerifyAffinities.cpp"
     "VerifyAsyncAccessRanges.cpp"
     "VerifyLowerings.cpp"
@@ -66,10 +69,12 @@ iree_cc_library(
     MLIRFunctionInterfaces
     MLIRIR
     MLIRLinalgDialect
+    MLIRLoopLikeInterface
     MLIRMemRefDialect
     MLIRPass
     MLIRSCFDialect
     MLIRSCFToControlFlow
+    MLIRSideEffectInterfaces
     MLIRSupport
     MLIRTensorDialect
     MLIRTransformUtils

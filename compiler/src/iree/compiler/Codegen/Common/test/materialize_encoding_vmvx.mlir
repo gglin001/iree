@@ -7,18 +7,18 @@
 #encoding_rhs = #iree_encoding.encoding<operand_index = 1, op_type = matmul, element_types = [i8, i8, i32], user_indexing_maps = [#map, #map1, #map2], iteration_sizes = [?, ?, ?]>
 #encoding_result = #iree_encoding.encoding<operand_index = 2, op_type = matmul, element_types = [i8, i8, i32], user_indexing_maps = [#map, #map1, #map2], iteration_sizes = [?, ?, ?]>
 func.func @matmul_lowering_i8i8i32_vmvx_ukernel(
-  %3: tensor<?x?xi8, #encoding_lhs>,
-  %4: tensor<?x?xi8, #encoding_rhs>,
-  %5: tensor<?x?xi32, #encoding_result>
+  %lhs: tensor<?x?xi8, #encoding_lhs>,
+  %rhs: tensor<?x?xi8, #encoding_rhs>,
+  %result: tensor<?x?xi32, #encoding_result>
 ) -> tensor<?x?xi32, #encoding_result> attributes {
   hal.executable.target = #hal.executable.target<"vmvx", "vmvx-bytecode-fb", {ukernels = "all", iree.encoding.resolver = #iree_cpu.vmvx_encoding_resolver<>}>
 } {
-  %6 = linalg.matmul
-      ins(%3, %4 : tensor<?x?xi8, #encoding_lhs>,
-                   tensor<?x?xi8, #encoding_rhs>)
-      outs(%5 : tensor<?x?xi32, #encoding_result>)
+  %0 = linalg.matmul
+      ins(%lhs, %rhs : tensor<?x?xi8, #encoding_lhs>,
+                       tensor<?x?xi8, #encoding_rhs>)
+      outs(%result : tensor<?x?xi32, #encoding_result>)
       -> tensor<?x?xi32, #encoding_result>
-  return %6 : tensor<?x?xi32, #encoding_result>
+  return %0 : tensor<?x?xi32, #encoding_result>
 }
 //      CHECK: func @matmul_lowering_i8i8i32_vmvx_ukernel(
 // CHECK-SAME:   %[[LHS:[a-zA-Z0-9]+]]: tensor<?x?x?x?xi8>
@@ -68,14 +68,12 @@ func.func @fill_matmul(
 #map1 = affine_map<(d0, d1, d2) -> (d2, d1)>
 #map2 = affine_map<(d0, d1, d2) -> (d0, d1)>
 #encoding_lhs = #iree_encoding.encoding<operand_index = 0, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [#map, #map1, #map2], iteration_sizes = [?, ?, ?]>
-func.func @set_encoding_dynamic(%input: tensor<?x?xf32>) -> tensor<?x?xf32, #encoding_lhs> attributes {
+func.func @set_encoding_dynamic(%input: tensor<?x?xf32>, %m: index, %n: index, %k: index) -> tensor<?x?xf32, #encoding_lhs> attributes {
   hal.executable.target = #hal.executable.target<"vmvx", "vmvx-bytecode-fb", {iree.encoding.resolver = #iree_cpu.vmvx_encoding_resolver<>}>
 } {
-  %0 = iree_encoding.set_encoding %input : tensor<?x?xf32> -> tensor<?x?xf32, #encoding_lhs>
+  %0 = iree_encoding.set_encoding %input encoding_dims{%m, %n, %k} : tensor<?x?xf32> -> tensor<?x?xf32, #encoding_lhs>
   return %0 : tensor<?x?xf32, #encoding_lhs>
 }
-//   CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 ceildiv 8)>
-//   CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0] -> (s0 ceildiv 4)>
 //       CHECK: func @set_encoding_dynamic(
 //  CHECK-SAME:   %[[INPUT:[a-zA-Z0-9]+]]: tensor<?x?xf32>
 //       CHECK:   %[[CST:.+]] = arith.constant 0.000000e+00 : f32
@@ -91,10 +89,10 @@ func.func @set_encoding_dynamic(%input: tensor<?x?xf32>) -> tensor<?x?xf32, #enc
 #map1 = affine_map<(d0, d1, d2) -> (d2, d1)>
 #map2 = affine_map<(d0, d1, d2) -> (d0, d1)>
 #encoding_lhs = #iree_encoding.encoding<operand_index = 0, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [#map, #map1, #map2], iteration_sizes = [?, ?, ?]>
-func.func @unset_encoding_dynamic(%input: tensor<?x?xf32, #encoding_lhs>, %d0: index, %d1: index) -> tensor<?x?xf32> attributes {
+func.func @unset_encoding_dynamic(%input: tensor<?x?xf32, #encoding_lhs>, %d0: index, %d1: index, %m: index, %n: index, %k: index) -> tensor<?x?xf32> attributes {
   hal.executable.target = #hal.executable.target<"vmvx", "vmvx-bytecode-fb", {iree.encoding.resolver = #iree_cpu.vmvx_encoding_resolver<>}>
 } {
-  %0 = iree_encoding.unset_encoding %input : tensor<?x?xf32, #encoding_lhs> -> tensor<?x?xf32>{%d0, %d1}
+  %0 = iree_encoding.unset_encoding %input encoding_dims{%m, %n, %k} : tensor<?x?xf32, #encoding_lhs> -> tensor<?x?xf32>{%d0, %d1}
   return %0 : tensor<?x?xf32>
 }
 //       CHECK: func @unset_encoding_dynamic(

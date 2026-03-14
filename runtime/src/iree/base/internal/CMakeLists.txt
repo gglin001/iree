@@ -53,6 +53,51 @@ iree_cc_test(
 
 iree_cc_library(
   NAME
+    base64
+  HDRS
+    "base64.h"
+  SRCS
+    "base64.c"
+  DEPS
+    iree::base
+  PUBLIC
+)
+
+iree_cc_test(
+  NAME
+    base64_test
+  SRCS
+    "base64_test.cc"
+  DEPS
+    ::base64
+    iree::testing::gtest
+    iree::testing::gtest_main
+)
+
+iree_cc_fuzz(
+  NAME
+    base64_fuzz
+  SRCS
+    "base64_fuzz.cc"
+  DEPS
+    ::base64
+)
+
+iree_cc_binary_benchmark(
+  NAME
+    base64_benchmark
+  SRCS
+    "base64_benchmark.cc"
+  DEPS
+    ::base64
+    iree::base
+    iree::testing::benchmark
+    iree::testing::benchmark_main
+  TESTONLY
+)
+
+iree_cc_library(
+  NAME
     arena
   HDRS
     "arena.h"
@@ -61,7 +106,6 @@ iree_cc_library(
   DEPS
     ::atomic_slist
     ::internal
-    ::synchronization
     iree::base
   PUBLIC
 )
@@ -75,8 +119,8 @@ iree_cc_library(
     "atomic_slist.c"
   DEPS
     ::internal
-    ::synchronization
     iree::base::core_headers
+    iree::base::threading
   PUBLIC
 )
 
@@ -93,41 +137,39 @@ iree_cc_test(
 
 iree_cc_library(
   NAME
-    bitmap
+    atomic_freelist
   HDRS
-    "bitmap.h"
-  SRCS
-    "bitmap.c"
+    "atomic_freelist.h"
   DEPS
     ::internal
     iree::base
+    iree::base::core_headers
   PUBLIC
-)
-
-iree_cc_binary_benchmark(
-  NAME
-    bitmap_benchmark
-  SRCS
-    "bitmap_benchmark.cc"
-  DEPS
-    ::bitmap
-    ::internal
-    iree::base
-    iree::testing::benchmark
-    iree::testing::benchmark_main
-  TESTONLY
 )
 
 iree_cc_test(
   NAME
-    bitmap_test
+    atomic_freelist_test
   SRCS
-    "bitmap_test.cc"
+    "atomic_freelist_test.cc"
   DEPS
-    ::bitmap
-    iree::base
+    ::atomic_freelist
+    ::memory
     iree::testing::gtest
     iree::testing::gtest_main
+)
+
+iree_cc_binary_benchmark(
+  NAME
+    atomic_freelist_benchmark
+  SRCS
+    "atomic_freelist_benchmark.cc"
+  DEPS
+    ::atomic_freelist
+    ::memory
+    benchmark
+    iree::testing::benchmark_main
+  TESTONLY
 )
 
 iree_cc_library(
@@ -146,6 +188,29 @@ iree_cc_library(
 
 iree_cc_library(
   NAME
+    csprng
+  HDRS
+    "csprng.h"
+  SRCS
+    "csprng.c"
+  DEPS
+    iree::base
+  PUBLIC
+)
+
+iree_cc_test(
+  NAME
+    csprng_test
+  SRCS
+    "csprng_test.cc"
+  DEPS
+    ::csprng
+    iree::testing::gtest
+    iree::testing::gtest_main
+)
+
+iree_cc_library(
+  NAME
     dynamic_library
   HDRS
     "dynamic_library.h"
@@ -156,46 +221,9 @@ iree_cc_library(
     ${CMAKE_DL_LIBS}
     ::internal
     ::path
-    ::synchronization
     iree::base
+    iree::base::threading
   PUBLIC
-)
-
-iree_cc_library(
-  NAME
-    flags
-  HDRS
-    "flags.h"
-  SRCS
-    "flags.c"
-  DEPS
-    ::internal
-    iree::base
-    iree::io::file_handle
-  PUBLIC
-)
-
-iree_cc_binary(
-  NAME
-    flags_demo
-  SRCS
-    "flags_demo.c"
-  DEPS
-    ::flags
-    iree::base
-  TESTONLY
-)
-
-iree_lit_test_suite(
-  NAME
-    flags_test
-  SRCS
-    "flags_test.txt"
-  TOOLS
-    ::flags_demo
-    FileCheck
-  LABELS
-    "hostonly"
 )
 
 iree_cc_library(
@@ -240,6 +268,30 @@ iree_cc_test(
 
 iree_cc_library(
   NAME
+    json
+  HDRS
+    "json.h"
+  SRCS
+    "json.c"
+  DEPS
+    ::unicode
+    iree::base
+  PUBLIC
+)
+
+iree_cc_test(
+  NAME
+    json_test
+  SRCS
+    "json_test.cc"
+  DEPS
+    ::json
+    iree::testing::gtest
+    iree::testing::gtest_main
+)
+
+iree_cc_library(
+  NAME
     memory
   HDRS
     "memory.h"
@@ -249,6 +301,17 @@ iree_cc_library(
     ::internal
     iree::base
   PUBLIC
+)
+
+iree_cc_test(
+  NAME
+    memory_test
+  SRCS
+    "memory_test.cc"
+  DEPS
+    ::memory
+    iree::testing::gtest
+    iree::testing::gtest_main
 )
 
 iree_cc_library(
@@ -300,6 +363,99 @@ iree_cc_test(
 
 iree_cc_library(
   NAME
+    shm
+  HDRS
+    "shm.h"
+  SRCS
+    "shm_posix.c"
+    "shm_win32.c"
+  DEPS
+    ::internal
+    ::memory
+    iree::base
+    iree::base::threading
+  PUBLIC
+)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(iree_base_internal_shm PUBLIC rt)
+endif()
+
+iree_cc_test(
+  NAME
+    shm_test
+  SRCS
+    "shm_test.cc"
+  DEPS
+    ::shm
+    iree::testing::gtest
+    iree::testing::gtest_main
+)
+
+iree_cc_library(
+  NAME
+    spsc_queue
+  HDRS
+    "spsc_queue.h"
+  SRCS
+    "spsc_queue.c"
+  DEPS
+    ::internal
+    iree::base
+    iree::base::core_headers
+  PUBLIC
+)
+
+iree_cc_test(
+  NAME
+    spsc_queue_test
+  SRCS
+    "spsc_queue_test.cc"
+  DEPS
+    ::spsc_queue
+    iree::testing::gtest
+    iree::testing::gtest_main
+)
+
+iree_cc_binary_benchmark(
+  NAME
+    spsc_queue_benchmark
+  SRCS
+    "spsc_queue_benchmark.cc"
+  DEPS
+    ::spsc_queue
+    benchmark
+    iree::testing::benchmark_main
+  TESTONLY
+)
+
+iree_cc_library(
+  NAME
+    mpsc_queue
+  HDRS
+    "mpsc_queue.h"
+  SRCS
+    "mpsc_queue.c"
+  DEPS
+    ::internal
+    iree::base
+    iree::base::core_headers
+  PUBLIC
+)
+
+iree_cc_test(
+  NAME
+    mpsc_queue_test
+  SRCS
+    "mpsc_queue_test.cc"
+  DEPS
+    ::mpsc_queue
+    iree::testing::gtest
+    iree::testing::gtest_main
+)
+
+iree_cc_library(
+  NAME
     span
   HDRS
     "span.h"
@@ -310,40 +466,14 @@ iree_cc_library(
 
 iree_cc_library(
   NAME
-    synchronization
+    sysfs
   HDRS
-    "call_once.h"
-    "synchronization.h"
+    "sysfs.h"
   SRCS
-    "synchronization.c"
+    "sysfs.c"
   DEPS
-    ::internal
     iree::base
-    iree::base::core_headers
   PUBLIC
-)
-
-iree_cc_binary_benchmark(
-  NAME
-    synchronization_benchmark
-  SRCS
-    "synchronization_benchmark.cc"
-  DEPS
-    ::synchronization
-    benchmark
-    iree::testing::benchmark_main
-  TESTONLY
-)
-
-iree_cc_test(
-  NAME
-    synchronization_test
-  SRCS
-    "synchronization_test.cc"
-  DEPS
-    ::synchronization
-    iree::testing::gtest
-    iree::testing::gtest_main
 )
 
 iree_cc_library(
@@ -356,6 +486,39 @@ iree_cc_library(
   DEPS
     iree::base::core_headers
   PUBLIC
+)
+
+iree_cc_library(
+  NAME
+    unicode
+  HDRS
+    "unicode.h"
+  SRCS
+    "unicode.c"
+    "unicode_tables.c"
+  DEPS
+    iree::base
+  PUBLIC
+)
+
+iree_cc_fuzz(
+  NAME
+    unicode_fuzz
+  SRCS
+    "unicode_fuzz.cc"
+  DEPS
+    ::unicode
+)
+
+iree_cc_test(
+  NAME
+    unicode_test
+  SRCS
+    "unicode_test.cc"
+  DEPS
+    ::unicode
+    iree::testing::gtest
+    iree::testing::gtest_main
 )
 
 iree_cc_library(
@@ -376,9 +539,9 @@ iree_cc_library(
     "wait_handle_posix.h"
     "wait_handle_win32.c"
   DEPS
-    ::synchronization
     iree::base
     iree::base::core_headers
+    iree::base::threading
   PUBLIC
 )
 
@@ -406,46 +569,11 @@ iree_cc_library(
     "event_pool.c"
   DEPS
     ::internal
-    ::synchronization
     ::wait_handle
     iree::base
     iree::base::core_headers
+    iree::base::threading
   PUBLIC
-)
-
-iree_cc_library(
-  NAME
-    threading
-  HDRS
-    "threading.h"
-  SRCS
-    "threading.c"
-    "threading_darwin.c"
-    "threading_impl.h"
-    "threading_pthreads.c"
-    "threading_win32.c"
-  DEPS
-    ${CMAKE_DL_LIBS}
-    ::internal
-    ::synchronization
-    iree::base
-    iree::base::core_headers
-  PUBLIC
-)
-
-iree_cc_test(
-  NAME
-    threading_test
-  SRCS
-    "threading_impl.h"
-    "threading_test.cc"
-  DEPS
-    ::internal
-    ::synchronization
-    ::threading
-    iree::base
-    iree::testing::gtest
-    iree::testing::gtest_main
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

@@ -193,8 +193,8 @@ void populateIREEGPUVectorUnrollPatterns(
     RewritePatternSet &patterns, const vector::UnrollVectorOptions &options);
 // Version of unrolling with a preset configuration.
 void populateIREEGPUVectorUnrollPatterns(RewritePatternSet &patterns);
-void populateIREEGPUVectorizationPatterns(RewritePatternSet &patterns);
-void populateIREEGPULowerGlobalLoadDMAPatterns(RewritePatternSet &patterns);
+// Populate patterns to fold tensor.empty ops through swizzle hint ops.
+void populateFoldSwizzleHintOpPatterns(RewritePatternSet &patterns);
 
 } // namespace mlir::iree_compiler::IREE::GPU
 

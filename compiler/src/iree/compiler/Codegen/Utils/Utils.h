@@ -26,6 +26,10 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SubsetOpInterface.h"
 
+namespace mlir {
+class DataFlowSolver;
+} // namespace mlir
+
 namespace mlir::iree_compiler {
 
 static constexpr unsigned kNumMaxParallelDims = 3;
@@ -212,6 +216,17 @@ int getReductionTilingFactor(int64_t dimSize);
 int64_t getMinElementBitwidth(linalg::LinalgOp linalgOp);
 
 //===---------------------------------------------------------------------===//
+// Integer range analysis utility functions.
+//===---------------------------------------------------------------------===//
+
+/// Get the upper bound of a dynamic value. First tries IntegerRangeAnalysis
+/// (cached, efficient), then falls back to ValueBoundsConstraintSet for complex
+/// cases like affine.apply. The solver should have IntegerRangeAnalysis loaded
+/// and initialized before calling this function.
+FailureOr<int64_t> getDynamicUpperBound(Value value,
+                                        const DataFlowSolver &solver);
+
+//===---------------------------------------------------------------------===//
 // Bufferization utility functions
 //===---------------------------------------------------------------------===//
 
@@ -264,6 +279,15 @@ Operation *dropEncodingAndCloneOp(OpBuilder &builder, Operation *op,
                                   ValueRange convertedInputOperands,
                                   ValueRange convertedOutputOperands);
 
+/// Check if the uses of memref value `origValue` can be replaced with a value
+/// of `replacementType`. This validates that all transitive uses through
+/// reshape operations (CastOp, SubViewOp, ExpandShapeOp, CollapseShapeOp) can
+/// have their result types correctly computed. Returns failure if any reshape
+/// operation would fail to compute valid result types (e.g., ExpandShapeOp or
+/// CollapseShapeOp with incompatible layouts).
+LogicalResult canReplaceMemrefUsesAndPropagateType(Value origValue,
+                                                   Type replacementType);
+
 /// Replace the uses of memref value `origValue` with the given
 /// `replacementValue`. Some uses of the memref value might require changes to
 /// the operation itself. Create new operations which can carry the change, and
@@ -278,30 +302,6 @@ void sinkOpsInCFG(const SmallVector<Operation *> &allocs,
 // Check if there is a fused linalg op present in the backward slice of any of
 // the inputs.
 bool hasFusedLeadingOp(linalg::LinalgOp rootOp);
-
-std::optional<vector::VscaleRange>
-getDefaultVscaleRange(IREE::HAL::ExecutableTargetAttr targetAttr);
-
-using DimBound = vector::ConstantOrScalableBound;
-using DimBoundSize = DimBound::BoundSize;
-
-/// Should the scalable upper bound be rounded up to the nearest multiple of
-/// vscale?
-enum class RoundUpVscaleMultiple { No, Yes };
-
-/// Computes the upper bound of `dimNum` dim of the ShapedType value
-/// `shapedValue`. If the optional `vscaleRange` is provided then the computed
-/// bound can be a scalable quantity.
-FailureOr<DimBoundSize>
-computeDimUpperBound(Value shapedValue, unsigned dimNum,
-                     std::optional<vector::VscaleRange> vscaleRange,
-                     RoundUpVscaleMultiple = RoundUpVscaleMultiple::No);
-
-// Utility to make sure we are storing the full incoming subspan. Otherwise we
-// cannot simply adjust the subspan's resultant type later.
-bool isFullSlice(OffsetSizeAndStrideOpInterface sliceLoadStoreOp,
-                 IREE::TensorExt::DispatchTensorType tensorType,
-                 ValueRange dynamicDims);
 
 /// Retrieves the DenormalFpMathAttr for F32 values from the given target
 /// configuration. This attribute specifies how denormal floating-point values
@@ -318,12 +318,47 @@ void addConfigDenormalFpMathF32(MLIRContext *context,
                                 IREE::Codegen::DenormalFpMath mode,
                                 SmallVectorImpl<NamedAttribute> &config);
 
-//===----------------------------------------------------------------------===//
-// Utility functions for vector size inference for dynamic shapes
-//===----------------------------------------------------------------------===//
+// Utility to make sure we are storing the full incoming subspan. Otherwise we
+// cannot simply adjust the subspan's resultant type later.
+bool isFullSlice(OffsetSizeAndStrideOpInterface sliceLoadStoreOp,
+                 IREE::TensorExt::DispatchTensorType tensorType,
+                 ValueRange dynamicDims);
+
+//===---------------------------------------------------------------------===//
+// Scalable size utility functions
+//===---------------------------------------------------------------------===//
+
+std::optional<vector::VscaleRange>
+getDefaultVscaleRange(IREE::HAL::ExecutableTargetAttr targetAttr);
 
 using SizesAndScalableFlags =
     std::pair<SmallVector<int64_t>, SmallVector<bool>>;
+
+// This function takes a vector of mixed sizes and returns the static tile sizes
+// and scalable tile flags. For scalable inner tiles, it returns the static
+// counterpart and the corresponding flag. E.g. for [8, [8]] it returns [8, 8]
+// and [false, true].
+std::optional<SizesAndScalableFlags>
+getScalableTileSizesAndFlags(ArrayRef<OpFoldResult> mixedSizes);
+
+using DimBound = vector::ConstantOrScalableBound;
+using DimBoundSize = DimBound::BoundSize;
+
+/// Should the scalable upper bound be rounded up to the nearest multiple of
+/// vscale?
+enum class RoundUpVscaleMultiple { No, Yes };
+
+/// Computes the upper bound of `dimNum` dim of the ShapedType value
+/// `shapedValue`. If the optional `vscaleRange` is provided then the computed
+/// bound can be a scalable quantity.
+FailureOr<DimBoundSize>
+computeDimUpperBound(Value shapedValue, unsigned dimNum,
+                     std::optional<vector::VscaleRange> vscaleRange,
+                     RoundUpVscaleMultiple = RoundUpVscaleMultiple::No);
+
+//===----------------------------------------------------------------------===//
+// Utility functions for vector size inference for dynamic shapes
+//===----------------------------------------------------------------------===//
 
 struct VectorizationTileSizes {
   SmallVector<int64_t> destShape;
@@ -406,6 +441,21 @@ bool neverRunsSecondIteration(scf::ForOp op);
 ///  Here %4 is an external capture used via tensor.extract inside
 ///  linalg.generic hence the above `genericOp` has an external capture.
 bool hasExternalCapture(linalg::GenericOp genericOp);
+
+//===----------------------------------------------------------------------===//
+// Utility functions for accumulating operations
+//===----------------------------------------------------------------------===//
+
+/// Check if the init value of the DPS operation is read/write from the same
+/// buffer. This determines whether the operation is a valid in-place
+/// accumulating op. For GEMMs:
+/// - Returns true: The GEMM reads and writes to the same buffer
+/// (matmul_accumulate)
+///   The accumulator needs to be loaded from global memory.
+/// - Returns false: The GEMM will be converted to a non-accumulating GEMM + add
+///   by ConvertAccGEMMToGEMMPass, and the accumulator can be zero-initialized
+///   in registers.
+bool isValidInPlaceAccumulatingOp(DestinationStyleOpInterface dpsOp);
 
 //===----------------------------------------------------------------------===//
 // Utility functions for copy operations

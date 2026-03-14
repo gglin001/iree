@@ -49,7 +49,7 @@ iree_cc_library(
     "caching_allocator.c"
   DEPS
     iree::base
-    iree::base::internal::synchronization
+    iree::base::threading
     iree::hal
   PUBLIC
 )
@@ -119,7 +119,7 @@ iree_cc_library(
   DEPS
     iree::base
     iree::base::internal
-    iree::base::internal::synchronization
+    iree::base::threading
     iree::hal
     iree::io::file_handle
   PUBLIC
@@ -200,6 +200,23 @@ iree_cc_library(
 
 iree_cc_library(
   NAME
+    platform_topology
+  HDRS
+    "platform_topology.h"
+  SRCS
+    "platform_topology.c"
+    "platform_topology_darwin.c"
+    "platform_topology_fallback.c"
+    "platform_topology_sysfs.c"
+    "platform_topology_win32.c"
+  DEPS
+    iree::base
+    iree::base::internal::sysfs
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
     queue_emulation
   HDRS
     "queue_emulation.h"
@@ -263,7 +280,7 @@ iree_cc_library(
     "semaphore_base.c"
   DEPS
     iree::base
-    iree::base::internal::synchronization
+    iree::base::threading
     iree::hal
   PUBLIC
 )
@@ -277,6 +294,7 @@ iree_cc_test(
     ::semaphore_base
     iree::base
     iree::base::internal::wait_handle
+    iree::base::threading
     iree::hal
     iree::testing::gtest
     iree::testing::gtest_main
@@ -292,7 +310,7 @@ iree_cc_library(
   DEPS
     iree::base
     iree::base::internal::arena
-    iree::base::internal::synchronization
+    iree::base::threading
     iree::hal
   PUBLIC
 )
@@ -314,8 +332,8 @@ iree_cc_library(
     ::semaphore_base
     iree::base
     iree::base::internal::arena
-    iree::base::internal::synchronization
-    iree::base::internal::threading
+    iree::base::threading
+    iree::base::threading::thread
     iree::hal
   PUBLIC
 )
@@ -330,8 +348,7 @@ iree_cc_library(
   DEPS
     iree::base
     iree::base::internal
-    iree::base::internal::synchronization
-    iree::base::internal::threading
+    iree::base::threading::thread
     iree::hal
   PUBLIC
 )

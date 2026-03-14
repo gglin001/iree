@@ -20,11 +20,7 @@ static inline size_t iree_min_host_size(iree_host_size_t a,
 }
 
 // Here to ensure that we don't pull in locale-specific code:
-static bool iree_isupper(char c) { return (unsigned)c - 'A' < 26; }
-static bool iree_islower(char c) { return (unsigned)c - 'a' < 26; }
-static inline char iree_toupper(char c) {
-  return iree_islower(c) ? (c & 0x5F) : c;
-}
+static inline bool iree_isupper(char c) { return (unsigned)c - 'A' < 26; }
 static inline char iree_tolower(char c) {
   return iree_isupper(c) ? (c | 32) : c;
 }
@@ -32,6 +28,7 @@ static inline char iree_tolower(char c) {
 IREE_API_EXPORT bool iree_string_view_equal(iree_string_view_t lhs,
                                             iree_string_view_t rhs) {
   if (lhs.size != rhs.size) return false;
+  if (lhs.size == 0) return true;  // Both empty - equal without memcmp.
   return memcmp(lhs.data, rhs.data, lhs.size) == 0;
 }
 
@@ -47,6 +44,11 @@ IREE_API_EXPORT bool iree_string_view_equal_case(iree_string_view_t lhs,
 IREE_API_EXPORT int iree_string_view_compare(iree_string_view_t lhs,
                                              iree_string_view_t rhs) {
   iree_host_size_t min_size = iree_min_host_size(lhs.size, rhs.size);
+  if (min_size == 0) {
+    // Both empty, or one is a prefix of the other starting from empty.
+    if (lhs.size == rhs.size) return 0;
+    return lhs.size < rhs.size ? -1 : 1;
+  }
   int cmp = strncmp(lhs.data, rhs.data, min_size);
   if (cmp != 0) {
     return cmp;
@@ -96,7 +98,7 @@ IREE_API_EXPORT iree_host_size_t iree_string_view_find_last_of(
   for (iree_host_size_t i = 0; i < s.size; ++i) {
     lookup_table[(uint8_t)s.data[i]] = true;
   }
-  pos = iree_min(pos, value.size) + 1;
+  pos = iree_min(pos, value.size - 1) + 1;
   iree_host_size_t i = pos;
   while (i != 0) {
     --i;
@@ -261,28 +263,81 @@ static bool iree_string_view_match_pattern_impl(iree_string_view_t value,
     return true;
   }
   char pattern_char = pattern.data[0];
-  if (pattern_char == '*' && pattern.size > 1 &&
-      iree_string_view_is_empty(value)) {
+
+  // Normalize wildcard sequences to avoid exponential backtracking.
+  // A sequence like *?*?* is equivalent to "match 2+ chars then match rest".
+  // We coalesce all * and ? into a single * with a minimum char requirement.
+  if (pattern_char == '*' || pattern_char == '?') {
+    iree_host_size_t min_chars = 0;
+    iree_host_size_t skip = 0;
+    bool has_star = false;
+    while (skip < pattern.size) {
+      char c = pattern.data[skip];
+      if (c == '*') {
+        has_star = true;
+        ++skip;
+      } else if (c == '?') {
+        ++min_chars;
+        ++skip;
+      } else {
+        break;
+      }
+    }
+
+    // Remaining pattern after wildcards.
+    iree_string_view_t rest =
+        iree_string_view_substr(pattern, skip, IREE_STRING_VIEW_NPOS);
+
+    if (!has_star) {
+      // Only ? wildcards - must match exactly min_chars characters.
+      if (value.size < min_chars) return false;
+      return iree_string_view_match_pattern_impl(
+          iree_string_view_substr(value, min_chars, IREE_STRING_VIEW_NPOS),
+          rest);
+    }
+
+    // Has * - must match at least min_chars, possibly more.
+    if (value.size < min_chars) return false;
+
+    // Empty rest means * matches everything remaining.
+    if (iree_string_view_is_empty(rest)) return true;
+
+    // Try matching rest at each position from min_chars to end.
+    for (iree_host_size_t i = min_chars; i <= value.size; ++i) {
+      if (iree_string_view_match_pattern_impl(
+              iree_string_view_substr(value, i, IREE_STRING_VIEW_NPOS), rest)) {
+        return true;
+      }
+    }
     return false;
-  } else if (pattern_char == '*' && pattern.size == 1) {
-    return true;
-  } else if (pattern_char == '?' || value.data[0] == pattern_char) {
-    return iree_string_view_match_pattern_impl(
-        iree_string_view_substr(value, 1, IREE_STRING_VIEW_NPOS),
-        iree_string_view_substr(pattern, 1, IREE_STRING_VIEW_NPOS));
-  } else if (pattern_char == '*') {
-    return iree_string_view_match_pattern_impl(
-               value,
-               iree_string_view_substr(pattern, 1, IREE_STRING_VIEW_NPOS)) ||
-           iree_string_view_match_pattern_impl(
-               iree_string_view_substr(value, 1, IREE_STRING_VIEW_NPOS),
-               pattern);
   }
-  return false;
+
+  // Literal character - must match exactly.
+  if (iree_string_view_is_empty(value) || value.data[0] != pattern_char) {
+    return false;
+  }
+  return iree_string_view_match_pattern_impl(
+      iree_string_view_substr(value, 1, IREE_STRING_VIEW_NPOS),
+      iree_string_view_substr(pattern, 1, IREE_STRING_VIEW_NPOS));
 }
+
+// Maximum wildcards allowed in a pattern to prevent pathological matching.
+// 16 is enough for any reasonable glob (e.g., "*foo*bar*baz*") while avoiding
+// O(n^2) blowup on patterns like "?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*".
+#define IREE_STRING_VIEW_MAX_PATTERN_WILDCARDS 16
 
 IREE_API_EXPORT bool iree_string_view_match_pattern(
     iree_string_view_t value, iree_string_view_t pattern) {
+  // Count wildcards and reject patterns with too many.
+  iree_host_size_t wildcard_count = 0;
+  for (iree_host_size_t i = 0; i < pattern.size; ++i) {
+    if (pattern.data[i] == '*' || pattern.data[i] == '?') {
+      ++wildcard_count;
+    }
+  }
+  if (wildcard_count > IREE_STRING_VIEW_MAX_PATTERN_WILDCARDS) {
+    return false;
+  }
   return iree_string_view_match_pattern_impl(value, pattern);
 }
 
@@ -292,7 +347,10 @@ IREE_API_EXPORT void iree_string_view_to_cstring(
   // Truncate and ensure there's space for the NUL terminator.
   iree_host_size_t length = iree_min(value.size, buffer_length - 1);
   // Copy string contents up to the truncated length.
-  memcpy(buffer, value.data, length);
+  // Guard against NULL data pointer (empty string view).
+  if (length > 0) {
+    memcpy(buffer, value.data, length);
+  }
   // Add NUL terminator.
   buffer[length] = 0;
 }

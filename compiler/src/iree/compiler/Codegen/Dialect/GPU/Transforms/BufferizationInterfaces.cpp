@@ -16,6 +16,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 
@@ -38,8 +39,9 @@ getBuffers(RewriterBase &rewriter, const MutableOperandRange &operands,
     if (isa<TensorType>(opOperand.get().getType())) {
       FailureOr<Value> resultBuffer =
           getBuffer(rewriter, opOperand.get(), options, state);
-      if (failed(resultBuffer))
+      if (failed(resultBuffer)) {
         return failure();
+      }
       result.push_back(*resultBuffer);
     } else {
       result.push_back(opOperand.get());
@@ -48,10 +50,57 @@ getBuffers(RewriterBase &rewriter, const MutableOperandRange &operands,
   return result;
 }
 
+/// Return the set of address spaces that need to be fenced by a GPU barrier
+/// that will synchronize those buffers. If an address space isn't recognized or
+/// there's a null address space, returns ArrayAttr() to fence everything.
+template <typename Iter>
+static ArrayAttr fencedGpuAddressSpaces(RewriterBase &rewriter, Iter buffers) {
+  llvm::SetVector<Attribute> addressSpaces;
+  for (Value buffer : buffers) {
+    auto memrefType = dyn_cast<BaseMemRefType>(buffer.getType());
+    if (!memrefType) {
+      return ArrayAttr();
+    }
+    Attribute memorySpace = memrefType.getMemorySpace();
+    if (!memorySpace) {
+      return ArrayAttr();
+    }
+    // HAL descriptors live in global memory, and AMDGPU buffers are produced
+    // from it.
+    Attribute globalSpace =
+        rewriter.getAttr<gpu::AddressSpaceAttr>(gpu::AddressSpace::Global);
+
+    bool isKnown =
+        llvm::TypeSwitch<Attribute, bool>(memrefType.getMemorySpace())
+            .Case([&](gpu::AddressSpaceAttr a) {
+              if (a.getValue() == gpu::AddressSpace::Private) {
+                // No such thing as a fence on private memory.
+                return true;
+              }
+              addressSpaces.insert(a);
+              return true;
+            })
+            .Case([&](IREE::HAL::DescriptorTypeAttr) {
+              addressSpaces.insert(globalSpace);
+              return true;
+            })
+            .Case([&](amdgpu::AddressSpaceAttr) {
+              addressSpaces.insert(globalSpace);
+              return true;
+            })
+            .Default(false);
+    if (!isKnown) {
+      return ArrayAttr();
+    }
+  }
+
+  return rewriter.getArrayAttr(addressSpaces.getArrayRef());
+}
+
 /// Bufferization of iree_gpu.barrier_region. Always just bufferizes in place
 /// and gets inlined with barriers.
 struct BarrierRegionOpBufferizationInterface
-    : public BufferizableOpInterface::ExternalModel<
+    : BufferizableOpInterface::ExternalModel<
           BarrierRegionOpBufferizationInterface, IREE::GPU::BarrierRegionOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
@@ -121,8 +170,9 @@ struct BarrierRegionOpBufferizationInterface
       memrefType = bufferization::getBufferType(
           barrierOp.getOperand(argNum), options, state, invocationStack);
     }
-    if (failed(memrefType))
+    if (failed(memrefType)) {
       return failure();
+    }
     return cast<BaseMemRefType>(*memrefType);
   }
 
@@ -156,10 +206,13 @@ struct BarrierRegionOpBufferizationInterface
               .getResult());
     }
 
+    ArrayAttr addressSpaces = fencedGpuAddressSpaces(
+        rewriter, llvm::concat<Value>(*newOperands, *newResults));
     rewriter.setInsertionPoint(barrierOp);
-    gpu::BarrierOp::create(rewriter, barrierOp.getLoc());
+    gpu::BarrierOp::create(rewriter, barrierOp.getLoc(), addressSpaces);
     rewriter.setInsertionPointAfter(barrierOp);
-    auto afterBarrier = gpu::BarrierOp::create(rewriter, barrierOp.getLoc());
+    auto afterBarrier =
+        gpu::BarrierOp::create(rewriter, barrierOp.getLoc(), addressSpaces);
 
     rewriter.inlineBlockBefore(barrierOp.getBody(), afterBarrier,
                                tensorizedOperands);
@@ -173,7 +226,7 @@ struct BarrierRegionOpBufferizationInterface
 /// Bufferization of iree_gpu.value_barrier. Always just bufferizes in place
 /// and replaces with a barrier.
 struct ValueBarrierOpBufferizationInterface
-    : public BufferizableOpInterface::ExternalModel<
+    : BufferizableOpInterface::ExternalModel<
           ValueBarrierOpBufferizationInterface, IREE::GPU::ValueBarrierOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
@@ -207,8 +260,9 @@ struct ValueBarrierOpBufferizationInterface
     auto srcMemrefType = bufferization::getBufferType(
         barrierOp.getInputs()[cast<OpResult>(value).getResultNumber()], options,
         state, invocationStack);
-    if (failed(srcMemrefType))
+    if (failed(srcMemrefType)) {
       return failure();
+    }
     return cast<BaseMemRefType>(*srcMemrefType);
   }
 
@@ -220,8 +274,6 @@ struct ValueBarrierOpBufferizationInterface
       return failure();
     }
 
-    gpu::BarrierOp::create(rewriter, barrierOp.getLoc());
-
     SmallVector<Value> buffers;
     buffers.reserve(barrierOp.getNumOperands());
     for (auto input : barrierOp.getInputs()) {
@@ -232,6 +284,9 @@ struct ValueBarrierOpBufferizationInterface
       buffers.push_back(buffer.value());
     }
 
+    ArrayAttr addressSpaces = fencedGpuAddressSpaces(rewriter, buffers);
+    gpu::BarrierOp::create(rewriter, barrierOp.getLoc(), addressSpaces);
+
     // This operation bufferizes in place
     bufferization::replaceOpWithBufferizedValues(rewriter, op, buffers);
     return success();
@@ -241,8 +296,8 @@ struct ValueBarrierOpBufferizationInterface
 /// Bufferization of iree_gpu.yield. Bufferized as part of their enclosing ops,
 /// so this is for analysis only.
 struct YieldOpBufferizationInterface
-    : public BufferizableOpInterface::ExternalModel<
-          YieldOpBufferizationInterface, IREE::GPU::YieldOp> {
+    : BufferizableOpInterface::ExternalModel<YieldOpBufferizationInterface,
+                                             IREE::GPU::YieldOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
     return false;
@@ -280,8 +335,9 @@ struct YieldOpBufferizationInterface
       if (isa<TensorType>(value.getType())) {
         FailureOr<Value> maybeBuffer =
             getBuffer(rewriter, value, options, state);
-        if (failed(maybeBuffer))
+        if (failed(maybeBuffer)) {
           return failure();
+        }
         newResults.push_back(*maybeBuffer);
       } else {
         newResults.push_back(value);
@@ -297,20 +353,25 @@ struct YieldOpBufferizationInterface
 /// Bufferization of iree_gpu.coalesced_gather_dma. This op bufferizes to itself
 /// with memref operands instead of tensor operands.
 struct CoalescedGatherDMAOpBufferizationInterface
-    : public BufferizableOpInterface::ExternalModel<
+    : BufferizableOpInterface::ExternalModel<
           CoalescedGatherDMAOpBufferizationInterface,
           IREE::GPU::CoalescedGatherDMAOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
-    // This op reads from the source and indices tensors.
     auto gatherOp = cast<IREE::GPU::CoalescedGatherDMAOp>(op);
-    return opOperand.get() == gatherOp.getIndices() ||
-           opOperand.get() == gatherOp.getSource();
+    if (opOperand.get() == gatherOp.getSource()) {
+      return true;
+    }
+    for (Value index : gatherOp.getIndices()) {
+      if (opOperand.get() == index && isa<TensorType>(index.getType())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   bool bufferizesToMemoryWrite(Operation *op, OpOperand &opOperand,
                                const AnalysisState &state) const {
-    // This op writes to the init/destination tensor.
     auto gatherOp = cast<IREE::GPU::CoalescedGatherDMAOp>(op);
     return opOperand.get() == gatherOp.getInit();
   }
@@ -319,12 +380,27 @@ struct CoalescedGatherDMAOpBufferizationInterface
   getAliasingValues(Operation *op, OpOperand &opOperand,
                     const AnalysisState &state) const {
     auto gatherOp = cast<IREE::GPU::CoalescedGatherDMAOp>(op);
-    SmallVector<bufferization::AliasingValue> alist;
-    // The result aliases with the init operand.
     if (opOperand.get() == gatherOp.getInit()) {
-      alist.push_back({gatherOp.getResult(), BufferRelation::Equivalent});
+      // The result (if it exists) is equivalent to the init operand.
+      if (gatherOp.getResult()) {
+        return {{gatherOp.getResult(), BufferRelation::Equivalent}};
+      }
     }
-    return alist;
+    return {};
+  }
+
+  bool mustBufferizeInPlace(Operation *op, OpOperand &opOperand,
+                            const AnalysisState &state) const {
+    auto gatherOp = cast<IREE::GPU::CoalescedGatherDMAOp>(op);
+    // The init operand must always bufferize in place to avoid copies.
+    // This is critical when used inside scf.forall with shared_outs.
+    return opOperand.get() == gatherOp.getInit();
+  }
+
+  bool isWritable(Operation *op, Value value,
+                  const AnalysisState &state) const {
+    // The result (if it exists) is writable since it's the same as the init.
+    return true;
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
@@ -332,36 +408,56 @@ struct CoalescedGatherDMAOpBufferizationInterface
                           bufferization::BufferizationState &state) const {
     auto gatherOp = cast<IREE::GPU::CoalescedGatherDMAOp>(op);
 
-    // Get the bufferized operands.
-    FailureOr<Value> indicesBuffer =
-        getBuffer(rewriter, gatherOp.getIndices(), options, state);
     FailureOr<Value> sourceBuffer =
         getBuffer(rewriter, gatherOp.getSource(), options, state);
     FailureOr<Value> initBuffer =
         getBuffer(rewriter, gatherOp.getInit(), options, state);
 
-    if (failed(indicesBuffer) || failed(sourceBuffer) || failed(initBuffer)) {
+    if (failed(sourceBuffer) || failed(initBuffer)) {
       return failure();
     }
 
-    // Check if we're inside an scf.forall.in_parallel block.
-    // If so, we need to move the op outside of it.
-    Operation *parentOp = gatherOp->getParentOp();
-    if (isa_and_nonnull<scf::InParallelOp>(parentOp)) {
-      // Get the forall op containing the in_parallel.
-      auto forallOp = parentOp->getParentOfType<scf::ForallOp>();
-      if (forallOp) {
-        // Insert the memref version before the in_parallel block.
-        rewriter.setInsertionPoint(parentOp);
-        IREE::GPU::CoalescedGatherDMAOp::create(
-            rewriter, gatherOp.getLoc(), initBuffer->getType(), *indicesBuffer,
-            *sourceBuffer, *initBuffer);
-        // The result is the same as the init buffer.
-        bufferization::replaceOpWithBufferizedValues(rewriter, op, *initBuffer);
-        return success();
+    // Bufferize tensor indices to memrefs, keep vector indices as-is.
+    SmallVector<Value> bufferizedIndices;
+    for (Value index : gatherOp.getIndices()) {
+      if (isa<TensorType>(index.getType())) {
+        FailureOr<Value> indexBuffer =
+            getBuffer(rewriter, index, options, state);
+        if (failed(indexBuffer)) {
+          return failure();
+        }
+        bufferizedIndices.push_back(*indexBuffer);
+      } else {
+        bufferizedIndices.push_back(index);
       }
     }
-    return failure();
+
+    // Insert the memref operation in the forall body, before the in_parallel
+    // terminator (not inside the in_parallel region which will be removed).
+    auto inParallelOp = gatherOp->getParentOfType<scf::InParallelOp>();
+    if (inParallelOp) {
+      // Insert before the in_parallel terminator (in the forall body).
+      rewriter.setInsertionPoint(inParallelOp);
+    } else {
+      // Not in in_parallel, just insert at current location.
+      rewriter.setInsertionPoint(gatherOp);
+    }
+
+    // Create the bufferized DMA operation with no results (memref form).
+    IREE::GPU::CoalescedGatherDMAOp::create(
+        rewriter, gatherOp.getLoc(), TypeRange{}, *sourceBuffer,
+        bufferizedIndices, *initBuffer, gatherOp.getLane(),
+        gatherOp.getInBoundsAttr());
+
+    // Replace the tensor op. If it has a result, replace with the init buffer.
+    // If it has no result (inside scf.forall.in_parallel), just erase it.
+    if (gatherOp.getResult()) {
+      replaceOpWithBufferizedValues(rewriter, op, *initBuffer);
+    } else {
+      rewriter.eraseOp(op);
+    }
+
+    return success();
   }
 };
 
@@ -380,7 +476,7 @@ static bool hasStorageBufferMemSpace(BaseMemRefType m) {
 /// `storage_buffer`, else just forwards the input. This op never
 /// reads or writes.
 struct BufferResourceCastOpBufferizationInterface
-    : public BufferizableOpInterface::ExternalModel<
+    : BufferizableOpInterface::ExternalModel<
           BufferResourceCastOpBufferizationInterface,
           IREE::GPU::BufferResourceCastOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
@@ -413,8 +509,9 @@ struct BufferResourceCastOpBufferizationInterface
     assert(value.getDefiningOp() == castOp && "invalid value");
     auto srcMemrefType = bufferization::getBufferType(
         castOp.getInput(), options, state, invocationStack);
-    if (failed(srcMemrefType))
+    if (failed(srcMemrefType)) {
       return failure();
+    }
 
     auto baseMemrefType = cast<BaseMemRefType>(srcMemrefType.value());
     if (!hasStorageBufferMemSpace(baseMemrefType)) {

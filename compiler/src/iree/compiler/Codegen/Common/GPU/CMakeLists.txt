@@ -48,7 +48,7 @@ iree_cc_library(
     "GPUVectorDistribution.h"
     "Passes.h"
   SRCS
-    "AMDGPUDistributeContract.cpp"
+    "AMDGPULowerCoalescedDMAToGatherLDS.cpp"
     "DecomposeHorizontallyFusedGemms.cpp"
     "ExpandGPUOps.cpp"
     "GPUAllocPrivateMemoryForDPSOps.cpp"
@@ -57,7 +57,7 @@ iree_cc_library(
     "GPUBubbleResourceCasts.cpp"
     "GPUCheckResourceUsage.cpp"
     "GPUCombineLayoutTransformation.cpp"
-    "GPUCombineValueBarriers.cpp"
+    "GPUCombineValueSemanticBarriers.cpp"
     "GPUConvertToCoalescedDMA.cpp"
     "GPUCreateFastSlowPath.cpp"
     "GPUDistribute.cpp"
@@ -66,11 +66,12 @@ iree_cc_library(
     "GPUDistributeScfFor.cpp"
     "GPUDistributeSharedMemoryCopy.cpp"
     "GPUDistributionPatterns.cpp"
+    "GPUExpandDimensions.cpp"
     "GPUFuseAndHoistParallelLoops.cpp"
+    "GPUFuseSubgroupConsumers.cpp"
     "GPUGeneralizeNamedOps.cpp"
     "GPUGreedilyDistributeToThreads.cpp"
     "GPUInferMemorySpace.cpp"
-    "GPULowerToGlobalLoads.cpp"
     "GPUMultiBuffering.cpp"
     "GPUNestedLayoutDistributionPatterns.cpp"
     "GPUPackToIntrinsics.cpp"
@@ -148,7 +149,10 @@ iree_cc_library(
     iree::compiler::Codegen::Dialect::Codegen::Utils
     iree::compiler::Codegen::Dialect::GPU::IR::IREEGPUDialect
     iree::compiler::Codegen::Dialect::GPU::Transforms::GPUTransforms
+    iree::compiler::Codegen::Dialect::PCF::IR
+    iree::compiler::Codegen::Dialect::PCF::Transforms
     iree::compiler::Codegen::Dialect::VectorExt::IR::IREEVectorExtDialect
+    iree::compiler::Codegen::Dialect::VectorExt::Transforms::VectorExtTransforms
     iree::compiler::Codegen::Interfaces::PartitionableLoopsInterface
     iree::compiler::Codegen::Interfaces::TensorMaskingOpInterface
     iree::compiler::Codegen::Transforms
@@ -159,6 +163,7 @@ iree_cc_library(
     iree::compiler::Dialect::LinalgExt::Transforms
     iree::compiler::Dialect::LinalgExt::Utils
     iree::compiler::Dialect::TensorExt::IR
+    iree::compiler::Dialect::Util::IR
     iree::compiler::Utils
   PUBLIC
 )

@@ -29,13 +29,14 @@ namespace {
 // This is to support ops that are "pure" but can't be marked as such because
 // the MLIR CSE pass would deduplicate them.
 template <typename Op>
-struct ElideUnusedOp : public OpRewritePattern<Op> {
+struct ElideUnusedOp : OpRewritePattern<Op> {
   explicit ElideUnusedOp(MLIRContext *context)
       : OpRewritePattern<Op>(context, /*benefit=*/1000) {}
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
-    if (!op.use_empty())
+    if (!op.use_empty()) {
       return failure();
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -78,8 +79,7 @@ namespace {
 // %2 = hal.tensor.transients %1 : tensor<?xf32>{%dim} from %storage2
 // =>
 // %2 = hal.tensor.transients %0 : tensor<?xf32>{%dim} from %storage2
-struct FoldConsecutiveTransientsOps
-    : public OpRewritePattern<TensorTransientsOp> {
+struct FoldConsecutiveTransientsOps : OpRewritePattern<TensorTransientsOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(TensorTransientsOp op,
                                 PatternRewriter &rewriter) const override {
@@ -113,8 +113,7 @@ void TensorTransientsOp::getCanonicalizationPatterns(RewritePatternSet &results,
 namespace {
 
 /// Deduplicates hal.tensor.barrier operands.
-struct DeduplicateTensorBarrierSources
-    : public OpRewritePattern<TensorBarrierOp> {
+struct DeduplicateTensorBarrierSources : OpRewritePattern<TensorBarrierOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(TensorBarrierOp op,
                                 PatternRewriter &rewriter) const override {
@@ -159,7 +158,7 @@ namespace {
 
 /// Tries to fold either the device or queue affinity of a select when all
 /// potential values of either match.
-struct FoldAllocatorSelect : public OpRewritePattern<AllocatorSelectOp> {
+struct FoldAllocatorSelect : OpRewritePattern<AllocatorSelectOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(AllocatorSelectOp op,
                                 PatternRewriter &rewriter) const override {
@@ -211,8 +210,7 @@ void AllocatorSelectOp::getCanonicalizationPatterns(RewritePatternSet &results,
 namespace {
 
 /// Folds hal.buffer.subspans into buffer view creation subspans.
-struct FoldBufferViewCreateSubspan
-    : public OpRewritePattern<BufferViewCreateOp> {
+struct FoldBufferViewCreateSubspan : OpRewritePattern<BufferViewCreateOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(BufferViewCreateOp op,
                                 PatternRewriter &rewriter) const override {
@@ -230,8 +228,9 @@ struct FoldBufferViewCreateSubspan
       needsUpdate = true;
     }
     rewriter.restoreInsertionPoint(ip);
-    if (!needsUpdate)
+    if (!needsUpdate) {
       return failure();
+    }
     rewriter.modifyOpInPlace(op, [&]() {
       op.getSourceBufferMutable().assign(newSourceBuffer);
       op.getSourceOffsetMutable().assign(newSourceOffset);
@@ -273,8 +272,7 @@ namespace {
 
 /// Skips a hal.command_buffer.device accessor when the device was created in
 /// the same scope.
-struct SkipCommandBufferDeviceOp
-    : public OpRewritePattern<CommandBufferDeviceOp> {
+struct SkipCommandBufferDeviceOp : OpRewritePattern<CommandBufferDeviceOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(CommandBufferDeviceOp op,
@@ -299,7 +297,7 @@ namespace {
 
 /// Folds hal.buffer.subspans into buffer fill offsets.
 struct FoldCommandBufferFillBufferSubspans
-    : public OpRewritePattern<CommandBufferFillBufferOp> {
+    : OpRewritePattern<CommandBufferFillBufferOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(CommandBufferFillBufferOp op,
@@ -318,8 +316,9 @@ struct FoldCommandBufferFillBufferSubspans
       needsUpdate = true;
     }
     rewriter.restoreInsertionPoint(ip);
-    if (!needsUpdate)
+    if (!needsUpdate) {
       return failure();
+    }
     rewriter.modifyOpInPlace(op, [&]() {
       op.getTargetBufferMutable().assign(newTargetBuffer);
       op.getTargetOffsetMutable().assign(newTargetOffset);
@@ -339,7 +338,7 @@ namespace {
 
 /// Folds hal.buffer.subspans into buffer update offsets.
 struct FoldCommandBufferUpdateBufferSubspans
-    : public OpRewritePattern<CommandBufferUpdateBufferOp> {
+    : OpRewritePattern<CommandBufferUpdateBufferOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(CommandBufferUpdateBufferOp op,
@@ -358,8 +357,9 @@ struct FoldCommandBufferUpdateBufferSubspans
       needsUpdate = true;
     }
     rewriter.restoreInsertionPoint(ip);
-    if (!needsUpdate)
+    if (!needsUpdate) {
       return failure();
+    }
     rewriter.modifyOpInPlace(op, [&]() {
       op.getTargetBufferMutable().assign(newTargetBuffer);
       op.getTargetOffsetMutable().assign(newTargetOffset);
@@ -379,7 +379,7 @@ namespace {
 
 /// Folds hal.buffer.subspans into buffer copy offsets.
 struct FoldCommandBufferCopyBufferSubspans
-    : public OpRewritePattern<CommandBufferCopyBufferOp> {
+    : OpRewritePattern<CommandBufferCopyBufferOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(CommandBufferCopyBufferOp op,
@@ -408,8 +408,9 @@ struct FoldCommandBufferCopyBufferSubspans
       needsUpdate = true;
     }
     rewriter.restoreInsertionPoint(ip);
-    if (!needsUpdate)
+    if (!needsUpdate) {
       return failure();
+    }
     rewriter.modifyOpInPlace(op, [&]() {
       op.getSourceBufferMutable().assign(newSourceBuffer);
       op.getSourceOffsetMutable().assign(newSourceOffset);
@@ -432,7 +433,7 @@ namespace {
 /// Folds hal.buffer.subspans into dispatch bindings.
 /// The binding range is always equal to or a subset of the subspan.
 template <typename OpT>
-struct FoldCommandBufferDispatchBufferSubspan : public OpRewritePattern<OpT> {
+struct FoldCommandBufferDispatchBufferSubspan : OpRewritePattern<OpT> {
   using OpRewritePattern<OpT>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(OpT op,
@@ -444,8 +445,9 @@ struct FoldCommandBufferDispatchBufferSubspan : public OpRewritePattern<OpT> {
     auto bindingOffsets = llvm::to_vector(op.getBindingOffsets());
     for (size_t i = 0; i < bindingBuffers.size(); ++i) {
       auto *definingOp = bindingBuffers[i].getDefiningOp();
-      if (!definingOp)
+      if (!definingOp) {
         continue;
+      }
       if (auto subspanOp = dyn_cast<IREE::HAL::BufferSubspanOp>(definingOp)) {
         needsUpdate = true;
         bindingBuffers[i] = subspanOp.getSourceBuffer();
@@ -454,8 +456,9 @@ struct FoldCommandBufferDispatchBufferSubspan : public OpRewritePattern<OpT> {
       }
     }
     rewriter.restoreInsertionPoint(ip);
-    if (!needsUpdate)
+    if (!needsUpdate) {
       return failure();
+    }
     rewriter.modifyOpInPlace(op, [&]() {
       auto mutableBindingBuffers = op.getBindingBuffersMutable();
       mutableBindingBuffers.clear();
@@ -482,15 +485,16 @@ namespace {
 /// Folds hal.buffer.subspans into the indirect dispatch workgroup count.
 /// The binding range is always equal to or a subset of the subspan.
 struct FoldCommandBufferDispatchIndirectBufferSubspan
-    : public OpRewritePattern<CommandBufferDispatchIndirectOp> {
+    : OpRewritePattern<CommandBufferDispatchIndirectOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(CommandBufferDispatchIndirectOp op,
                                 PatternRewriter &rewriter) const override {
     Value workgroupsBuffer = op.getWorkgroupsBuffer();
     auto *definingOp = workgroupsBuffer.getDefiningOp();
-    if (!definingOp)
+    if (!definingOp) {
       return failure();
+    }
     Value workgroupsOffset = op.getWorkgroupsOffset();
     if (auto subspanOp = dyn_cast<IREE::HAL::BufferSubspanOp>(definingOp)) {
       workgroupsBuffer = subspanOp.getSourceBuffer();
@@ -526,18 +530,21 @@ void CommandBufferDispatchIndirectOp::getCanonicalizationPatterns(
 // same basic block. We need an abstract interpreter to do much more as we'd
 // need to track conditionals/branching logic.
 static bool isOpAlwaysExecutedWith(Operation *before, Operation *after) {
-  if (before == after)
+  if (before == after) {
     return true;
-  if (before->getBlock() != after->getBlock())
+  }
+  if (before->getBlock() != after->getBlock()) {
     return false;
+  }
   return before->isBeforeInBlock(after);
 }
 
 // Returns true if |op| was hoisted before |insertBefore| without breaking
 // SSA invariants. Returns false if no IR modifications were made.
 static bool tryHoistOpBeforeUser(Operation *op, Operation *insertBefore) {
-  if (op == insertBefore)
+  if (op == insertBefore) {
     return false;
+  }
 
   // Currently conservative - should be doing a domination check.
   if (op->getBlock() != insertBefore->getBlock()) {
@@ -569,7 +576,7 @@ namespace {
 /// Swaps a device queue barrier with an immediate host fence signal when the
 /// wait fence is immediately resolved (null).
 struct ImmediatelyResolveDeviceQueueBarrier
-    : public OpRewritePattern<DeviceQueueBarrierOp> {
+    : OpRewritePattern<DeviceQueueBarrierOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(DeviceQueueBarrierOp barrierOp,
                                 PatternRewriter &rewriter) const override {
@@ -597,8 +604,7 @@ struct ImmediatelyResolveDeviceQueueBarrier
 ///  hal.device.queue.execute wait(%fence0) signal(%fence1)
 /// ->
 ///  hal.device.queue.barrier signal(%fence1)
-struct HoistDeviceQueueBarrierChain
-    : public OpRewritePattern<DeviceQueueBarrierOp> {
+struct HoistDeviceQueueBarrierChain : OpRewritePattern<DeviceQueueBarrierOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(DeviceQueueBarrierOp barrierOp,
                                 PatternRewriter &rewriter) const override {
@@ -654,8 +660,7 @@ struct HoistDeviceQueueBarrierChain
 ///  hal.device.queue.barrier wait(%b) signal(%c)
 /// ->
 ///  hal.device.queue.execute wait(%a) signal(%c) commands(...)
-struct ElideDeviceQueueBarrierOp
-    : public OpRewritePattern<DeviceQueueBarrierOp> {
+struct ElideDeviceQueueBarrierOp : OpRewritePattern<DeviceQueueBarrierOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(DeviceQueueBarrierOp barrierOp,
                                 PatternRewriter &rewriter) const override {
@@ -751,7 +756,7 @@ namespace {
 /// Removes the condition region and fallback from an export that will always be
 /// selected. This happens if the condition region is folded using a specialized
 /// target environment that allows for compile-time query evaluation.
-struct DropTrueConditionRegion : public OpRewritePattern<ExecutableExportOp> {
+struct DropTrueConditionRegion : OpRewritePattern<ExecutableExportOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(ExecutableExportOp exportOp,
                                 PatternRewriter &rewriter) const override {
@@ -811,11 +816,13 @@ static void rewriteToOneReturn(int numResults, Region &region,
   // Get all of the return ops - if there's only one then the requirement is
   // already satisfied and we can exit early.
   auto returnOps = llvm::to_vector(region.getOps<IREE::HAL::ReturnOp>());
-  if (returnOps.size() <= 1)
+  if (returnOps.size() <= 1) {
     return; // no-op
+  }
   SmallVector<Location> returnLocs;
-  for (auto returnOp : returnOps)
+  for (auto returnOp : returnOps) {
     returnLocs.push_back(returnOp.getLoc());
+  }
 
   // Create the new exit block with arguments matching 1:1 with results.
   auto anyReturnOp = returnOps.front();
@@ -839,8 +846,7 @@ static void rewriteToOneReturn(int numResults, Region &region,
 /// Merges hal.executable.constant.block ops together into one.
 /// Duplicate keys are ignored and will be cleaned up by
 /// DeduplicateExecutableConstantBlockKeys.
-struct MergeExecutableConstantBlocks
-    : public OpRewritePattern<ExecutableVariantOp> {
+struct MergeExecutableConstantBlocks : OpRewritePattern<ExecutableVariantOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(ExecutableVariantOp variantOp,
                                 PatternRewriter &rewriter) const override {
@@ -860,8 +866,9 @@ struct MergeExecutableConstantBlocks
     SmallVector<Location> resultLocs;
     for (auto blockOp : blockOps) {
       blockLocs.push_back(blockOp.getLoc());
-      if (blockOp.getNumArguments() > 0)
+      if (blockOp.getNumArguments() > 0) {
         anyRequireDevice = true;
+      }
       llvm::append_range(resultTypes, blockOp.getResultTypes());
       llvm::append_range(resultKeys, blockOp.getKeys().getValue());
       llvm::append_range(
@@ -967,8 +974,9 @@ static void filterReturnOperands(ExecutableConstantBlockOp blockOp,
        llvm::make_early_inc_range(blockOp.getOps<IREE::HAL::ReturnOp>())) {
     SmallVector<Value> operands;
     for (auto [i, operand] : llvm::enumerate(returnOp.getOperands())) {
-      if (preservedIndices.test(i))
+      if (preservedIndices.test(i)) {
         operands.push_back(operand);
+      }
     }
     returnOp.getOperandsMutable().assign(operands);
   }
@@ -976,15 +984,17 @@ static void filterReturnOperands(ExecutableConstantBlockOp blockOp,
 
 /// Drops the %device argument of a constant block region if unused.
 struct DropUnusedExecutableConstantBlockDeviceArg
-    : public OpRewritePattern<ExecutableConstantBlockOp> {
+    : OpRewritePattern<ExecutableConstantBlockOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(ExecutableConstantBlockOp blockOp,
                                 PatternRewriter &rewriter) const override {
-    if (blockOp.getNumArguments() == 0)
+    if (blockOp.getNumArguments() == 0) {
       return failure();
+    }
     auto deviceArg = blockOp.getArgument(0);
-    if (!deviceArg.use_empty())
+    if (!deviceArg.use_empty()) {
       return failure();
+    }
     rewriter.modifyOpInPlace(blockOp, [&]() {
       // Type conversion here shouldn't fail.
       (void)blockOp.eraseArgument(0);
@@ -999,7 +1009,7 @@ struct DropUnusedExecutableConstantBlockDeviceArg
 /// one found. There's no verification that the values produced are the same
 /// as users are expected to uniquely name their keys.
 struct DeduplicateExecutableConstantBlockKeys
-    : public OpRewritePattern<ExecutableConstantBlockOp> {
+    : OpRewritePattern<ExecutableConstantBlockOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(ExecutableConstantBlockOp blockOp,
                                 PatternRewriter &rewriter) const override {
@@ -1057,20 +1067,22 @@ void FenceCreateOp::getCanonicalizationPatterns(RewritePatternSet &results,
 //===----------------------------------------------------------------------===//
 
 OpFoldResult FenceJoinOp::fold(FoldAdaptor operands) {
-  if (getFences().size() == 1)
+  if (getFences().size() == 1) {
     return getFences().front();
+  }
   return {};
 }
 
 namespace {
 
 /// Replaces a fence join with no operands with a null value.
-struct ElideEmptyFenceJoin : public OpRewritePattern<FenceJoinOp> {
+struct ElideEmptyFenceJoin : OpRewritePattern<FenceJoinOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(FenceJoinOp op,
                                 PatternRewriter &rewriter) const override {
-    if (op.getNumOperands() != 0)
+    if (op.getNumOperands() != 0) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<IREE::Util::NullOp>(op,
                                                     op.getResult().getType());
     return success();
@@ -1091,19 +1103,21 @@ deduplicateFenceOperands(ValueRange operands) {
     newOperands.insert(operand);
   }
 
-  if (newOperands.size() == operands.size())
+  if (newOperands.size() == operands.size()) {
     return std::nullopt;
+  }
   return newOperands.takeVector();
 }
 
 /// Deduplicates fence join operands and drops nulls.
-struct DeduplicateFenceJoinFences : public OpRewritePattern<FenceJoinOp> {
+struct DeduplicateFenceJoinFences : OpRewritePattern<FenceJoinOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(FenceJoinOp op,
                                 PatternRewriter &rewriter) const override {
     auto newOperands = deduplicateFenceOperands(op.getFences());
-    if (!newOperands)
+    if (!newOperands) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<FenceJoinOp>(
         op, op.getResult().getType(), op.getFlagsAttr(), newOperands.value());
     return success();
@@ -1136,15 +1150,16 @@ namespace {
 ///  hal.fence.signal<%fence : !hal.fence>
 /// ->
 ///  %fence = util.null : !hal.fence
-struct ElideSignaledFence : public OpRewritePattern<FenceSignalOp> {
+struct ElideSignaledFence : OpRewritePattern<FenceSignalOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(FenceSignalOp signalOp,
                                 PatternRewriter &rewriter) const override {
     auto fence = signalOp.getFence();
     auto createOp =
         dyn_cast_if_present<IREE::HAL::FenceCreateOp>(fence.getDefiningOp());
-    if (!createOp)
+    if (!createOp) {
       return failure();
+    }
 
     // TODO(benvanik): broader analysis - likely in a dedicated fence elision
     // pass so we can do IPO. For now block-only.
@@ -1190,25 +1205,27 @@ void FenceSignalOp::getCanonicalizationPatterns(RewritePatternSet &results,
 namespace {
 
 /// Elides a fence await with no fences.
-struct ElideEmptyFenceAwait : public OpRewritePattern<FenceAwaitOp> {
+struct ElideEmptyFenceAwait : OpRewritePattern<FenceAwaitOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(FenceAwaitOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!op.getFences().empty())
+    if (!op.getFences().empty()) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<arith::ConstantIntOp>(op, /*ok=*/0, 32);
     return success();
   }
 };
 
 /// Deduplicates fence await operands and drops nulls.
-struct DeduplicateFenceAwaitFences : public OpRewritePattern<FenceAwaitOp> {
+struct DeduplicateFenceAwaitFences : OpRewritePattern<FenceAwaitOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(FenceAwaitOp op,
                                 PatternRewriter &rewriter) const override {
     auto newOperands = deduplicateFenceOperands(op.getFences());
-    if (newOperands == std::nullopt)
+    if (newOperands == std::nullopt) {
       return failure();
+    }
     // TODO(benvanik): resolve flag sets.
     rewriter.replaceOpWithNewOp<FenceAwaitOp>(
         op, op.getStatus().getType(), op.getTimeoutMillis(), op.getFlagsAttr(),

@@ -2,6 +2,7 @@
 // RUN: iree-opt --pass-pipeline="builtin.module(func.func(iree-codegen-generic-vectorization{enable-vector-masking=true}))" --split-input-file %s | FileCheck %s -check-prefix=CHECK-MASK
 // RUN: iree-opt --pass-pipeline="builtin.module(func.func(iree-codegen-generic-vectorization{fold-cast-into-contract=true}))" --split-input-file %s | FileCheck %s -check-prefix=CHECK-FOLD
 // RUN: iree-opt --pass-pipeline="builtin.module(func.func(iree-codegen-generic-vectorization{vectorize-to-transfer-gather=true}))" --split-input-file %s | FileCheck %s --check-prefix=CHECK-GATHER
+// RUN: iree-opt --pass-pipeline="builtin.module(func.func(iree-codegen-generic-vectorization{vectorize-map-store=true}))" --split-input-file %s | FileCheck %s --check-prefix=CHECK-MAP-STORE
 
 func.func @matmul(%lhs: tensor<3x4xf16>, %rhs: tensor<4x5xf16>, %acc: tensor<3x5xf32>) -> tensor<3x5xf32> {
   %result = linalg.matmul ins(%lhs, %rhs: tensor<3x4xf16>, tensor<4x5xf16>) outs(%acc: tensor<3x5xf32>) -> tensor<3x5xf32>
@@ -328,15 +329,13 @@ func.func @vectorize_dynamic_shapes_pack_scalable_vec_and_tile_size(%src: tensor
 #map3 = affine_map<(d0) -> (d0 ceildiv 16)>
 func.func @single_dynamic_unpack_infer_vector_size(%arg0: tensor<?x?x16x16xf32>, %arg1: tensor<?x?xf32>) -> tensor<?x?xf32> {
   %c0 = arith.constant 0 : index
-  %dim = tensor.dim %arg1, %c0 : tensor<?x?xf32>
   %c1 = arith.constant 1 : index
-  %dim_0 = tensor.dim %arg1, %c1 : tensor<?x?xf32>
-  %c0_1 = arith.constant 0 : index
   %c16 = arith.constant 16 : index
-  %0 = scf.for %arg2 = %c0_1 to %dim step %c16 iter_args(%arg3 = %arg1) -> (tensor<?x?xf32>) {
-    %c0_2 = arith.constant 0 : index
-    %c32 = arith.constant 32 : index
-    %1 = scf.for %arg4 = %c0_2 to %dim_0 step %c32 iter_args(%arg5 = %arg3) -> (tensor<?x?xf32>) {
+  %c32 = arith.constant 32 : index
+  %dim = tensor.dim %arg1, %c0 : tensor<?x?xf32>
+  %dim_0 = tensor.dim %arg1, %c1 : tensor<?x?xf32>
+  %0 = scf.for %arg2 = %c0 to %dim step %c16 iter_args(%arg3 = %arg1) -> (tensor<?x?xf32>) {
+    %1 = scf.for %arg4 = %c0 to %dim_0 step %c32 iter_args(%arg5 = %arg3) -> (tensor<?x?xf32>) {
       %2 = affine.min #map(%arg2)[%dim]
       %3 = affine.min #map1(%arg4)[%dim_0]
       %4 = affine.apply #map2(%arg2)
@@ -444,12 +443,11 @@ func.func @generic_unpack_infer_vector_size(%arg0: tensor<?x?x16x16xf32>, %arg1:
 // CHECK-MASK-LABEL: @val_defined_by_scf_for
 func.func @val_defined_by_scf_for(%arg0: index, %arg1: index) -> tensor<?x?xf32> {
   %c0 = arith.constant 0 : index
-  %0 = tensor.empty() : tensor<1x1x16x16xf32>
-  %1 = tensor.empty(%arg0, %arg1) : tensor<?x?xf32>
-  %c0_0 = arith.constant 0 : index
   %c16 = arith.constant 16 : index
   %c2 = arith.constant 2 : index
-  %2 = scf.for %arg2 = %c0_0 to %c16 step %c2 iter_args(%arg3 = %0) -> (tensor<1x1x16x16xf32>) {
+  %0 = tensor.empty() : tensor<1x1x16x16xf32>
+  %1 = tensor.empty(%arg0, %arg1) : tensor<?x?xf32>
+  %2 = scf.for %arg2 = %c0 to %c16 step %c2 iter_args(%arg3 = %0) -> (tensor<1x1x16x16xf32>) {
     scf.yield %arg3 : tensor<1x1x16x16xf32>
   }
   %unpack = linalg.unpack %2 outer_dims_perm = [0, 1] inner_dims_pos = [0, 1] inner_tiles = [16, 16] into %1 : tensor<1x1x16x16xf32> -> tensor<?x?xf32>
@@ -677,7 +675,7 @@ func.func @paged_gather_read(%storage : !storage, %ind: !ind) -> !x {
 // CHECK-GATHER: %[[INDEX_LOAD:.+]] = vector.transfer_read %[[ARG1]]
 // CHECK-GATHER: %[[INDEX_CAST:.+]] = arith.index_cast %[[INDEX_LOAD]] : vector<128xi64> to vector<128xindex>
 // CHECK-GATHER: %[[GATHER:.+]] = iree_vector_ext.transfer_gather %[[ARG0]]
-// CHECK-GATHER-SAME: [%[[INDEX_CAST]]: vector<128xindex>, None]
+// CHECK-GATHER-SAME: [%[[INDEX_CAST]] : vector<128xindex>]
 // CHECK-GATHER: vector.transfer_write %[[GATHER]], %{{.*}}
 
 // -----
@@ -706,7 +704,6 @@ func.func @contiguous_gather_read(%storage : !storage) -> !x {
 // CHECK-GATHER-LABEL: @contiguous_gather_read
 // CHECK-GATHER-SAME: %[[ARG0:.+]]: tensor<8192x8xf16>
 // CHECK-GATHER: %[[GATHER:.+]] = iree_vector_ext.transfer_gather %[[ARG0]]
-// CHECK-GATHER-SAME: [None, None]
 // CHECK-GATHER: vector.transfer_write %[[GATHER]], %{{.*}}
 
 // -----
@@ -721,7 +718,7 @@ func.func @contiguous_gather_read(%storage : !storage) -> !x {
     iterator_types = ["parallel", "parallel"]
 }
 
-func.func @negative_strided_paged_gather_read(%storage : !storage, %ind: !ind) -> !x {
+func.func @strided_paged_gather_read(%storage : !storage, %ind: !ind) -> !x {
   %x = tensor.empty() : !x
   %c2 = arith.constant 2 : index
   %x_g = linalg.generic #gather
@@ -737,10 +734,10 @@ func.func @negative_strided_paged_gather_read(%storage : !storage, %ind: !ind) -
   return %x_g : !x
 }
 
-// For now, the vectorizer does not walk back on binary ops to find a mapping
-// from the iteration space to the memory space. This can be improved in future.
-// CHECK-GATHER-LABEL: @negative_strided_paged_gather_read
-// CHECK-GATHER: linalg.generic
+// The strided index (arith.muli) is treated as a gathered dimension.
+// CHECK-GATHER-LABEL: @strided_paged_gather_read
+// CHECK-GATHER: %[[GATHER:.+]] = iree_vector_ext.transfer_gather
+// CHECK-GATHER: vector.transfer_write %[[GATHER]], %{{.*}}
 
 // -----
 
@@ -777,7 +774,7 @@ func.func @full_gather_read(%storage : !storage, %ind0: !ind0, %ind1 : !ind1) ->
 // CHECK-GATHER-DAG: %[[CAST0:.+]] = arith.index_cast %[[IDX0]] : vector<128xi64> to vector<128xindex>
 // CHECK-GATHER-DAG: %[[CAST1:.+]] = arith.index_cast %[[IDX1]] : vector<8xi64> to vector<8xindex>
 // CHECK-GATHER-DAG: %[[GATHER:.+]] = iree_vector_ext.transfer_gather %[[ARG0]]
-// CHECK-GATHER-SAME: [%[[CAST0]]: vector<128xindex>, %[[CAST1]]: vector<8xindex>]
+// CHECK-GATHER-SAME: [%[[CAST0]], %[[CAST1]] : vector<128xindex>, vector<8xindex>]
 // CHECK-GATHER: vector.transfer_write %[[GATHER]], %{{.*}}
 
 // -----
@@ -885,3 +882,499 @@ func.func @ukernel_unpack_infer_vector_sizes(%lhs: tensor<1x8x16x1xf32>, %rhs: t
 // CHECK-MASK:         %[[READ:.*]] = vector.transfer_read %[[UKERNEL]]{{.*}} : tensor<1x1x16x16xf32>, vector<1x1x16x16xf32>
 // CHECK-MASK:         %[[CAST:.*]] = vector.shape_cast %[[READ]] : vector<1x1x16x16xf32> to vector<16x16xf32>
 // CHECK-MASK:         vector.transfer_write %[[CAST]]{{.*}} : vector<16x16xf32>, tensor<16x16xf32>
+
+// -----
+
+func.func @arg_compare_implicit_index(%input: tensor<4x128xf32>,
+                                      %out_val: tensor<4xf32>,
+                                      %out_idx: tensor<4xi32>) -> (tensor<4xf32>, tensor<4xi32>) {
+  %result:2 = iree_linalg_ext.arg_compare
+    dimension(1)
+    ins(%input : tensor<4x128xf32>)
+    outs(%out_val, %out_idx : tensor<4xf32>, tensor<4xi32>) {
+  ^bb0(%a: f32, %b: f32):
+    %cmp = arith.cmpf ogt, %a, %b : f32
+    iree_linalg_ext.yield %cmp : i1
+  } -> tensor<4xf32>, tensor<4xi32>
+  return %result#0, %result#1 : tensor<4xf32>, tensor<4xi32>
+}
+// CHECK-LABEL: func.func @arg_compare_implicit_index
+// CHECK-SAME:    %[[INPUT:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %[[OUT_VAL:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %[[OUT_IDX:[a-zA-Z0-9]+]]
+// CHECK:         %[[INPUT_VEC:.+]] = vector.transfer_read %[[INPUT]]
+// CHECK-SAME:      tensor<4x128xf32>, vector<4x128xf32>
+// CHECK:         %[[OUT_VAL_VEC:.+]] = vector.transfer_read %[[OUT_VAL]]
+// CHECK-SAME:      tensor<4xf32>, vector<4xf32>
+// CHECK:         %[[OUT_IDX_VEC:.+]] = vector.transfer_read %[[OUT_IDX]]
+// CHECK-SAME:      tensor<4xi32>, vector<4xi32>
+// CHECK:         %[[RESULT_VAL:.+]], %[[RESULT_IDX:.+]] = iree_vector_ext.arg_compare
+// CHECK-SAME:      dimension(1)
+// CHECK-SAME:      ins(%[[INPUT_VEC]] : vector<4x128xf32>)
+// CHECK-SAME:      inits(%[[OUT_VAL_VEC]], %[[OUT_IDX_VEC]] : vector<4xf32>, vector<4xi32>)
+// CHECK:         ^bb0(%[[A:.+]]: f32, %[[B:.+]]: f32):
+// CHECK:           %[[CMP:.+]] = arith.cmpf ogt, %[[A]], %[[B]] : f32
+// CHECK:           iree_vector_ext.yield %[[CMP]] : i1
+// CHECK:         -> vector<4xf32>, vector<4xi32>
+// CHECK:         %[[WRITE_VAL:.+]] = vector.transfer_write %[[RESULT_VAL]], %[[OUT_VAL]]
+// CHECK-SAME:      vector<4xf32>, tensor<4xf32>
+// CHECK:         %[[WRITE_IDX:.+]] = vector.transfer_write %[[RESULT_IDX]], %[[OUT_IDX]]
+// CHECK-SAME:      vector<4xi32>, tensor<4xi32>
+// CHECK:         return %[[WRITE_VAL]], %[[WRITE_IDX]]
+
+// -----
+
+func.func @arg_compare_explicit_index(%partial_vals: tensor<4x32xf32>,
+                                      %partial_idxs: tensor<4x32xi32>,
+                                      %out_val: tensor<4xf32>,
+                                      %out_idx: tensor<4xi32>) -> (tensor<4xf32>, tensor<4xi32>) {
+  %result:2 = iree_linalg_ext.arg_compare
+    dimension(1)
+    ins(%partial_vals, %partial_idxs : tensor<4x32xf32>, tensor<4x32xi32>)
+    outs(%out_val, %out_idx : tensor<4xf32>, tensor<4xi32>) {
+  ^bb0(%a: f32, %b: f32):
+    %cmp = arith.cmpf ogt, %a, %b : f32
+    iree_linalg_ext.yield %cmp : i1
+  } -> tensor<4xf32>, tensor<4xi32>
+  return %result#0, %result#1 : tensor<4xf32>, tensor<4xi32>
+}
+// CHECK-LABEL: func.func @arg_compare_explicit_index
+// CHECK-SAME:    %[[PARTIAL_VALS:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %[[PARTIAL_IDXS:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %[[OUT_VAL:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %[[OUT_IDX:[a-zA-Z0-9]+]]
+// CHECK:         %[[VALS_VEC:.+]] = vector.transfer_read %[[PARTIAL_VALS]]
+// CHECK-SAME:      tensor<4x32xf32>, vector<4x32xf32>
+// CHECK:         %[[IDXS_VEC:.+]] = vector.transfer_read %[[PARTIAL_IDXS]]
+// CHECK-SAME:      tensor<4x32xi32>, vector<4x32xi32>
+// CHECK:         %[[OUT_VAL_VEC:.+]] = vector.transfer_read %[[OUT_VAL]]
+// CHECK-SAME:      tensor<4xf32>, vector<4xf32>
+// CHECK:         %[[OUT_IDX_VEC:.+]] = vector.transfer_read %[[OUT_IDX]]
+// CHECK-SAME:      tensor<4xi32>, vector<4xi32>
+// CHECK:         %[[RESULT_VAL:.+]], %[[RESULT_IDX:.+]] = iree_vector_ext.arg_compare
+// CHECK-SAME:      dimension(1)
+// CHECK-SAME:      ins(%[[VALS_VEC]], %[[IDXS_VEC]] : vector<4x32xf32>, vector<4x32xi32>)
+// CHECK-SAME:      inits(%[[OUT_VAL_VEC]], %[[OUT_IDX_VEC]] : vector<4xf32>, vector<4xi32>)
+// CHECK:         ^bb0(%[[A:.+]]: f32, %[[B:.+]]: f32):
+// CHECK:           %[[CMP:.+]] = arith.cmpf ogt, %[[A]], %[[B]] : f32
+// CHECK:           iree_vector_ext.yield %[[CMP]] : i1
+// CHECK:         -> vector<4xf32>, vector<4xi32>
+// CHECK:         %[[WRITE_VAL:.+]] = vector.transfer_write %[[RESULT_VAL]], %[[OUT_VAL]]
+// CHECK-SAME:      vector<4xf32>, tensor<4xf32>
+// CHECK:         %[[WRITE_IDX:.+]] = vector.transfer_write %[[RESULT_IDX]], %[[OUT_IDX]]
+// CHECK-SAME:      vector<4xi32>, tensor<4xi32>
+// CHECK:         return %[[WRITE_VAL]], %[[WRITE_IDX]]
+
+// -----
+
+func.func @arg_compare_with_index_base(%input: tensor<4x128xf32>,
+                                       %out_val: tensor<4xf32>,
+                                       %out_idx: tensor<4xi32>) -> (tensor<4xf32>, tensor<4xi32>) {
+  %base = arith.constant 64 : index
+  %result:2 = iree_linalg_ext.arg_compare
+    dimension(1)
+    ins(%input : tensor<4x128xf32>)
+    outs(%out_val, %out_idx : tensor<4xf32>, tensor<4xi32>)
+    index_base(%base : index) {
+  ^bb0(%a: f32, %b: f32):
+    %cmp = arith.cmpf ogt, %a, %b : f32
+    iree_linalg_ext.yield %cmp : i1
+  } -> tensor<4xf32>, tensor<4xi32>
+  return %result#0, %result#1 : tensor<4xf32>, tensor<4xi32>
+}
+// CHECK-LABEL: func.func @arg_compare_with_index_base
+// CHECK-SAME:    %[[INPUT:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %[[OUT_VAL:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %[[OUT_IDX:[a-zA-Z0-9]+]]
+// CHECK:         %[[BASE:.+]] = arith.constant 64 : index
+// CHECK:         %[[INPUT_VEC:.+]] = vector.transfer_read %[[INPUT]]
+// CHECK:         %[[OUT_VAL_VEC:.+]] = vector.transfer_read %[[OUT_VAL]]
+// CHECK:         %[[OUT_IDX_VEC:.+]] = vector.transfer_read %[[OUT_IDX]]
+// CHECK:         %[[RESULT_VAL:.+]], %[[RESULT_IDX:.+]] = iree_vector_ext.arg_compare
+// CHECK-SAME:      dimension(1)
+// CHECK-SAME:      ins(%[[INPUT_VEC]] : vector<4x128xf32>)
+// CHECK-SAME:      inits(%[[OUT_VAL_VEC]], %[[OUT_IDX_VEC]] : vector<4xf32>, vector<4xi32>)
+// CHECK-SAME:      index_base(%[[BASE]] : index)
+// CHECK:         ^bb0(%[[A:.+]]: f32, %[[B:.+]]: f32):
+// CHECK:           %[[CMP:.+]] = arith.cmpf ogt, %[[A]], %[[B]] : f32
+// CHECK:           iree_vector_ext.yield %[[CMP]] : i1
+// CHECK:         -> vector<4xf32>, vector<4xi32>
+// CHECK:         %[[WRITE_VAL:.+]] = vector.transfer_write %[[RESULT_VAL]], %[[OUT_VAL]]
+// CHECK:         %[[WRITE_IDX:.+]] = vector.transfer_write %[[RESULT_IDX]], %[[OUT_IDX]]
+// CHECK:         return %[[WRITE_VAL]], %[[WRITE_IDX]]
+
+// -----
+
+// When the lowering config has zero vector sizes, the vectorizer bails out
+// to the IR inference path which derives correct sizes from tensor shapes.
+
+#config = #iree_cpu.lowering_config<vector_common_parallel = [4, 0]>
+#map = affine_map<(d0, d1) -> (d0, d1)>
+func.func @configured_zero_vector_size_falls_back_to_inference(
+    %arg0: tensor<4x1xf32>, %arg1: tensor<4x1xf32>) -> tensor<4x1xf32> {
+  %result = linalg.generic {
+      indexing_maps = [#map, #map, #map],
+      iterator_types = ["parallel", "parallel"]}
+      {lowering_config = #config}
+      ins(%arg0, %arg1 : tensor<4x1xf32>, tensor<4x1xf32>)
+      outs(%arg1 : tensor<4x1xf32>) {
+  ^bb0(%in: f32, %in_0: f32, %out: f32):
+    %add = arith.addf %in, %in_0 : f32
+    linalg.yield %add : f32
+  } -> tensor<4x1xf32>
+  return %result : tensor<4x1xf32>
+}
+// CHECK-LABEL: func.func @configured_zero_vector_size_falls_back_to_inference(
+// CHECK:         arith.addf {{.*}} : vector<4x1xf32>
+
+// -----
+
+#layout = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1],
+  batch_tile = [1, 1],
+  outer_tile = [1, 1],
+  thread_tile = [1, 1],
+  element_tile = [64, 64],
+
+  subgroup_strides = [0, 0],
+  thread_strides   = [0, 0]
+>
+
+func.func @vectorize_to_layout(%A: tensor<64x64xf32>) -> tensor<64x64xf32> {
+  %AL = iree_vector_ext.to_layout %A to layout(#layout) : tensor<64x64xf32>
+  return %AL : tensor<64x64xf32>
+}
+
+// CHECK-LABEL: func.func @vectorize_to_layout
+// CHECK-SAME: %[[AT:.+]]: tensor<64x64xf32>
+// CHECK: %[[A_READ:.+]] = vector.transfer_read %[[AT]]
+// CHECK: %[[A:.+]] = iree_vector_ext.to_layout %[[A_READ]]
+// CHECK: %[[A_WRITE:.+]] = vector.transfer_write %[[A]], %[[AT]]
+
+// -----
+
+#layout = #iree_vector_ext.nested_layout<
+  subgroup_tile = [1, 1],
+  batch_tile = [4, 2],
+  outer_tile = [1, 1],
+  thread_tile = [8, 4],
+  element_tile = [8, 8],
+
+  subgroup_strides = [0, 0],
+  thread_strides   = [4, 1]
+>
+
+func.func @vectorize_to_layout_with_mask(%A: tensor<256x63xf32>) -> tensor<256x63xf32> {
+  %AL = iree_vector_ext.to_layout %A to layout(#layout) : tensor<256x63xf32>
+  return %AL : tensor<256x63xf32>
+}
+
+// CHECK-LABEL: func.func @vectorize_to_layout_with_mask
+// CHECK-SAME: %[[AT:.+]]: tensor<256x63xf32>
+// CHECK: %[[MASK:.+]] = vector.constant_mask [256, 63]
+// CHECK: %[[A_READ:.+]] = vector.transfer_read %[[AT]]{{.*}} %[[MASK]]
+// CHECK: %[[A:.+]] = iree_vector_ext.to_layout %[[A_READ]]
+// CHECK: %[[A_WRITE:.+]] = vector.transfer_write %[[A]], %[[AT]]{{.*}} %[[MASK]]
+
+// -----
+func.func @map_store(
+    %input: tensor<4x16x64xf32>, %output: tensor<4x16x64xf32>
+) -> tensor<4x16x64xf32> {
+  %0 = iree_linalg_ext.map_store %input into %output {
+    ^bb0(%idx0: index, %idx1: index, %idx2: index):
+      %mask = arith.constant true
+      iree_linalg_ext.yield %idx0, %idx1, %idx2, %mask : index, index, index, i1
+  } : tensor<4x16x64xf32> into tensor<4x16x64xf32> -> tensor<4x16x64xf32>
+  return %0 : tensor<4x16x64xf32>
+}
+// CHECK-MAP-STORE-LABEL: @map_store
+//  CHECK-MAP-STORE-SAME:     %[[INPUT:[a-zA-Z0-9_]+]]
+//  CHECK-MAP-STORE-SAME:     %[[OUTPUT:[a-zA-Z0-9_]+]]
+//       CHECK-MAP-STORE:   %[[READ:.+]] = vector.transfer_read %[[INPUT]]
+//       CHECK-MAP-STORE:   %[[MAP_SCATTER:.+]] = iree_linalg_ext.map_store
+//  CHECK-MAP-STORE-SAME:     %[[READ]] into %[[OUTPUT]]
+//       CHECK-MAP-STORE:     : vector<4x16x64xf32> into tensor<4x16x64xf32> -> tensor<4x16x64xf32>
+//       CHECK-MAP-STORE:   return %[[MAP_SCATTER]] : tensor<4x16x64xf32>
+
+// -----
+
+func.func @no_vectorize_map_store_dynamic(
+    %input: tensor<?xf32>, %output: tensor<64xf32>
+) -> tensor<64xf32> {
+  %0 = iree_linalg_ext.map_store %input into %output {
+    ^bb0(%idx0: index):
+      %mask = arith.constant true
+      iree_linalg_ext.yield %idx0, %mask : index, i1
+  } : tensor<?xf32> into tensor<64xf32> -> tensor<64xf32>
+  return %0 : tensor<64xf32>
+}
+// CHECK-MAP-STORE-LABEL: @no_vectorize_map_store_dynamic
+//   CHECK-MAP-STORE-NOT:   vector
+
+// -----
+
+func.func @map_store_f4_multiple_of_byte(
+    %input: tensor<2x2xf4E2M1FN>, %output: tensor<2x2xf4E2M1FN>
+) -> tensor<2x2xf4E2M1FN> {
+  %0 = iree_linalg_ext.map_store %input into %output {
+    ^bb0(%idx0: index, %idx1: index):
+      %mask = arith.constant true
+      iree_linalg_ext.yield %idx0, %idx1, %mask : index, index, i1
+  } : tensor<2x2xf4E2M1FN> into tensor<2x2xf4E2M1FN> -> tensor<2x2xf4E2M1FN>
+  return %0 : tensor<2x2xf4E2M1FN>
+}
+// CHECK-MAP-STORE-LABEL: @map_store_f4_multiple_of_byte
+//  CHECK-MAP-STORE-SAME:     %[[INPUT:[a-zA-Z0-9_]+]]
+//  CHECK-MAP-STORE-SAME:     %[[OUTPUT:[a-zA-Z0-9_]+]]
+//       CHECK-MAP-STORE:   %[[READ:.+]] = vector.transfer_read %[[INPUT]]
+//       CHECK-MAP-STORE:   %[[MAP_SCATTER:.+]] = iree_linalg_ext.map_store
+//  CHECK-MAP-STORE-SAME:     %[[READ]] into %[[OUTPUT]]
+//       CHECK-MAP-STORE:     : vector<2x2xf4E2M1FN> into tensor<2x2xf4E2M1FN> -> tensor<2x2xf4E2M1FN>
+//       CHECK-MAP-STORE:   return %[[MAP_SCATTER]] : tensor<2x2xf4E2M1FN>
+
+// -----
+
+func.func @map_store_f4_not_multiple_of_byte(
+    %input: tensor<2x1xf4E2M1FN>, %output: tensor<2x2xf4E2M1FN>
+) -> tensor<2x2xf4E2M1FN> {
+  %0 = iree_linalg_ext.map_store %input into %output {
+    ^bb0(%idx0: index, %idx1: index):
+      %mask = arith.constant true
+      iree_linalg_ext.yield %idx0, %idx1, %mask : index, index, i1
+  } : tensor<2x1xf4E2M1FN> into tensor<2x2xf4E2M1FN> -> tensor<2x2xf4E2M1FN>
+  return %0 : tensor<2x2xf4E2M1FN>
+}
+// CHECK-MAP-STORE-LABEL: @map_store_f4_not_multiple_of_byte
+//   CHECK-MAP-STORE-NOT:   vector
+
+// -----
+
+func.func @map_store_f4_unit_stride(
+    %input: tensor<2x2xf4E2M1FN>, %output: tensor<2x4xf4E2M1FN>
+) -> tensor<2x4xf4E2M1FN> {
+  %0 = iree_linalg_ext.map_store %input into %output {
+    ^bb0(%idx0: index, %idx1: index):
+      %mask = arith.constant true
+      %1 = affine.apply affine_map<(d0) -> (d0 + 2)>(%idx1)
+      iree_linalg_ext.yield %idx0, %1, %mask : index, index, i1
+  } : tensor<2x2xf4E2M1FN> into tensor<2x4xf4E2M1FN> -> tensor<2x4xf4E2M1FN>
+  return %0 : tensor<2x4xf4E2M1FN>
+}
+// CHECK-MAP-STORE-LABEL: @map_store_f4_unit_stride
+//  CHECK-MAP-STORE-SAME:     %[[INPUT:[a-zA-Z0-9_]+]]
+//  CHECK-MAP-STORE-SAME:     %[[OUTPUT:[a-zA-Z0-9_]+]]
+//       CHECK-MAP-STORE:   %[[READ:.+]] = vector.transfer_read %[[INPUT]]
+//       CHECK-MAP-STORE:   %[[MAP_SCATTER:.+]] = iree_linalg_ext.map_store
+//  CHECK-MAP-STORE-SAME:     %[[READ]] into %[[OUTPUT]]
+//       CHECK-MAP-STORE:     : vector<2x2xf4E2M1FN> into tensor<2x4xf4E2M1FN> -> tensor<2x4xf4E2M1FN>
+//       CHECK-MAP-STORE:   return %[[MAP_SCATTER]] : tensor<2x4xf4E2M1FN>
+
+// -----
+
+func.func @map_store_f4_not_unit_stride(
+    %input: tensor<2x2xf4E2M1FN>, %output: tensor<2x4xf4E2M1FN>
+) -> tensor<2x4xf4E2M1FN> {
+  %0 = iree_linalg_ext.map_store %input into %output {
+    ^bb0(%idx0: index, %idx1: index):
+      %mask = arith.constant true
+      %1 = affine.apply affine_map<(d0) -> (d0 * 2)>(%idx1)
+      iree_linalg_ext.yield %idx0, %1, %mask : index, index, i1
+  } : tensor<2x2xf4E2M1FN> into tensor<2x4xf4E2M1FN> -> tensor<2x4xf4E2M1FN>
+  return %0 : tensor<2x4xf4E2M1FN>
+}
+// CHECK-MAP-STORE-LABEL: @map_store_f4_not_unit_stride
+//   CHECK-MAP-STORE-NOT:   vector
+
+// -----
+
+func.func @map_store_f4_not_index_applied_multiple_times(
+    %input: tensor<2x2xf4E2M1FN>, %output: tensor<2x4xf4E2M1FN>
+) -> tensor<2x4xf4E2M1FN> {
+  %0 = iree_linalg_ext.map_store %input into %output {
+    ^bb0(%idx0: index, %idx1: index):
+      %mask = arith.constant true
+      %1 = affine.apply affine_map<(d0, d1) -> (d0 + d1)>(%idx1, %idx1)
+      iree_linalg_ext.yield %idx0, %1, %mask : index, index, i1
+  } : tensor<2x2xf4E2M1FN> into tensor<2x4xf4E2M1FN> -> tensor<2x4xf4E2M1FN>
+  return %0 : tensor<2x4xf4E2M1FN>
+}
+// CHECK-MAP-STORE-LABEL: @map_store_f4_not_index_applied_multiple_times
+//   CHECK-MAP-STORE-NOT:   vector
+
+// -----
+
+func.func @map_store_f4_mask_depends_on_inner_index(
+    %input: tensor<2x2xf4E2M1FN>, %output: tensor<2x4xf4E2M1FN>
+) -> tensor<2x4xf4E2M1FN> {
+  %0 = iree_linalg_ext.map_store %input into %output {
+    ^bb0(%idx0: index, %idx1: index):
+      %c1 = arith.constant 1 : index
+      %mask = arith.cmpi uge, %idx1, %c1 : index
+      iree_linalg_ext.yield %idx0, %idx1, %mask : index, index, i1
+  } : tensor<2x2xf4E2M1FN> into tensor<2x4xf4E2M1FN> -> tensor<2x4xf4E2M1FN>
+  return %0 : tensor<2x4xf4E2M1FN>
+}
+// CHECK-MAP-STORE-LABEL: @map_store_f4_mask_depends_on_inner_index
+//   CHECK-MAP-STORE-NOT:   vector
+
+// -----
+
+#contraction_accesses = [
+ affine_map<(i, j, k) -> (i, k)>,
+ affine_map<(i, j, k) -> (k, j)>,
+ affine_map<(i, j, k) -> (i, j)>
+]
+func.func @tensor_multi_mma(%lhs: tensor<2x3x4xf16>, %rhs: tensor<3x5x4xf16>, %acc: tensor<2x5x4xf32>) -> tensor<2x5x4xf32> {
+  %0 = iree_codegen.inner_tiled ins(%lhs, %rhs) outs(%acc) {
+    indexing_maps = #contraction_accesses,
+    iterator_types = [#linalg.iterator_type<parallel>, #linalg.iterator_type<parallel>, #linalg.iterator_type<reduction>],
+    kind = #iree_gpu.mma_layout<MFMA_F32_16x16x16_F16>,
+    semantics = #iree_gpu.mma_semantics<distributed = true, opaque = false>
+  } : tensor<2x3x4xf16>, tensor<3x5x4xf16> into tensor<2x5x4xf32>
+  return %0 : tensor<2x5x4xf32>
+}
+
+//      CHECK-LABEL: func @tensor_multi_mma
+// CHECK-MASK-LABEL: func @tensor_multi_mma
+// CHECK-FOLD-LABEL: func @tensor_multi_mma
+// CHECK-GATHER-LABEL: func @tensor_multi_mma
+// CHECK-MAP-STORE-LABEL: func @tensor_multi_mma
+
+//   CHECK-DAG:   %[[CST:.+]] = arith.constant 0.000000e+00 : f16
+//   CHECK-DAG:   %[[CSTF32:.+]] = arith.constant 0.000000e+00 : f32
+//   CHECK-DAG:   %[[LHS:.+]] = vector.transfer_read %arg0[%c0, %c0, %c0], %[[CST]] {{.*}} : tensor<2x3x4xf16>, vector<2x3x4xf16>
+//   CHECK-DAG:   %[[RHS:.+]] = vector.transfer_read %arg1[%c0, %c0, %c0], %[[CST]] {{.*}} : tensor<3x5x4xf16>, vector<3x5x4xf16>
+//   CHECK-DAG:   %[[ACC:.+]] = vector.transfer_read %arg2[%c0, %c0, %c0], %[[CSTF32]] {{.*}} : tensor<2x5x4xf32>, vector<2x5x4xf32>
+//       CHECK:   %[[MMA:.+]] = iree_codegen.inner_tiled ins(%[[LHS]], %[[RHS]]) outs(%[[ACC]])
+//  CHECK-SAME:     : vector<2x3x4xf16>, vector<3x5x4xf16> into vector<2x5x4xf32>
+//       CHECK:   vector.transfer_write %[[MMA]], %arg2[%c0, %c0, %c0] {{.*}} : vector<2x5x4xf32>, tensor<2x5x4xf32>
+
+// -----
+
+#contraction_accesses = [
+ affine_map<() -> ()>,
+ affine_map<() -> ()>,
+ affine_map<() -> ()>
+]
+func.func @tensor_single_multi_mma(%lhs: tensor<4xf16>, %rhs: tensor<4xf16>, %acc: tensor<4xf32>) -> tensor<4xf32> {
+  %0 = iree_codegen.inner_tiled ins(%lhs, %rhs) outs(%acc) {
+    indexing_maps = #contraction_accesses,
+    iterator_types = [],
+    kind = #iree_gpu.mma_layout<MFMA_F32_16x16x16_F16>,
+    semantics = #iree_gpu.mma_semantics<distributed = true, opaque = false>
+  } : tensor<4xf16>, tensor<4xf16> into tensor<4xf32>
+  return %0 : tensor<4xf32>
+}
+
+// CHECK-LABEL: func @tensor_single_multi_mma
+
+//   CHECK-DAG:   %[[CST:.+]] = arith.constant 0.000000e+00 : f16
+//   CHECK-DAG:   %[[CSTF32:.+]] = arith.constant 0.000000e+00 : f32
+//   CHECK-DAG:   %[[LHS:.+]] = vector.transfer_read %arg0[%c0], %[[CST]] {in_bounds = [true]} : tensor<4xf16>, vector<4xf16>
+//   CHECK-DAG:   %[[RHS:.+]] = vector.transfer_read %arg1[%c0], %[[CST]] {in_bounds = [true]} : tensor<4xf16>, vector<4xf16>
+//   CHECK-DAG:   %[[ACC:.+]] = vector.transfer_read %arg2[%c0], %[[CSTF32]] {in_bounds = [true]} : tensor<4xf32>, vector<4xf32>
+//       CHECK:   %[[MMA:.+]] = iree_codegen.inner_tiled ins(%[[LHS]], %[[RHS]]) outs(%[[ACC]])
+//  CHECK-SAME:     : vector<4xf16>, vector<4xf16> into vector<4xf32>
+//       CHECK:   vector.transfer_write %[[MMA]], %arg2[%c0] {in_bounds = [true]} : vector<4xf32>, tensor<4xf32>
+
+// -----
+
+#contraction_accesses = [
+ affine_map<(i, j, k, b) -> (i, k, b)>,
+ affine_map<(i, j, k, b) -> (k, b, j)>,
+ affine_map<(i, j, k, b) -> (i, k)>,
+ affine_map<(i, j, k, b) -> (k, j)>,
+ affine_map<(i, j, k, b) -> (i, j)>
+]
+
+#iterator_types = [
+  #linalg.iterator_type<parallel>,
+  #linalg.iterator_type<parallel>,
+  #linalg.iterator_type<reduction>,
+  #linalg.iterator_type<reduction>
+]
+
+func.func @scaled_tensor_multi_mma(%arg0: tensor<3x5x1x32xf4E2M1FN>, %arg1: tensor<5x1x7x32xf8E4M3FN>, %arg2: tensor<3x5x1xf8E8M0FNU>, %arg3: tensor<5x7x1xf8E8M0FNU>,
+  %arg4: tensor<3x7x4xf32>) -> tensor<3x7x4xf32> {
+  %0 = iree_codegen.inner_tiled ins(%arg0, %arg1, %arg2, %arg3) outs(%arg4) {
+    indexing_maps = #contraction_accesses,
+    iterator_types = #iterator_types,
+    kind = #iree_gpu.scaled_mma_layout<intrinsic = MFMA_SCALE_F32_16x16x128_B32,
+      lhs_elem_type = f4E2M1FN, rhs_elem_type = f8E4M3FN, acc_elem_type = f32>,
+    semantics = #iree_gpu.mma_semantics<distributed = true, opaque = false>
+    } : tensor<3x5x1x32xf4E2M1FN>, tensor<5x1x7x32xf8E4M3FN>, tensor<3x5x1xf8E8M0FNU>, tensor<5x7x1xf8E8M0FNU>
+      into tensor<3x7x4xf32>
+  return %0 : tensor<3x7x4xf32>
+}
+
+// CHECK-LABEL: func @scaled_tensor_multi_mma
+
+//   CHECK-DAG:   %[[CSTFP4:.+]] = arith.constant 0.000000e+00 : f4E2M1FN
+//   CHECK-DAG:   %[[CSTFP8:.+]] = arith.constant 0.000000e+00 : f8E4M3FN
+//   CHECK-DAG:   %[[CSTSCALE:.+]] = arith.constant 5.877470e-39 : f8E8M0FNU
+//   CHECK-DAG:   %[[CSTF32:.+]] = arith.constant 0.000000e+00 : f32
+//   CHECK-DAG:   %[[LHS:.+]] = vector.transfer_read %arg0[%c0, %c0, %c0, %c0], %[[CSTFP4]] {{.*}} : tensor<3x5x1x32xf4E2M1FN>, vector<3x5x1x32xf4E2M1FN>
+//   CHECK-DAG:   %[[RHS:.+]] = vector.transfer_read %arg1[%c0, %c0, %c0, %c0], %[[CSTFP8]] {{.*}} : tensor<5x1x7x32xf8E4M3FN>, vector<5x1x7x32xf8E4M3FN>
+//   CHECK-DAG:   %[[LHS_SCALE:.+]] = vector.transfer_read %arg2[%c0, %c0, %c0], %[[CSTSCALE]] {{.*}} : tensor<3x5x1xf8E8M0FNU>, vector<3x5x1xf8E8M0FNU>
+//   CHECK-DAG:   %[[RHS_SCALE:.+]] = vector.transfer_read %arg3[%c0, %c0, %c0], %[[CSTSCALE]] {{.*}} : tensor<5x7x1xf8E8M0FNU>, vector<5x7x1xf8E8M0FNU>
+//   CHECK-DAG:   %[[ACC:.+]] = vector.transfer_read %arg4[%c0, %c0, %c0], %[[CSTF32]] {{.*}} : tensor<3x7x4xf32>, vector<3x7x4xf32>
+//       CHECK:   %[[MMA:.+]] = iree_codegen.inner_tiled ins(%[[LHS]], %[[RHS]], %[[LHS_SCALE]], %[[RHS_SCALE]]) outs(%[[ACC]])
+//  CHECK-SAME: : vector<3x5x1x32xf4E2M1FN>, vector<5x1x7x32xf8E4M3FN>, vector<3x5x1xf8E8M0FNU>, vector<5x7x1xf8E8M0FNU> into vector<3x7x4xf32>
+//       CHECK:   vector.transfer_write %[[MMA]], %arg4[%c0, %c0, %c0] {{.*}} : vector<3x7x4xf32>, tensor<3x7x4xf32>
+
+// -----
+
+func.func @implicit_gather_like_generic_stride_2(%arg0: tensor<1x1x31xf32>, %arg1: tensor<1x1x1x1x16xf32>) -> tensor<1x1x1x1x16xf32> {
+  %0 = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d4 * 2 + d0)>,
+      affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>
+    ],
+    iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]
+  } ins(%arg0 : tensor<1x1x31xf32>) outs(%arg1 : tensor<1x1x1x1x16xf32>) {
+  ^bb0(%in: f32, %out: f32):
+    linalg.yield %in : f32
+  } -> tensor<1x1x1x1x16xf32>
+  return %0 : tensor<1x1x1x1x16xf32>
+}
+// CHECK-GATHER:       #[[$MAP0:.+]] = affine_map<(d0, d1, d2, d3, d4)[s0] -> (0, 0, s0)>
+// CHECK-GATHER:       #[[$MAP1:.+]] = affine_map<(d0, d1, d2, d3, d4)[s0] -> (d4)>
+// CHECK-GATHER-LABEL: func.func @implicit_gather_like_generic_stride_2
+// CHECK-GATHER-SAME:    %[[IN:[a-zA-Z0-9]+]]: tensor<1x1x31xf32>
+// CHECK-GATHER-SAME:    %[[OUT:[a-zA-Z0-9]+]]: tensor<1x1x1x1x16xf32>
+// CHECK-GATHER-DAG:     %[[C0:.+]] = arith.constant 0 : index
+// CHECK-GATHER-DAG:     %[[DENSE:.+]] = arith.constant dense<2> : vector<16xindex>
+// CHECK-GATHER-DAG:     %[[PASSTHRU:.+]] = arith.constant 0.000000e+00 : f32
+// CHECK-GATHER-DAG:     %[[STEP:.+]] = vector.step : vector<16xindex>
+// CHECK-GATHER:         %[[INDICES:.+]] = arith.muli %[[STEP]], %[[DENSE]] : vector<16xindex>
+// CHECK-GATHER:         %[[GATHER:.+]] = iree_vector_ext.transfer_gather %[[IN]][%[[C0]], %[[C0]], %[[C0]]]
+// CHECK-GATHER-SAME:      [%[[INDICES]] : vector<16xindex>], %[[PASSTHRU]]
+// CHECK-GATHER-SAME:      {indexing_maps = [#[[$MAP0]], #[[$MAP1]]]}
+// CHECK-GATHER:         %[[RESULT:.+]] = vector.transfer_write %[[GATHER]], %[[OUT]][%[[C0]], %[[C0]], %[[C0]], %[[C0]], %[[C0]]]
+// CHECK-GATHER:         return %[[RESULT]]
+
+// -----
+
+func.func @implicit_gather_strided_leading_dims(%arg0: tensor<1x1x3xf32>, %arg1: tensor<1x1x1x1x3xf32>) -> tensor<1x1x1x1x3xf32> {
+  %0 = linalg.generic {
+    indexing_maps = [
+      affine_map<(d0, d1, d2, d3, d4) -> (d0 * 2 + d2, d1 * 2 + d3, d4)>,
+      affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3, d4)>
+    ],
+    iterator_types = ["parallel", "parallel", "parallel", "parallel", "parallel"]
+  } ins(%arg0 : tensor<1x1x3xf32>) outs(%arg1 : tensor<1x1x1x1x3xf32>) {
+  ^bb0(%in: f32, %out: f32):
+    linalg.yield %in : f32
+  } -> tensor<1x1x1x1x3xf32>
+  return %0 : tensor<1x1x1x1x3xf32>
+}
+// CHECK-GATHER:       #[[$MAP0:.+]] = affine_map<(d0, d1, d2, d3, d4) -> (0, 0, d4)>
+// CHECK-GATHER-LABEL: func.func @implicit_gather_strided_leading_dims
+// CHECK-GATHER-SAME:    %[[IN:[a-zA-Z0-9]+]]: tensor<1x1x3xf32>
+// CHECK-GATHER-SAME:    %[[OUT:[a-zA-Z0-9]+]]: tensor<1x1x1x1x3xf32>
+// CHECK-GATHER-DAG:     %[[C0:.+]] = arith.constant 0 : index
+// CHECK-GATHER-DAG:     %[[PASSTHRU:.+]] = arith.constant 0.000000e+00 : f32
+// CHECK-GATHER:         %[[GATHER:.+]] = iree_vector_ext.transfer_gather %[[IN]][%[[C0]], %[[C0]], %[[C0]]],
+// CHECK-GATHER-SAME:      %[[PASSTHRU]] {indexing_maps = [#[[$MAP0]]]}
+// CHECK-GATHER:         %[[RESULT:.+]] = vector.transfer_write %[[GATHER]], %[[OUT]][%[[C0]], %[[C0]], %[[C0]], %[[C0]], %[[C0]]]
+// CHECK-GATHER:         return %[[RESULT]]

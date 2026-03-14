@@ -40,14 +40,12 @@ def LLVMGPU_SimpleDistribute
     : I32EnumAttrCase<"LLVMGPUDistribute", 102>;
 def LLVMGPU_Vectorize
     : I32EnumAttrCase<"LLVMGPUVectorize", 103>;
-def LLVMGPU_TransposeSharedMem
-    : I32EnumAttrCase<"LLVMGPUTransposeSharedMem", 104>;
 def LLVMGPU_VectorDistribute
-    : I32EnumAttrCase<"LLVMGPUVectorDistribute", 105>;
+    : I32EnumAttrCase<"LLVMGPUVectorDistribute", 104>;
 def LLVMGPU_WinogradVectorize
-    : I32EnumAttrCase<"LLVMGPUWinogradVectorize", 106>;
+    : I32EnumAttrCase<"LLVMGPUWinogradVectorize", 105>;
 def LLVMGPU_TileAndFuse
-    : I32EnumAttrCase<"LLVMGPUTileAndFuse", 107>;
+    : I32EnumAttrCase<"LLVMGPUTileAndFuse", 106>;
 
 def SPIRV_BaseLowering
     : I32EnumAttrCase<"SPIRVBaseLowering", 200>;
@@ -86,8 +84,8 @@ def DispatchLoweringPassPipelineEnum : I32EnumAttr<
 
     // LLVMGPU CodeGen pipelines
     LLVMGPU_Default, LLVMGPU_BaseLowering, LLVMGPU_SimpleDistribute,
-    LLVMGPU_Vectorize, LLVMGPU_TransposeSharedMem,
-    LLVMGPU_VectorDistribute, LLVMGPU_WinogradVectorize, LLVMGPU_TileAndFuse,
+    LLVMGPU_Vectorize, LLVMGPU_VectorDistribute,
+    LLVMGPU_WinogradVectorize, LLVMGPU_TileAndFuse,
 
     // SPIR-V CodeGen pipelines
     SPIRV_BaseLowering, SPIRV_BaseDistribute, SPIRV_BaseVectorize,
@@ -187,6 +185,43 @@ def WorkgroupMappingAttr :
 }
 
 //===---------------------------------------------------------------------===//
+// IREE Codegen local mapping attribute
+//===---------------------------------------------------------------------===//
+
+def LocalMappingAttr :
+    AttrDef<IREECodegen_Dialect, "LocalMapping", [
+      DeclareAttrInterfaceMethods<DeviceMappingAttrInterface>]> {
+  let mnemonic = "local_mapping";
+
+  let parameters = (ins
+    "int64_t":$dim
+  );
+  let assemblyFormat = "`<` $dim `>`";
+
+  let description = [{
+    Attribute for mapping `scf.forall` loops to sequential local execution.
+
+    Example:
+    ```mlir
+      scf.forall (%i, %j) in (4, 8) {
+        // body ... %i, %j
+      } {mapping = [#iree_codegen.local_mapping<1>,
+                    #iree_codegen.local_mapping<0>]}
+    ```
+
+    This forall approximately corresponds to the following loop nest:
+
+    ```mlir
+      scf.for %i = 0 to 4 {
+        scf.for %j = 0 to 8 {
+        // body ... %i, %j
+        }
+      }
+    ```
+  }];
+}
+
+//===---------------------------------------------------------------------===//
 // iree_codegen.simple_target
 //===---------------------------------------------------------------------===//
 
@@ -216,6 +251,32 @@ def IREECodegen_SimpleTargetAttr :
 
 
 //===---------------------------------------------------------------------===//
+// iree_codegen.pass_pipeline
+//===---------------------------------------------------------------------===//
+
+def IREECodegen_PassPipelineAttr :
+    AttrDef<IREECodegen_Dialect, "PassPipeline", [
+      DeclareAttrInterfaceMethods<IREECodegen_PipelineAttrInterface, [
+        "buildPipeline"
+      ]>
+    ]> {
+  let mnemonic = "pass_pipeline";
+  let summary = "An attribute carrying a textual pass pipeline string.";
+  let description = [{
+    Specifies a pass pipeline using MLIR's textual pass pipeline syntax.
+    The pipeline string is parsed and populated into an OpPassManager
+    when `buildPipeline` is called.
+  }];
+  let parameters = (ins
+    StringRefParameter<"The textual pass pipeline specification">:$pipeline
+  );
+  let assemblyFormat = [{
+    `<` $pipeline `>`
+  }];
+  let genVerifyDecl = 1;
+}
+
+//===---------------------------------------------------------------------===//
 // iree_codegen.translation_info
 //===---------------------------------------------------------------------===//
 
@@ -234,22 +295,15 @@ def IREECodegen_TranslationInfoAttr :
     dispatch region (like `linalg.matmul`/`linalg.*conv*`), this
     attribute gets propagated to the entry point function.
 
-    The fields are
-    - `passPipeline` : The pass pipeline to use.
-
-  }];
-
-  let assemblyFormat = [{
-    `<` `pipeline` `=` `` $passPipeline
-    (`codegen_spec` `=` $codegenSpec^)?
-    (`workgroup_size` `=` `[` $workgroupSize^ `]`)?
-    (`subgroup_size` `=` $subgroupSize^)?
-    (`,` $configuration^)? `>`
+    The `passPipeline` field can be either:
+    - A `DispatchLoweringPassPipelineAttr` (enum keyword like `CPUDefault`).
+    - Any attribute implementing `PipelineAttrInterface` (e.g.,
+      `#iree_codegen.pass_pipeline<"...">`).
   }];
 
   let parameters = (ins
-    AttrParameter<"IREE::Codegen::DispatchLoweringPassPipelineAttr",
-        "Name of the pipeline to be invoked on the translation unit.">:$passPipeline,
+    AttrParameter<"Attribute",
+        "Pass pipeline specification.">:$passPipeline,
     OptionalParameter<"SymbolRefAttr",
         "The symbol pointing to the transform dialect codegen spec to be used">:$codegenSpec,
     OptionalArrayRefParameter<"int64_t", "The workgroup size to use">:$workgroupSize,
@@ -269,9 +323,20 @@ def IREECodegen_TranslationInfoAttr :
         CArg<"DictionaryAttr", "{}">:$configuration)>
   ];
   let extraClassDeclaration = [{
-    // Returns the lowering pass pipeline set.
+    // Returns the lowering pass pipeline enum value. Returns None if the
+    // pipeline is not a DispatchLoweringPassPipelineAttr.
     DispatchLoweringPassPipeline getDispatchLoweringPassPipeline();
   }];
+
+  let assemblyFormat = [{
+    `<` `pipeline` `=` custom<PipelineAttr>($passPipeline)
+      (`codegen_spec` `=` $codegenSpec^)?
+      (`workgroup_size` `=` `[` $workgroupSize^ `]`)?
+      (`subgroup_size` `=` $subgroupSize^)?
+      (`,` $configuration^)?
+    `>`
+  }];
+
   let genVerifyDecl = 1;
 }
 
@@ -456,8 +521,8 @@ def IREECodegen_RotateRowsAttr  :
     ```
     0000 1111 2222 3333 /// 0 1 2 3
     7777 4444 5555 6666 /// 3 0 1 2
-    BBBB AAAA 8888 9999 /// 2 3 0 1
-    FFFF EEEE DDDD CCCC /// 1 2 3 0
+    AAAA BBBB 8888 9999 /// 2 3 0 1
+    DDDD EEEE FFFF CCCC /// 1 2 3 0
     ```
 
     The pattern repeats for subsequent rows.
@@ -558,11 +623,11 @@ def IREECodegen_XORShuffleAttr  :
     is swizzled to
     ```
     0000 1111 2222 3333 /// 0 1 2 3
-    7777 4444 5555 6666 /// 1 0 3 2
-    BBBB AAAA 8888 9999 /// 2 3 0 1
+    5555 4444 7777 6666 /// 1 0 3 2
+    AAAA BBBB 8888 9999 /// 2 3 0 1
     FFFF EEEE DDDD CCCC /// 3 2 1 0
     ```
-    |access_width| allows to keep the same shuffling accross multiple rows. For example,
+    |per_phase| allows to keep the same shuffling across multiple rows. For example,
 
     ```
     row_width = 16, access_width = 4, per_phase = 2
@@ -576,9 +641,9 @@ def IREECodegen_XORShuffleAttr  :
     is swizzled to
     ```
     0000 1111 2222 3333 /// 0 1 2 3
-    7777 4444 5555 6666 /// 0 1 2 3
-    BBBB AAAA 8888 9999 /// 1 0 3 2
-    FFFF EEEE DDDD CCCC /// 1 0 3 2
+    4444 5555 6666 7777 /// 0 1 2 3
+    9999 8888 BBBB AAAA /// 1 0 3 2
+    DDDD CCCC FFFF EEEE /// 1 0 3 2
     ```
 
     The pattern repeats for subsequent rows.
@@ -627,6 +692,80 @@ def DenormalFpMathAttr :
       return "iree_codegen.denormal_fp_math_f32";
     }
   }];
+}
+
+//===---------------------------------------------------------------------===//
+// iree_codegen.workgroup_scope
+//===---------------------------------------------------------------------===//
+
+def WorkgroupScopeAttr : AttrDef<IREECodegen_Dialect, "WorkgroupScope", []> {
+  let mnemonic = "workgroup_scope";
+  let summary = [{
+    Attribute representing parallel execution across workgroups.
+  }];
+  let description = [{
+    Parallel scope that maps to workgroup execution.
+
+    If |linearize| is set to true, workgroup ids are linearized into a single
+    id which is then typically delinearized based on the problem space.
+  }];
+  let parameters = (ins "bool":$linearize);
+  let hasCustomAssemblyFormat = 1;
+
+  // Interface is registered as an external model to avoid HAL dep.
+}
+
+//===---------------------------------------------------------------------===//
+// iree_codegen.root_op
+//===---------------------------------------------------------------------===//
+
+def IREECodegen_RootOpAttr : AttrDef<IREECodegen_Dialect, "RootOp"> {
+  let mnemonic = "root_op";
+  let summary = "Marks an operation as a tuner root op in a given set";
+  let description = [{
+    Attribute identifying a root operation. The `set` parameter groups root ops
+    into numbered sets: all root ops in the given set share the same
+    `lowering_config`. Codegen does not rely on the `root_op` attribute; it is
+    only used for constraint generation when tuning.
+  }];
+  let parameters = (ins "int64_t":$set);
+  let assemblyFormat = "`<` `set` `=` $set `>`";
+}
+
+//===---------------------------------------------------------------------===//
+// iree_codegen.smt.int_knob
+//===---------------------------------------------------------------------===//
+
+def IREECodegen_IntKnobAttr : AttrDef<IREECodegen_Dialect, "IntKnob"> {
+  let mnemonic = "smt.int_knob";
+  let summary = "Integer-valued tunable knob placeholder.";
+  let description = [{
+    Represents a named placeholder for an integer tunable parameter in a
+    constraints knobs dictionary. During constraint generation, these appear
+    in tiling arrays (workgroup, reduction, thread), workgroup_size, and
+    subgroup_size positions. The name matches the corresponding
+    `iree_codegen.smt.knob` op name.
+  }];
+  let parameters = (ins "StringAttr":$name);
+  let assemblyFormat = "`<` $name `>`";
+}
+
+//===---------------------------------------------------------------------===//
+// iree_codegen.smt.one_of_knob
+//===---------------------------------------------------------------------===//
+
+def IREECodegen_OneOfKnobAttr : AttrDef<IREECodegen_Dialect, "OneOfKnob"> {
+  let mnemonic = "smt.one_of_knob";
+  let summary = "Select-from-enumerated-set knob placeholder.";
+  let description = [{
+    Represents a named placeholder for a discrete choice from a fixed set of
+    attributes. The SMT variable is an integer index into the options array.
+    During extraction, the actual attribute is matched against the options to
+    find its index. During materialization, the index selects directly from
+    the array -- no reverse lookup needed.
+  }];
+  let parameters = (ins "StringAttr":$name, "ArrayAttr":$options);
+  let assemblyFormat = "`<` $name `,` $options `>`";
 }
 
 #endif // IREE_COMPILER_CODEGEN_DIALECT_IREECODEGENATTRS

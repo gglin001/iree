@@ -41,6 +41,7 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
+#include "mlir/Support/LLVM.h"
 
 #define DEBUG_TYPE "iree-codegen-gpu-transforms"
 
@@ -100,24 +101,41 @@ static FailureOr<Value> createSharedAllocDestination(RewriterBase &rewriter,
     return failure();
   }
 
-  auto empty = forallOp.getDpsInits()[0].getDefiningOp<tensor::EmptyOp>();
+  // Skip swizzle hint ops.
+  Operation *destination = forallOp.getDpsInits()[0].getDefiningOp();
+  auto swizzleOp = dyn_cast<IREE::Codegen::SwizzleHintOp>(destination);
+  if (swizzleOp) {
+    destination = swizzleOp->getOperand(0).getDefiningOp();
+  }
+
   // Fail if the destination is not a `tensor.empty` op and cannot be trivially
   // converted to a `bufferization.alloc_tensor`.
+  auto empty = dyn_cast<tensor::EmptyOp>(destination);
   if (!empty) {
     return failure();
   }
 
   // Create a `bufferization.alloc_tensor` op with memory space
-  // `#gpu.address_space<workgroup>`.
+  // `#gpu.addresses_space<workgroup>`.
+  Location loc = empty->getLoc();
   OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPoint(empty);
   Attribute sharedMemoryAddrSpace = gpu::AddressSpaceAttr::get(
       rewriter.getContext(), gpu::GPUDialect::getWorkgroupAddressSpace());
   auto allocTensor = bufferization::AllocTensorOp::create(
-      rewriter, empty->getLoc(), cast<TensorType>(empty.getResult().getType()),
+      rewriter, loc, cast<TensorType>(empty.getResult().getType()),
       empty.getDynamicSizes(),
       /*copy=*/Value(), /*size_hint=*/Value(),
       /*memory_space=*/sharedMemoryAddrSpace);
+
+  // If the original `tensor.empty` has a swizzle hint, apply it to the new
+  // allocation. Note that if there is a swizzle hint, it will be the only user
+  // of the `tensor.empty` op.
+  if (swizzleOp) {
+    auto newSwizzle = IREE::Codegen::SwizzleHintOp::create(
+        rewriter, loc, allocTensor.getResult(), swizzleOp.getSwizzle());
+    return newSwizzle.getResult();
+  }
   return allocTensor.getResult();
 }
 
@@ -267,20 +285,77 @@ LogicalResult fuseForallIntoConsumer(RewriterBase &rewriter,
   rewriter.mergeBlocks(producer.getBody(), loopBody, newBlockArgs);
 
   rewriter.setInsertionPointAfter(terminator);
-  auto parallelInsert =
-      cast<tensor::ParallelInsertSliceOp>(*terminator.getYieldingOps().begin());
+  if (isa<tensor::ParallelInsertSliceOp>(
+          *terminator.getYieldingOps().begin())) {
+    auto parallelInsert = cast<tensor::ParallelInsertSliceOp>(
+        *terminator.getYieldingOps().begin());
 
-  // Create an insert_slice to yield from the loop body.
-  SmallVector<OpFoldResult, 4> sourceOffsets = parallelInsert.getMixedOffsets();
-  SmallVector<OpFoldResult, 4> sourceSizes = parallelInsert.getMixedSizes();
-  SmallVector<OpFoldResult, 4> sourceStrides = parallelInsert.getMixedStrides();
-  Value insertedSlice = tensor::InsertSliceOp::create(
-      rewriter, loc, parallelInsert.getSource(), parallelInsert.getDest(),
-      parallelInsert.getMixedOffsets(), parallelInsert.getMixedSizes(),
-      parallelInsert.getMixedStrides());
-  scf::YieldOp::create(rewriter, loc, insertedSlice);
-  rewriter.eraseOp(parallelInsert);
-  rewriter.eraseOp(terminator);
+    // Create an insert_slice to yield from the loop body.
+    SmallVector<OpFoldResult, 4> sourceOffsets =
+        parallelInsert.getMixedOffsets();
+    SmallVector<OpFoldResult, 4> sourceSizes = parallelInsert.getMixedSizes();
+    SmallVector<OpFoldResult, 4> sourceStrides =
+        parallelInsert.getMixedStrides();
+    Value insertedSlice = tensor::InsertSliceOp::create(
+        rewriter, loc, parallelInsert.getSource(), parallelInsert.getDest(),
+        parallelInsert.getMixedOffsets(), parallelInsert.getMixedSizes(),
+        parallelInsert.getMixedStrides());
+    scf::YieldOp::create(rewriter, loc, insertedSlice);
+    rewriter.eraseOp(parallelInsert);
+    rewriter.eraseOp(terminator);
+  } else {
+    assert(isa<IREE::GPU::CoalescedGatherDMAOp>(
+               *terminator.getYieldingOps().begin()) &&
+           "expected coalesced gather dma op");
+    // Create the new CoalescedGatherDMAOp outside the in_parallel region
+    // and remove the in_parallel terminator.
+    auto coalescedGather = cast<IREE::GPU::CoalescedGatherDMAOp>(
+        *terminator.getYieldingOps().begin());
+
+    // Create the new CoalescedGatherDMAOp with a result outside the in_parallel
+    rewriter.setInsertionPoint(terminator);
+    auto newGatherOp = IREE::GPU::CoalescedGatherDMAOp::create(
+        rewriter, loc, coalescedGather.getInit().getType(),
+        coalescedGather.getSource(), coalescedGather.getIndices(),
+        coalescedGather.getInit(), coalescedGather.getLane(),
+        coalescedGather.getInBoundsAttr());
+    Value gatherResult = newGatherOp.getResult();
+
+    // Use a tensor.insert_slice to insert the gather result back into the
+    // shared memory destination. Extract offsets from the init's extract_slice.
+    SmallVector<OpFoldResult> destIndices;
+    SmallVector<OpFoldResult> sizes;
+    SmallVector<OpFoldResult> strides;
+
+    // Get offsets, sizes, and strides from the init's extract_slice op
+    auto extractSlice =
+        coalescedGather.getInit().getDefiningOp<tensor::ExtractSliceOp>();
+    if (extractSlice) {
+      destIndices = extractSlice.getMixedOffsets();
+      sizes = extractSlice.getMixedSizes();
+      strides = extractSlice.getMixedStrides();
+    } else {
+      // Fallback: use offset 0 if init is not from an extract_slice
+      auto initType = cast<ShapedType>(coalescedGather.getInit().getType());
+      int64_t rank = initType.getRank();
+      destIndices.assign(rank, rewriter.getIndexAttr(0));
+      sizes =
+          getAsIndexOpFoldResult(rewriter.getContext(), initType.getShape());
+      strides.assign(rank, rewriter.getIndexAttr(1));
+    }
+
+    // Get the destination tensor from the loop's iter_args
+    Value dest = newProducer.getRegionIterArgs()[0];
+    Value insertedSlice = tensor::InsertSliceOp::create(
+        rewriter, loc, gatherResult, dest, destIndices, sizes, strides);
+
+    // Yield the result with the inserted slice
+    scf::YieldOp::create(rewriter, loc, insertedSlice);
+
+    // Erase the old coalesced gather op and the in_parallel terminator
+    rewriter.eraseOp(coalescedGather);
+    rewriter.eraseOp(terminator);
+  }
 
   // Step 7. Yield the result of the loop from the barrier op and replace the
   // producer.
@@ -291,14 +366,125 @@ LogicalResult fuseForallIntoConsumer(RewriterBase &rewriter,
   return success();
 }
 
+/// Collect pairs of combining ops from warp and lane forall operations.
+template <typename WarpOpT, typename LaneOpT>
+static SmallVector<std::pair<WarpOpT, LaneOpT>>
+collectInsertPairs(scf::ForallOp warpForallOp, scf::ForallOp laneForallOp) {
+  SmallVector<std::pair<WarpOpT, LaneOpT>> insertPairs;
+  for (auto [warpArg, laneArg] : llvm::zip_equal(
+           warpForallOp.getRegionOutArgs(), laneForallOp.getRegionOutArgs())) {
+    auto warpInsert = cast<WarpOpT>(warpForallOp.getCombiningOps(warpArg)[0]);
+    auto laneInsert = cast<LaneOpT>(laneForallOp.getCombiningOps(laneArg)[0]);
+    insertPairs.push_back({warpInsert, laneInsert});
+  }
+  return insertPairs;
+}
+
+/// Inline warp and lane forall bodies into the thread forall.
+static void inlineForallBodies(RewriterBase &rewriter,
+                               scf::ForallOp threadForallOp,
+                               scf::ForallOp warpForallOp,
+                               scf::ForallOp laneForallOp) {
+  // The terminator will be replaced with the terminator of the inlined block.
+  rewriter.eraseOp(threadForallOp.getTerminator());
+  SmallVector<Value> replacementArgs(threadForallOp.getInductionVars());
+  replacementArgs.pop_back();
+  llvm::append_range(replacementArgs, threadForallOp.getRegionOutArgs());
+  rewriter.mergeBlocks(warpForallOp.getBody(), threadForallOp.getBody(),
+                       replacementArgs);
+  SmallVector<Value> innerReplacementArgs{
+      threadForallOp.getInductionVars().back()};
+  llvm::append_range(innerReplacementArgs, laneForallOp.getOutputs());
+  rewriter.inlineBlockBefore(laneForallOp.getBody(), laneForallOp,
+                             innerReplacementArgs);
+}
+
+/// Compose and fuse parallel insert slice operations from warp and lane
+/// foralls.
+static void composeParallelInsertSlices(
+    RewriterBase &rewriter,
+    SmallVector<std::pair<tensor::ParallelInsertSliceOp,
+                          tensor::ParallelInsertSliceOp>> &insertPairs) {
+  for (auto [warpInsert, laneInsert] : insertPairs) {
+    SmallVector<OpFoldResult> composedOffsets;
+    for (auto [warpOffset, laneOffset] : llvm::zip_equal(
+             warpInsert.getMixedOffsets(), laneInsert.getMixedOffsets())) {
+      SmallVector<Value> offsets;
+      if (auto warpOffsetVal = dyn_cast<Value>(warpOffset)) {
+        offsets.push_back(warpOffsetVal);
+      }
+      if (auto laneOffsetVal = dyn_cast<Value>(laneOffset)) {
+        offsets.push_back(laneOffsetVal);
+      }
+      OpBuilder::InsertionGuard g(rewriter);
+      rewriter.setInsertionPoint(warpInsert);
+      if (!offsets.empty()) {
+        (void)setInsertionPointAfterLastValue(rewriter, offsets);
+      }
+      composedOffsets.push_back(IREE::LinalgExt::addOfrs(
+          rewriter, laneInsert.getLoc(), warpOffset, laneOffset));
+    }
+    OpBuilder::InsertionGuard g(rewriter);
+    rewriter.setInsertionPoint(warpInsert);
+    rewriter.replaceOpWithNewOp<tensor::ParallelInsertSliceOp>(
+        warpInsert, laneInsert.getSource(), warpInsert.getDest(),
+        composedOffsets, laneInsert.getMixedSizes(),
+        laneInsert.getMixedStrides());
+    rewriter.eraseOp(laneInsert);
+  }
+}
+
+/// Compose and fuse coalesced gather DMA operations with parallel insert
+/// slices. Creates a DMA op with a result, then uses parallel_insert_slice
+/// to insert the result into the forall's shared_out at the composed offsets.
+static void composeCoalescedGatherDMA(
+    RewriterBase &rewriter,
+    SmallVector<std::pair<tensor::ParallelInsertSliceOp,
+                          IREE::GPU::CoalescedGatherDMAOp>> &insertPairs) {
+  for (auto [warpInsert, laneInsert] : insertPairs) {
+    OpBuilder::InsertionGuard g(rewriter);
+
+    // Create an extract_slice for the DMA's init to match the source shape.
+    // This is done outside the in_parallel region.
+    rewriter.setInsertionPoint(warpInsert->getParentOp());
+    auto destSlice = tensor::ExtractSliceOp::create(
+        rewriter, warpInsert.getLoc(), warpInsert.getDest(),
+        warpInsert.getMixedOffsets(), warpInsert.getMixedSizes(),
+        warpInsert.getMixedStrides());
+
+    // Create new CoalescedGatherDMAOp with a result (outside in_parallel).
+    auto dmaOp = IREE::GPU::CoalescedGatherDMAOp::create(
+        rewriter, warpInsert.getLoc(), destSlice.getType(),
+        laneInsert.getSource(), laneInsert.getIndices(), destSlice,
+        laneInsert.getLane(), laneInsert.getInBoundsAttr());
+
+    // Replace the warp parallel_insert_slice with one that inserts the DMA
+    // result.
+    rewriter.setInsertionPoint(warpInsert);
+    rewriter.replaceOpWithNewOp<tensor::ParallelInsertSliceOp>(
+        warpInsert, dmaOp.getResult(), warpInsert.getDest(),
+        warpInsert.getMixedOffsets(), warpInsert.getMixedSizes(),
+        warpInsert.getMixedStrides());
+    rewriter.eraseOp(laneInsert);
+  }
+}
+
+/// Check if a forall op uses iree_gpu.coalesced_gather_dma operations
+/// instead of tensor.parallel_insert_slice in its terminator.
+static bool isCoalescedGatherForallOp(scf::ForallOp forallOp) {
+  return llvm::any_of(forallOp.getRegionOutArgs(), [&](BlockArgument outArg) {
+    return llvm::any_of(forallOp.getCombiningOps(outArg),
+                        llvm::IsaPred<IREE::GPU::CoalescedGatherDMAOp>);
+  });
+}
+
 FailureOr<scf::ForallOp>
 fuseNestedLaneAndWarpForalls(RewriterBase &rewriter, scf::ForallOp warpForallOp,
                              scf::ForallOp laneForallOp) {
   // Verify mappings.
   if (!warpForallOp.getMapping() ||
-      !llvm::all_of(*warpForallOp.getMapping(), [](Attribute mappingAttr) {
-        return isa<gpu::GPUWarpMappingAttr>(mappingAttr);
-      })) {
+      !llvm::all_of(*warpForallOp.getMapping(),
+                    llvm::IsaPred<gpu::GPUWarpMappingAttr>)) {
     return rewriter.notifyMatchFailure(warpForallOp, "not a warp forall op");
   }
   if (!laneForallOp.getMapping() || laneForallOp.getMapping()->size() != 1 ||
@@ -343,6 +529,9 @@ fuseNestedLaneAndWarpForalls(RewriterBase &rewriter, scf::ForallOp warpForallOp,
       if (combiningOps.size() != 1) {
         return false;
       }
+      if (isa<IREE::GPU::CoalescedGatherDMAOp>(combiningOps[0])) {
+        continue;
+      }
       auto parallelInsertOp =
           dyn_cast<tensor::ParallelInsertSliceOp>(combiningOps[0]);
       if (!parallelInsertOp ||
@@ -361,6 +550,7 @@ fuseNestedLaneAndWarpForalls(RewriterBase &rewriter, scf::ForallOp warpForallOp,
     return rewriter.notifyMatchFailure(warpForallOp,
                                        "forall op has strided combining op");
   }
+
   // Verify that the source of all combining ops of the warpForallOp are
   // produced by the laneForallOp, and that the laneForallOp combining ops
   // have the same rank as the corresponding combining op in the warpForallOp.
@@ -400,61 +590,30 @@ fuseNestedLaneAndWarpForalls(RewriterBase &rewriter, scf::ForallOp warpForallOp,
       warpForallOp.getOutputs(),
       ArrayAttr::get(rewriter.getContext(), threadMappings));
 
-  // Collect pairs of combining ops to compose after inlining everything.
-  SmallVector<
-      std::pair<tensor::ParallelInsertSliceOp, tensor::ParallelInsertSliceOp>>
-      insertPairs;
-  for (auto [warpArg, laneArg] : llvm::zip_equal(
-           warpForallOp.getRegionOutArgs(), laneForallOp.getRegionOutArgs())) {
-    auto warpInsert = cast<tensor::ParallelInsertSliceOp>(
-        warpForallOp.getCombiningOps(warpArg)[0]);
-    auto laneInsert = cast<tensor::ParallelInsertSliceOp>(
-        laneForallOp.getCombiningOps(laneArg)[0]);
-    insertPairs.push_back({warpInsert, laneInsert});
-  }
+  bool hasCoalescedGatherDMA = isCoalescedGatherForallOp(laneForallOp);
+
   // The lane forall's terminator also needs to be erased after inlining.
   Operation *laneForallTerminator = laneForallOp.getBody()->getTerminator();
-  // Inline the warp and lane forall bodies into the thread forall, and remap
-  // the induction variables.
-  // The terminator will be replaced with the terminator of the inlined block.
-  rewriter.eraseOp(threadForallOp.getTerminator());
-  SmallVector<Value> replacementArgs(threadForallOp.getInductionVars());
-  replacementArgs.pop_back();
-  replacementArgs.append(threadForallOp.getRegionOutArgs().begin(),
-                         threadForallOp.getRegionOutArgs().end());
-  rewriter.mergeBlocks(warpForallOp.getBody(), threadForallOp.getBody(),
-                       replacementArgs);
-  SmallVector<Value> innerReplacementArgs(laneForallOp.getOutputs());
-  innerReplacementArgs.insert(innerReplacementArgs.begin(),
-                              threadForallOp.getInductionVars().back());
-  rewriter.inlineBlockBefore(laneForallOp.getBody(), laneForallOp,
-                             innerReplacementArgs);
-  for (auto [warpInsert, laneInsert] : insertPairs) {
-    SmallVector<OpFoldResult> composedOffsets;
-    for (auto [warpOffset, laneOffset] : llvm::zip_equal(
-             warpInsert.getMixedOffsets(), laneInsert.getMixedOffsets())) {
-      SmallVector<Value> offsets;
-      if (auto warpOffsetVal = dyn_cast<Value>(warpOffset)) {
-        offsets.push_back(warpOffsetVal);
-      }
-      if (auto laneOffsetVal = dyn_cast<Value>(laneOffset)) {
-        offsets.push_back(laneOffsetVal);
-      }
-      OpBuilder::InsertionGuard g(rewriter);
-      rewriter.setInsertionPoint(warpInsert);
-      if (!offsets.empty()) {
-        (void)setInsertionPointAfterLastValue(rewriter, offsets);
-      }
-      composedOffsets.push_back(IREE::LinalgExt::addOfrs(
-          rewriter, laneInsert.getLoc(), warpOffset, laneOffset));
-    }
-    OpBuilder::InsertionGuard g(rewriter);
-    rewriter.setInsertionPoint(warpInsert);
-    rewriter.replaceOpWithNewOp<tensor::ParallelInsertSliceOp>(
-        warpInsert, laneInsert.getSource(), warpInsert.getDest(),
-        composedOffsets, laneInsert.getMixedSizes(),
-        laneInsert.getMixedStrides());
-    rewriter.eraseOp(laneInsert);
+  if (!hasCoalescedGatherDMA) {
+    // Collect pairs of combining ops to compose after inlining everything.
+    auto insertPairs = collectInsertPairs<tensor::ParallelInsertSliceOp,
+                                          tensor::ParallelInsertSliceOp>(
+        warpForallOp, laneForallOp);
+
+    // Inline the warp and lane forall bodies into the thread forall, and remap
+    // the induction variables.
+    inlineForallBodies(rewriter, threadForallOp, warpForallOp, laneForallOp);
+    composeParallelInsertSlices(rewriter, insertPairs);
+  } else {
+    // Collect pairs of combining ops to compose after inlining everything.
+    auto insertPairs = collectInsertPairs<tensor::ParallelInsertSliceOp,
+                                          IREE::GPU::CoalescedGatherDMAOp>(
+        warpForallOp, laneForallOp);
+
+    // Inline the warp and lane forall bodies into the thread forall, and remap
+    // the induction variables.
+    inlineForallBodies(rewriter, threadForallOp, warpForallOp, laneForallOp);
+    composeCoalescedGatherDMA(rewriter, insertPairs);
   }
   rewriter.eraseOp(laneForallTerminator);
   rewriter.eraseOp(laneForallOp);
@@ -948,8 +1107,7 @@ fuseExtractSliceIntoProducerForall(RewriterBase &rewriter,
 //===----------------------------------------------------------------------===//
 
 namespace {
-struct LowerInnerTiledPattern
-    : public OpRewritePattern<IREE::Codegen::InnerTiledOp> {
+struct LowerInnerTiledPattern : OpRewritePattern<IREE::Codegen::InnerTiledOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Codegen::InnerTiledOp tiledOp,
                                 PatternRewriter &rewriter) const override {
@@ -1139,8 +1297,9 @@ convertScaledContractionToInnerTiledMma(
           lhsInnerPerm, rhsInnerPerm, sc1InnerPerm, sc2InnerPerm, accInnerPerm};
   SmallVector<int64_t> identityPerm = {0, 1};
   if (lhsInnerPerm == identityPerm && rhsInnerPerm == identityPerm &&
-      accInnerPerm == identityPerm)
+      accInnerPerm == identityPerm) {
     perms = std::nullopt;
+  }
 
   IREE::Codegen::LoweringConfigAttrInterface maybeLoweringConfig =
       getLoweringConfig(linalgOp);
@@ -1282,8 +1441,9 @@ FailureOr<IREE::Codegen::InnerTiledOp> convertContractionToInnerTiledMma(
   SmallVector<int64_t> identityPerm = {0, 1};
 
   if (lhsInnerPerm == identityPerm && rhsInnerPerm == identityPerm &&
-      accInnerPerm == identityPerm)
+      accInnerPerm == identityPerm) {
     perms = std::nullopt;
+  }
 
   IREE::Codegen::LoweringConfigAttrInterface maybeLoweringConfig =
       getLoweringConfig(linalgOp);
@@ -1431,7 +1591,7 @@ distributeInnerTiledOp(RewriterBase &rewriter,
 
 namespace {
 struct DropInnerTiledUnitDimsPattern
-    : public OpRewritePattern<IREE::Codegen::InnerTiledOp> {
+    : OpRewritePattern<IREE::Codegen::InnerTiledOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Codegen::InnerTiledOp tiledOp,
                                 PatternRewriter &rewriter) const override {
@@ -1529,8 +1689,7 @@ struct OffsetMapInfo {
   }
 };
 
-struct UnrollInnerTiledPattern
-    : public OpRewritePattern<Codegen::InnerTiledOp> {
+struct UnrollInnerTiledPattern : OpRewritePattern<Codegen::InnerTiledOp> {
   UnrollInnerTiledPattern(MLIRContext *context,
                           const vector::UnrollVectorOptions &options,
                           PatternBenefit benefit = 1)
@@ -1599,12 +1758,12 @@ struct UnrollInnerTiledPattern
       // Helper to compute the new shape of each operand and extract the slice.
       auto extractOperand = [&](unsigned index, Value operand,
                                 AffineMap permutationMap,
-                                ArrayRef<int64_t> operandOffets) {
+                                ArrayRef<int64_t> operandOffsets) {
         SmallVector<int64_t> operandShape = applyPermutationMap(
             permutationMap, ArrayRef<int64_t>(*targetShape));
-        SmallVector<int64_t> operandStrides(operandOffets.size(), 1);
+        SmallVector<int64_t> operandStrides(operandOffsets.size(), 1);
         slicesOperands[index] = vector::ExtractStridedSliceOp::create(
-            rewriter, loc, operand, operandOffets, operandShape,
+            rewriter, loc, operand, operandOffsets, operandShape,
             operandStrides);
       };
       // Extract the new input operands.
@@ -1615,16 +1774,16 @@ struct UnrollInnerTiledPattern
                        inOffsets);
       }
 
-      SmallVector<int64_t> accOffets =
+      SmallVector<int64_t> accOffsets =
           applyPermutationMap(accPermutationMap, ArrayRef<int64_t>(offsets));
       // If a version of the accumulator has already been computed, use it
       // otherwise extract the first version from the original operand.
-      auto *accIt = accCache.find(accOffets);
+      auto *accIt = accCache.find(accOffsets);
       if (accIt != accCache.end()) {
         slicesOperands[accIndex] = accIt->second;
       } else {
         extractOperand(accIndex, tiledOp.getOutputs().front(),
-                       accPermutationMap, accOffets);
+                       accPermutationMap, accOffsets);
       }
 
       SmallVector<int64_t> dstShape = applyPermutationMap(
@@ -1636,11 +1795,11 @@ struct UnrollInnerTiledPattern
       IREE::Codegen::InnerTiledOp newOp =
           mlir::clone(rewriter, tiledOp, targetType, slicesOperands);
 
-      SmallVector<int64_t> dstOffets =
+      SmallVector<int64_t> dstOffsets =
           applyPermutationMap(accPermutationMap, ArrayRef<int64_t>(offsets));
       // Save the accumulated value until all the loops are unrolled since
       // reduction loop keep updating the accumulator.
-      accCache[dstOffets] = newOp.getResults().front();
+      accCache[dstOffsets] = newOp.getResults().front();
     }
     // Assemble back the accumulator into a single vector.
     Value result = arith::ConstantOp::create(rewriter, loc, dstVecType,
@@ -1733,12 +1892,15 @@ void populateIREEGPUVectorUnrollPatterns(RewritePatternSet &patterns) {
 //===---------------------------------------------------------------------===//
 
 static bool isLaneMappableForall(scf::ForallOp forallOp) {
-  if (forallOp.getNumResults() > 0)
+  if (forallOp.getNumResults() > 0) {
     return false;
-  if (forallOp.getRank() != 1)
+  }
+  if (forallOp.getRank() != 1) {
     return false;
-  if (!forallOp.getMapping().has_value())
+  }
+  if (!forallOp.getMapping().has_value()) {
     return false;
+  }
   Attribute mapping = *forallOp.getMapping()->getValue().begin();
   if (mapping != IREE::GPU::LaneIdAttr::get(forallOp.getContext(), 0)) {
     return false;
@@ -1765,7 +1927,7 @@ static void rewriteForallToLanes(RewriterBase &rewriter, scf::ForallOp forallOp,
   rewriter.setInsertionPoint(forallOp);
   rewriter.inlineBlockBefore(forallOp.getBody(), forallOp, {laneId});
   if (insertBarrier) {
-    gpu::BarrierOp::create(rewriter, loc);
+    gpu::BarrierOp::create(rewriter, loc, gpu::AddressSpace::Workgroup);
   }
   rewriter.eraseOp(forallOp);
 }
@@ -1790,8 +1952,7 @@ void mapLaneForalls(RewriterBase &rewriter, Operation *funcOp,
 //===---------------------------------------------------------------------===//
 
 namespace {
-struct LowerBarrierRegion
-    : public OpRewritePattern<IREE::GPU::BarrierRegionOp> {
+struct LowerBarrierRegion : OpRewritePattern<IREE::GPU::BarrierRegionOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::GPU::BarrierRegionOp barrierRegionOp,
                                 PatternRewriter &rewriter) const final {
@@ -1822,111 +1983,28 @@ void populateIREEGPULowerBarrierRegionPatterns(RewritePatternSet &patterns) {
   patterns.add<LowerBarrierRegion>(patterns.getContext());
 }
 
-//===---------------------------------------------------------------------===//
-// InnerTiledOp Vectorization
-//===---------------------------------------------------------------------===//
-
-static LogicalResult
-vectorizeStaticInnerTiledOp(RewriterBase &rewriter,
-                            IREE::Codegen::InnerTiledOp tiledOp) {
-  if (!tiledOp.hasTensorSemantics()) {
-    return failure();
-  }
-  SmallVector<ShapedType> argTypes = tiledOp.getOperandShapedTypes();
-  if (!llvm::all_of(argTypes, [](auto st) { return st.hasStaticShape(); })) {
-    return rewriter.notifyMatchFailure(tiledOp,
-                                       "non-static shape for vectorization");
-  }
-
-  OpBuilder::InsertionGuard g(rewriter);
-  rewriter.setInsertionPoint(tiledOp);
-
-  Location loc = tiledOp.getLoc();
-
-  // Construct the (never used) zero padding value for each operand.
-  SmallVector<Value> padValues =
-      llvm::map_to_vector(argTypes, [&](ShapedType argType) -> Value {
-        return arith::ConstantOp::create(
-            rewriter, loc, rewriter.getZeroAttr(argType.getElementType()));
-      });
-
-  SmallVector<Value> newOperands = tiledOp.getOperands();
-  for (auto [operand, type, padValue] :
-       llvm::zip_equal(newOperands, argTypes, padValues)) {
-    operand = vector::createReadOrMaskedRead(
-        rewriter, loc, operand, type.getShape(), padValue,
-        /*useInBoundsInsteadOfMasking=*/true);
-  }
-  auto newTiledOp = IREE::Codegen::InnerTiledOp::create(
-      rewriter, loc, ValueRange{newOperands}.take_front(tiledOp.getNumInputs()),
-      ValueRange{newOperands}.take_back(tiledOp.getNumOutputs()),
-      tiledOp.getIndexingMaps(), tiledOp.getIteratorTypes(), tiledOp.getKind(),
-      tiledOp.getSemantics());
-
-  auto zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  SmallVector<Value> transferWrites;
-  for (auto [result, tensorAcc] :
-       llvm::zip_equal(newTiledOp.getResults(), tiledOp.getOutputs())) {
-    // Create the write back to a tensor.
-    int64_t rank = cast<RankedTensorType>(tensorAcc.getType()).getRank();
-    auto write = vector::TransferWriteOp::create(
-        rewriter, loc,
-        /*vector=*/result,
-        /*source=*/tensorAcc,
-        /*indices=*/SmallVector<Value>(rank, zero),
-        /*inBounds=*/SmallVector<bool>(rank, true));
-    transferWrites.push_back(write.getResults().front());
-  }
-  rewriter.replaceOp(tiledOp, transferWrites);
-  return success();
-}
-
-namespace {
-struct VectorizeStaticInnerTiledOpPattern final
-    : OpRewritePattern<IREE::Codegen::InnerTiledOp> {
-  using Base::Base;
-  LogicalResult matchAndRewrite(IREE::Codegen::InnerTiledOp tiledOp,
-                                PatternRewriter &rewriter) const override {
-    return vectorizeStaticInnerTiledOp(rewriter, tiledOp);
-  }
-};
-} // namespace
-
-void populateIREEGPUVectorizationPatterns(RewritePatternSet &patterns) {
-  patterns.add<VectorizeStaticInnerTiledOpPattern>(patterns.getContext());
-}
-
 //===----------------------------------------------------------------------===//
 // VectorBarrierOp Lowering
 //===----------------------------------------------------------------------===//
 
 namespace {
-struct LowerValueBarrierPattern
-    : public OpRewritePattern<IREE::GPU::ValueBarrierOp> {
+struct LowerValueBarrierPattern : OpRewritePattern<IREE::GPU::ValueBarrierOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::GPU::ValueBarrierOp barrier,
                                 PatternRewriter &rewriter) const override {
     if (barrier.hasTensorSemantics()) {
       return failure();
     }
-    gpu::BarrierOp::create(rewriter, barrier.getLoc());
+    // TODO(kdrewnia): We give this barrier workgroup fence semantics to mach
+    // the behavior it had from before we could be more precise about barrier
+    // address spaces. Investigate if this could be a sync-only (`memfence []`)
+    // barrier
+    gpu::BarrierOp::create(rewriter, barrier.getLoc(),
+                           gpu::AddressSpace::Workgroup);
     for (auto [result, input] :
          llvm::zip_equal(barrier.getResults(), barrier.getInputs())) {
       rewriter.replaceAllUsesWith(result, input);
     }
-    return success();
-  }
-};
-
-struct LowerGlobalLoadDMAPattern
-    : public OpRewritePattern<IREE::GPU::GlobalLoadDMAOp> {
-  using Base::Base;
-  LogicalResult matchAndRewrite(IREE::GPU::GlobalLoadDMAOp dmaOp,
-                                PatternRewriter &rewriter) const override {
-    Type transferType = rewriter.getI32Type();
-    rewriter.replaceOpWithNewOp<amdgpu::GatherToLDSOp>(
-        dmaOp, dmaOp.getSource(), dmaOp.getSourceIndices(), dmaOp.getTarget(),
-        dmaOp.getTargetIndices(), transferType);
     return success();
   }
 };
@@ -1936,8 +2014,107 @@ void populateIREEGPULowerValueBarrierPatterns(RewritePatternSet &patterns) {
   patterns.add<LowerValueBarrierPattern>(patterns.getContext());
 }
 
-void populateIREEGPULowerGlobalLoadDMAPatterns(RewritePatternSet &patterns) {
-  patterns.add<LowerGlobalLoadDMAPattern>(patterns.getContext());
+//===----------------------------------------------------------------------===//
+// SwizzleHintOp Fold Patterns
+//===----------------------------------------------------------------------===//
+
+// The following patterns are adapted from the populateFoldTensorEmptyPatterns
+// in upstream llvm-project. The main change is to add support for folding with
+// swizzle_hint ops from IREE. Once swizzle_hint ops are more widely used and
+// proven stable, we could consider upstreaming this extension.
+
+namespace {
+struct FoldSwizzleHintOpWithExtractSliceOp final
+    : OpRewritePattern<tensor::ExtractSliceOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(tensor::ExtractSliceOp sliceOp,
+                                PatternRewriter &rewriter) const override {
+    // Check for swizzle_hint op source.
+    auto swizzleHintOp =
+        sliceOp.getSource().getDefiningOp<IREE::Codegen::SwizzleHintOp>();
+    if (!swizzleHintOp) {
+      return failure();
+    }
+
+    // Check for tensor.empty source.
+    auto emptyOp = swizzleHintOp.getOperand().getDefiningOp<tensor::EmptyOp>();
+    if (!emptyOp) {
+      return failure();
+    }
+
+    // Check for single use.
+    if (!emptyOp->hasOneUse()) {
+      return failure();
+    }
+
+    // Create new tensor.empty op. tensor.extract_slice may be rank-reducing;
+    // its dynamic sizes must be preserved as well as its result type.
+    Location loc = sliceOp.getLoc();
+    auto sliceType = cast<RankedTensorType>(sliceOp.getType());
+    auto tensorType =
+        RankedTensorType::get(sliceType.getShape(), sliceType.getElementType(),
+                              sliceType.getEncoding());
+    auto newEmptyOp =
+        tensor::EmptyOp::create(rewriter, loc, tensorType, sliceOp.getSizes());
+    rewriter.replaceOpWithNewOp<IREE::Codegen::SwizzleHintOp>(
+        sliceOp, newEmptyOp, swizzleHintOp.getSwizzle());
+    return success();
+  }
+};
+
+template <typename ReshapeOp>
+struct FoldSwizzleHintOpWithReshapeOp final : OpRewritePattern<ReshapeOp> {
+  using OpRewritePattern<ReshapeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(ReshapeOp reshapeOp,
+                                PatternRewriter &rewriter) const override {
+    auto swizzleHintOp =
+        reshapeOp.getSrc()
+            .template getDefiningOp<IREE::Codegen::SwizzleHintOp>();
+    if (!swizzleHintOp) {
+      return failure();
+    }
+    auto emptyOp =
+        swizzleHintOp.getOperand().template getDefiningOp<tensor::EmptyOp>();
+    if (!emptyOp) {
+      return failure();
+    }
+
+    // Check for single use.
+    if (!emptyOp->hasOneUse()) {
+      return failure();
+    }
+
+    // Reify result shape.
+    Location loc = reshapeOp.getLoc();
+    ReifiedRankedShapedTypeDims resultShapes;
+    if (failed(reifyResultShapes(rewriter, reshapeOp, resultShapes)) ||
+        !llvm::hasSingleElement(resultShapes)) {
+      return failure();
+    }
+
+    // Create new tensor.empty op.
+    Value emptyTensor =
+        tensor::EmptyOp::create(rewriter, loc, resultShapes[0],
+                                reshapeOp.getResultType().getElementType(),
+                                reshapeOp.getResultType().getEncoding());
+    Value newSwizzleHintOp = IREE::Codegen::SwizzleHintOp::create(
+        rewriter, loc, emptyTensor, swizzleHintOp.getSwizzle());
+    if (newSwizzleHintOp.getType() != reshapeOp.getResultType()) {
+      rewriter.replaceOpWithNewOp<tensor::CastOp>(
+          reshapeOp, reshapeOp.getResultType(), newSwizzleHintOp);
+    } else {
+      rewriter.replaceOp(reshapeOp, newSwizzleHintOp);
+    }
+    return success();
+  }
+};
+
+} // namespace
+
+void populateFoldSwizzleHintOpPatterns(RewritePatternSet &patterns) {
+  patterns.add<FoldSwizzleHintOpWithReshapeOp<tensor::ExpandShapeOp>,
+               FoldSwizzleHintOpWithReshapeOp<tensor::CollapseShapeOp>,
+               FoldSwizzleHintOpWithExtractSliceOp>(patterns.getContext());
 }
 
 } // namespace mlir::iree_compiler::IREE::GPU

@@ -14,27 +14,38 @@
 namespace mlir::iree_compiler::TorchInput {
 
 // The following is a hard-coded list of ops we don't want to decompose in the
-// torch dialect, since they have disadvantageous decompositons for the
+// torch dialect, since they have disadvantageous decompositions for the
 // torch-to-linalg path. For example, decomposing `aten.flatten.using_ints` to
 // `aten.view` simply destroys useful information about what kind of reshape is
 // being performed, and hinders our ability, in some cases, to lower this to a
 // collapse instead of a generic reshape.
 struct BackendLegalOps {
   static const llvm::SmallVector<std::string> get() {
-    return {"aten.flatten.using_ints",  "aten.unflatten.int",
-            "aten.adaptive_avg_pool1d", "aten.adaptive_avg_pool2d",
-            "aten.adaptive_max_pool1d", "aten.fft_rfft"};
+    return {"aten.flatten.using_ints",   "aten.unflatten.int",
+            "aten.adaptive_avg_pool1d",  "aten.adaptive_avg_pool2d",
+            "aten.adaptive_max_pool1d",  "aten.fft_rfft",
+            "aten.convolution_backward", "aten.scaled_dot_product_attention"};
   };
 };
 
 struct TorchToIREELoweringPipelineOptions
-    : public PassPipelineOptions<TorchToIREELoweringPipelineOptions> {
+    : PassPipelineOptions<TorchToIREELoweringPipelineOptions> {
   Option<bool> strictSymbolicShapes{
       *this, "strict-symbolic-shapes",
       llvm::cl::desc("Use strict symbolic shapes."), llvm::cl::init(true)};
   Option<bool> decompose{*this, "decompose",
                          llvm::cl::desc("Decompose complex torch operations."),
                          llvm::cl::init(true)};
+  Option<bool> externalizeTransients{
+      *this, "externalize-transients",
+      llvm::cl::desc(
+          "If enabled, this option will append an external hal buffer to "
+          "program inputs. This buffer will be used for storing transient "
+          "memory and must be provided by the user."),
+      llvm::cl::init(false)};
+  Option<bool> enableShapeRefinement{*this, "enable-shape-refinement",
+                                     llvm::cl::desc("Enable shape refinement"),
+                                     llvm::cl::init(false)};
 };
 
 // Creates a pipeline that lowers from the torch backend contract to IREE.

@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -20,9 +21,9 @@ namespace mlir::iree_compiler {
 
 namespace {
 
-static bool foldHDim(linalg::DepthwiseConv2DNhwcHwcOp convOp) {
-  Value kernel = convOp.getInputs().back();
-  Value output = convOp.getOutputs().front();
+static bool foldHDim(linalg::LinalgOp convOp) {
+  Value kernel = convOp.getDpsInputs().back();
+  Value output = convOp.getDpsInits().front();
 
   auto kernelType = dyn_cast<RankedTensorType>(kernel.getType());
   auto outputType = dyn_cast<RankedTensorType>(output.getType());
@@ -52,16 +53,22 @@ computeDecomposedLoweringConfig(ArrayRef<Operation *> computeOps,
   // TODO: Make this hook work with multiple conv Ops
   assert(llvm::count_if(computeOps,
                         [](Operation *op) {
-                          return isa<linalg::ConvolutionOpInterface>(op);
+                          auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+                          return linalgOp &&
+                                 linalg::isaConvolutionOpInterface(linalgOp);
                         }) == 1 &&
          "Exactly 1 Linalg Conv Op is expected");
 
   // 1. Get the conv Op to update
   // ATM only 2D depthwise HWC convs are supported.
   // TODO: Add support for other convs
-  linalg::DepthwiseConv2DNhwcHwcOp convOp;
+  linalg::LinalgOp convOp;
   for (Operation *op : computeOps) {
-    if ((convOp = dyn_cast<linalg::DepthwiseConv2DNhwcHwcOp>(op))) {
+    auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+    if (linalgOp &&
+        linalg::isaConvolutionOpOfType<linalg::DepthwiseConv2DNhwcHwcOp>(
+            linalgOp)) {
+      convOp = linalgOp;
       break;
     }
   }
@@ -72,22 +79,25 @@ computeDecomposedLoweringConfig(ArrayRef<Operation *> computeOps,
 
   // ATM only folding of the H dim is supported.
   // TODO: Add support for cases where the W dim is folded.
-  if (!foldHDim(convOp))
+  if (!foldHDim(convOp)) {
     return failure();
+  }
 
   // 2. Get the current lowering config attached to the Conv Op.
   FailureOr<IREE::Codegen::LoweringConfigAttr> loweringConfigAttr =
       getFirstLoweringConfig<IREE::Codegen::LoweringConfigAttr>(computeOps);
-  if (failed(loweringConfigAttr))
+  if (failed(loweringConfigAttr)) {
     return failure();
+  }
 
   // TODO: Either remove "interchange" from lowering_config or add support in
   // this pass.
-  if (!loweringConfigAttr->isInterchangeEmpty())
+  if (!loweringConfigAttr->isInterchangeEmpty()) {
     return failure();
+  }
 
   // 3. Calculate new tiling levels.
-  // Note that this will basically erase the _H_ dims from the orignal lowering
+  // Note that this will basically erase the _H_ dims from the original lowering
   // config.
   auto dims = linalg::inferConvolutionDims(convOp);
   SmallVector<unsigned> hDimsToErase = {dims->outputImage[0],
@@ -134,7 +144,8 @@ class DecomposeConvolutionToLowerDimOpsPass final
     // compute the "decomposed" version of its lowering config attribute.
     // TODO: Add support for cases with multiple convs per function
     int64_t numConvOps = llvm::count_if(computeOps, [](Operation *op) {
-      return isa<linalg::ConvolutionOpInterface>(op);
+      auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
+      return linalgOp && linalg::isaConvolutionOpInterface(linalgOp);
     });
 
     if (numConvOps == 0) {
@@ -159,8 +170,12 @@ class DecomposeConvolutionToLowerDimOpsPass final
     if (numConvOps == 1 && succeeded(newLoweringConfig)) {
       auto computeOps = getComputeOps(funcOp);
       for (auto computeOp : computeOps) {
-        if (isa<linalg::DepthwiseConv1DNwcWcOp>(computeOp))
+        auto linalgOp = dyn_cast<linalg::LinalgOp>(computeOp);
+        if (linalgOp &&
+            linalg::isaConvolutionOpOfType<linalg::DepthwiseConv1DNwcWcOp>(
+                linalgOp)) {
           setLoweringConfig(computeOp, newLoweringConfig.value());
+        }
       }
     }
   }

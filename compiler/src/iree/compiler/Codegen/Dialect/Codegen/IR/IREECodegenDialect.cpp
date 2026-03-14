@@ -9,7 +9,9 @@
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/UKernelOps.h"
+#include "iree/compiler/Codegen/Dialect/PCF/IR/PCFInterfaces.h"
 #include "llvm/ADT/STLExtras.h"
+#include "mlir/Dialect/SMT/IR/SMTDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
 #include "mlir/IR/DialectImplementation.h"
 // clang-format off
@@ -19,7 +21,7 @@
 
 namespace mlir::iree_compiler::IREE::Codegen {
 
-struct IREECodegenDialectOpAsmInterface : public OpAsmDialectInterface {
+struct IREECodegenDialectOpAsmInterface : OpAsmDialectInterface {
   using OpAsmDialectInterface::OpAsmDialectInterface;
   AliasResult getAlias(Attribute attr, raw_ostream &os) const override {
     if (isa<TranslationInfoAttr>(attr)) {
@@ -50,6 +52,8 @@ void IREECodegenDialect::initialize() {
       >();
 
   addTypes<IREE::Codegen::NullPointerType>();
+
+  declarePromisedInterface<PCF::ScopeAttrInterface, WorkgroupScopeAttr>();
 }
 
 static LogicalResult
@@ -208,8 +212,9 @@ IREECodegenDialect::verifyOperationAttribute(Operation *op,
     }
   }
 
-  if (symbol != kTuningSpecEntrypointAttrName)
+  if (symbol != kTuningSpecEntrypointAttrName) {
     return success();
+  }
 
   const std::string requiredByEntrypointMessage =
       " (required by '" + std::string(kTuningSpecEntrypointAttrName) + "')";

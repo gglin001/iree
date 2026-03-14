@@ -8,6 +8,8 @@
 
 #include <algorithm>
 
+#include "llvm/ADT/SmallVectorExtras.h"
+
 namespace mlir::iree_compiler::IREE::HAL {
 
 //===----------------------------------------------------------------------===//
@@ -116,8 +118,8 @@ TargetRegistry::getTargetDevices(ArrayRef<std::string> targetNames) const {
   // To ensure deterministic builds we sort matches by name.
   std::sort(matches.begin(), matches.end(),
             [](const auto &a, const auto &b) { return a.first < b.first; });
-  return llvm::to_vector(llvm::map_range(
-      matches, [](auto match) { return std::move(match.second); }));
+  return llvm::map_to_vector(
+      matches, [](auto match) { return std::move(match.second); });
 }
 
 SmallVector<std::shared_ptr<TargetBackend>>
@@ -132,8 +134,8 @@ TargetRegistry::getTargetBackends(ArrayRef<std::string> targetNames) const {
   // To ensure deterministic builds we sort matches by name.
   std::sort(matches.begin(), matches.end(),
             [](const auto &a, const auto &b) { return a.first < b.first; });
-  return llvm::to_vector(llvm::map_range(
-      matches, [](auto match) { return std::move(match.second); }));
+  return llvm::map_to_vector(
+      matches, [](auto match) { return std::move(match.second); });
 }
 
 } // namespace mlir::iree_compiler::IREE::HAL
@@ -155,8 +157,9 @@ bool llvm::cl::parser<TargetRegistryRef>::parse(Option &O, StringRef ArgName,
   // We ignore Arg here and just use the global registry. We could parse a list
   // of target backends and create a new registry with just that subset but
   // ownership gets tricky.
-  if (Arg != "global")
+  if (Arg != "global") {
     return true;
+  }
   Val.value = &mlir::iree_compiler::IREE::HAL::TargetRegistry::getGlobal();
   return false;
 }

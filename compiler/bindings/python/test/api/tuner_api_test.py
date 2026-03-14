@@ -6,6 +6,7 @@
 
 from iree.compiler import ir
 from iree.compiler.dialects import iree_codegen
+from iree.compiler.dialects import iree_gpu
 from iree.compiler.dialects import affine
 from iree.compiler.ir import AffineMap, AffineDimExpr
 
@@ -17,6 +18,32 @@ def run(fn):
             print("\nTEST:", fn.__name__)
             fn()
     return fn
+
+
+@run
+def root_op_attr():
+    # Test 1: Create RootOpAttr and read back the set.
+    attr = iree_codegen.RootOpAttr.get(set=0)
+    assert isinstance(attr, iree_codegen.RootOpAttr)
+    assert attr.set == 0
+
+    attr1 = iree_codegen.RootOpAttr.get(set=42)
+    assert attr1.set == 42
+
+    # Test 2: Default set value is 0.
+    attr_default = iree_codegen.RootOpAttr.get()
+    assert attr_default.set == 0
+
+    # Test 3: Parse from MLIR and read back.
+    parsed = ir.Attribute.parse("#iree_codegen.root_op<set = 7>")
+    assert isinstance(parsed, iree_codegen.RootOpAttr)
+    assert parsed.set == 7
+
+    # Test 4: Round-trip through string.
+    attr2 = iree_codegen.RootOpAttr.get(set=3)
+    reparsed = ir.Attribute.parse(str(attr2))
+    assert isinstance(reparsed, iree_codegen.RootOpAttr)
+    assert reparsed.set == 3
 
 
 @run
@@ -43,7 +70,7 @@ def root_op():
                 %cst = arith.constant 0.000000e+00 : f32
                 %0 = tensor.empty() : tensor<4x4xf32>
                 %1 = linalg.fill ins(%cst : f32) outs(%0 : tensor<4x4xf32>) -> tensor<4x4xf32>
-                %2 = linalg.matmul { root_op } ins(%arg0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>) outs(%1 : tensor<4x4xf32>) -> tensor<4x4xf32>
+                %2 = linalg.matmul { root_op = #iree_codegen.root_op<set = 0> } ins(%arg0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>) outs(%1 : tensor<4x4xf32>) -> tensor<4x4xf32>
                 return %2 : tensor<4x4xf32>
             }
         }
@@ -59,8 +86,8 @@ def root_op():
             func.func @matmul(%arg0: tensor<4x4xf32>, %arg1: tensor<4x4xf32>) -> tensor<4x4xf32> {
                 %cst = arith.constant 0.000000e+00 : f32
                 %0 = tensor.empty() : tensor<4x4xf32>
-                %1 = linalg.fill { root_op } ins(%cst : f32) outs(%0 : tensor<4x4xf32>) -> tensor<4x4xf32>
-                %2 = linalg.matmul { root_op } ins(%arg0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>) outs(%1 : tensor<4x4xf32>) -> tensor<4x4xf32>
+                %1 = linalg.fill { root_op = #iree_codegen.root_op<set = 0> } ins(%cst : f32) outs(%0 : tensor<4x4xf32>) -> tensor<4x4xf32>
+                %2 = linalg.matmul { root_op = #iree_codegen.root_op<set = 0> } ins(%arg0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>) outs(%1 : tensor<4x4xf32>) -> tensor<4x4xf32>
                 return %2 : tensor<4x4xf32>
             }
         }
@@ -77,18 +104,10 @@ def root_op():
 def attention_op_detail():
     dim_exprs = [affine.AffineDimExpr.get(i) for i in range(5)]
 
-    q_map = affine.AffineMap.get(
-        5, 0, [dim_exprs[0], dim_exprs[1], dim_exprs[2]]
-    )  # (d0, d1, d2).
-    k_map = affine.AffineMap.get(
-        5, 0, [dim_exprs[0], dim_exprs[3], dim_exprs[2]]
-    )  # (d0, d3, d2).
-    v_map = affine.AffineMap.get(
-        5, 0, [dim_exprs[0], dim_exprs[3], dim_exprs[4]]
-    )  # (d0, d3, d4).                                      # ()
-    o_map = affine.AffineMap.get(
-        5, 0, [dim_exprs[0], dim_exprs[1], dim_exprs[4]]
-    )  # (d0, d1, d4).
+    q_map = affine.AffineMap.get(5, 0, [dim_exprs[0], dim_exprs[1], dim_exprs[2]])
+    k_map = affine.AffineMap.get(5, 0, [dim_exprs[0], dim_exprs[3], dim_exprs[2]])
+    v_map = affine.AffineMap.get(5, 0, [dim_exprs[0], dim_exprs[3], dim_exprs[4]])
+    o_map = affine.AffineMap.get(5, 0, [dim_exprs[0], dim_exprs[1], dim_exprs[4]])
 
     result = iree_codegen.get_attention_op_detail(q_map, k_map, v_map, o_map)
 
@@ -102,10 +121,10 @@ def attention_op_detail():
     dim_exprs = [affine.AffineDimExpr.get(i) for i in range(4)]
 
     # Input affine maps that do not follow the expected pattern for an attention operation.
-    q_map = affine.AffineMap.get(4, 0, [dim_exprs[0], dim_exprs[1]])  # (d0, d1).
-    k_map = affine.AffineMap.get(4, 0, [dim_exprs[0], dim_exprs[2]])  # (d0, d2).
-    v_map = affine.AffineMap.get(4, 0, [dim_exprs[0], dim_exprs[3]])  # (d0, d3).
-    o_map = affine.AffineMap.get(4, 0, [dim_exprs[0], dim_exprs[1]])  # (d0, d1).
+    q_map = affine.AffineMap.get(4, 0, [dim_exprs[0], dim_exprs[1]])
+    k_map = affine.AffineMap.get(4, 0, [dim_exprs[0], dim_exprs[2]])
+    v_map = affine.AffineMap.get(4, 0, [dim_exprs[0], dim_exprs[3]])
+    o_map = affine.AffineMap.get(4, 0, [dim_exprs[0], dim_exprs[1]])
 
     result = iree_codegen.get_attention_op_detail(q_map, k_map, v_map, o_map)
     assert result.domain_rank == 4
@@ -127,7 +146,7 @@ def test_isa_attention_op():
                     %scale : f16,
                     %output : tensor<20x4096x64xf16>
                 ) -> tensor<20x4096x64xf16> {
-                    %result = iree_linalg_ext.attention { root_op,
+                    %result = iree_linalg_ext.attention { root_op = #iree_codegen.root_op<set = 0>,
                         indexing_maps = [
                         affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2)>,
                         affine_map<(d0, d1, d2, d3, d4) -> (d0, d3, d2)>,
@@ -158,7 +177,7 @@ def test_igemm_conv_details():
     module_str = """
         module {
             func.func @conv_2d_nhwc_hwcf(%arg0: tensor<1x16x16x4xf32>, %arg1: tensor<3x3x4x16xf32>, %arg2: tensor<1x14x14x16xf32>) -> tensor<1x14x14x16xf32> {
-                %0 = linalg.conv_2d_nhwc_hwcf { root_op, dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64> }
+                %0 = linalg.conv_2d_nhwc_hwcf { root_op = #iree_codegen.root_op<set = 0>, dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64> }
                     ins(%arg0, %arg1 : tensor<1x16x16x4xf32>, tensor<3x3x4x16xf32>)
                     outs(%arg2 : tensor<1x14x14x16xf32>) -> tensor<1x14x14x16xf32>
                 return %0 : tensor<1x14x14x16xf32>
@@ -200,7 +219,7 @@ def test_igemm_conv_details():
     module_str = """
         module {
             func.func @conv_2d_nhwc_fhwc(%arg0: tensor<1x16x16x4xf32>, %arg1: tensor<16x3x3x4xf32>, %arg2: tensor<1x14x14x16xf32>) -> tensor<1x14x14x16xf32> {
-                %0 = linalg.conv_2d_nhwc_fhwc { root_op, dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64> }
+                %0 = linalg.conv_2d_nhwc_fhwc { root_op = #iree_codegen.root_op<set = 0>, dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64> }
                     ins(%arg0, %arg1 : tensor<1x16x16x4xf32>, tensor<16x3x3x4xf32>)
                     outs(%arg2 : tensor<1x14x14x16xf32>) -> tensor<1x14x14x16xf32>
                 return %0 : tensor<1x14x14x16xf32>
@@ -241,7 +260,7 @@ def test_igemm_conv_details():
     module_str = """
         module {
             func.func @conv_2d_nchw_fchw(%arg0: tensor<1x4x16x16xf32>, %arg1: tensor<16x4x3x3xf32>, %arg2: tensor<1x16x14x14xf32>) -> tensor<1x16x14x14xf32> {
-                %0 = linalg.conv_2d_nchw_fchw { root_op, dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64> }
+                %0 = linalg.conv_2d_nchw_fchw { root_op = #iree_codegen.root_op<set = 0>, dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64> }
                     ins(%arg0, %arg1 : tensor<1x4x16x16xf32>, tensor<16x4x3x3xf32>)
                     outs(%arg2 : tensor<1x16x14x14xf32>) -> tensor<1x16x14x14xf32>
                 return %0 : tensor<1x16x14x14xf32>
@@ -290,7 +309,7 @@ def test_igemm_conv_details():
                         affine_map<(d0, d1, d2, d3, d4, d5) -> (d0, d1, d2)>
                     ],
                     iterator_types = ["parallel", "parallel", "parallel", "reduction", "reduction", "reduction"]
-                } ins(%arg0, %arg1 : tensor<16x98x64x96xf32>, tensor<16x96x64x96xf32>) outs(%arg2 : tensor<96x3x96xf32>) attrs = {root_op} {
+                } ins(%arg0, %arg1 : tensor<16x98x64x96xf32>, tensor<16x96x64x96xf32>) outs(%arg2 : tensor<96x3x96xf32>) attrs = {root_op = #iree_codegen.root_op<set = 0>} {
                 ^bb0(%in: f32, %in_1: f32, %out: f32):
                     %mul = arith.mulf %in, %in_1 : f32
                     %add = arith.addf %out, %mul : f32
@@ -325,7 +344,7 @@ def test_igemm_conv_details():
     module_str = """
         module {
             func.func @matmul(%arg0: tensor<4x4xf32>, %arg1: tensor<4x4xf32>, %arg2: tensor<4x4xf32>) -> tensor<4x4xf32> {
-                %0 = linalg.matmul { root_op } ins(%arg0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>) outs(%arg2 : tensor<4x4xf32>) -> tensor<4x4xf32>
+                %0 = linalg.matmul { root_op = #iree_codegen.root_op<set = 0> } ins(%arg0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>) outs(%arg2 : tensor<4x4xf32>) -> tensor<4x4xf32>
                 return %0 : tensor<4x4xf32>
             }
         }
@@ -336,3 +355,266 @@ def test_igemm_conv_details():
 
     details = iree_codegen.get_igemm_generic_conv_details(matmul_op)
     assert details is None, "IGEMM details should be None for non-conv operation"
+
+
+@run
+def test_isa_scaled_contraction_op():
+    # Test 1: Regular matmul is not a scaled contraction.
+    module_str = """
+        module {
+            func.func @matmul(%arg0: tensor<4x4xf32>, %arg1: tensor<4x4xf32>, %arg2: tensor<4x4xf32>) -> tensor<4x4xf32> {
+                %0 = linalg.matmul { root_op = #iree_codegen.root_op<set = 0> } ins(%arg0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>) outs(%arg2 : tensor<4x4xf32>) -> tensor<4x4xf32>
+                return %0 : tensor<4x4xf32>
+            }
+        }
+    """
+    input_module = ir.Module.parse(module_str)
+    assert input_module is not None, "Failed to parse input MLIR module"
+    root_op_list = iree_codegen.get_tuner_root_ops(input_module)
+    assert len(root_op_list) == 1
+    matmul_op = root_op_list[0]
+
+    assert not iree_codegen.isa_scaled_contraction_op(
+        matmul_op
+    ), "Regular matmul should not be a scaled contraction"
+
+    # Test 2: Fill op is not a scaled contraction.
+    module_str = """
+        module {
+            func.func @fill(%arg0: tensor<4x4xf32>) -> tensor<4x4xf32> {
+                %cst = arith.constant 0.000000e+00 : f32
+                %0 = linalg.fill { root_op = #iree_codegen.root_op<set = 0> } ins(%cst : f32) outs(%arg0 : tensor<4x4xf32>) -> tensor<4x4xf32>
+                return %0 : tensor<4x4xf32>
+            }
+        }
+    """
+    input_module = ir.Module.parse(module_str)
+    root_op_list = iree_codegen.get_tuner_root_ops(input_module)
+    assert len(root_op_list) == 1
+    fill_op = root_op_list[0]
+
+    assert not iree_codegen.isa_scaled_contraction_op(
+        fill_op
+    ), "Fill op should not be a scaled contraction"
+
+    # Test 3: Scaled matmul as linalg.generic should be detected.
+    # Pattern: linalg.generic with 5 indexing maps (lhs, rhs, lhs_scale, rhs_scale, output),
+    # and 4 iterator types (2 parallel for M,N; 2 reduction for Ko,Kb).
+    # Uses f4E2M1FN for operands and f8E8M0FNU for scales (matching real scaled matmul pattern).
+    module_str = """
+        module {
+            func.func @scaled_matmul(%lhs: tensor<16x4x32xf4E2M1FN>, %rhs: tensor<16x4x32xf4E2M1FN>,
+                                     %lhs_scales: tensor<16x4xf8E8M0FNU>, %rhs_scales: tensor<16x4xf8E8M0FNU>,
+                                     %out: tensor<16x16xf32>) -> tensor<16x16xf32> {
+                %result = linalg.generic {
+                    indexing_maps = [
+                        affine_map<(d0, d1, d2, d3) -> (d0, d2, d3)>,
+                        affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>,
+                        affine_map<(d0, d1, d2, d3) -> (d0, d2)>,
+                        affine_map<(d0, d1, d2, d3) -> (d1, d2)>,
+                        affine_map<(d0, d1, d2, d3) -> (d0, d1)>
+                    ],
+                    iterator_types = ["parallel", "parallel", "reduction", "reduction"],
+                    root_op = #iree_codegen.root_op<set = 0>
+                } ins(%lhs, %rhs, %lhs_scales, %rhs_scales : tensor<16x4x32xf4E2M1FN>, tensor<16x4x32xf4E2M1FN>, tensor<16x4xf8E8M0FNU>, tensor<16x4xf8E8M0FNU>)
+                  outs(%out : tensor<16x16xf32>) {
+                ^bb0(%a: f4E2M1FN, %b: f4E2M1FN, %a_scale: f8E8M0FNU, %b_scale: f8E8M0FNU, %acc: f32):
+                    %a_scaled = arith.scaling_extf %a, %a_scale : f4E2M1FN, f8E8M0FNU to f32
+                    %b_scaled = arith.scaling_extf %b, %b_scale : f4E2M1FN, f8E8M0FNU to f32
+                    %prod = arith.mulf %a_scaled, %b_scaled : f32
+                    %sum = arith.addf %acc, %prod : f32
+                    linalg.yield %sum : f32
+                } -> tensor<16x16xf32>
+                return %result : tensor<16x16xf32>
+            }
+        }
+    """
+    input_module = ir.Module.parse(module_str)
+    root_op_list = iree_codegen.get_tuner_root_ops(input_module)
+    assert len(root_op_list) == 1, "Should have one root op"
+
+    scaled_generic_op = root_op_list[0]
+    is_scaled = iree_codegen.isa_scaled_contraction_op(scaled_generic_op)
+    assert (
+        is_scaled
+    ), "linalg.generic with scaled matmul pattern should be detected as scaled contraction"
+
+    dims = iree_codegen.infer_scaled_contraction_dimensions(scaled_generic_op)
+    assert dims is not None, "Should be able to infer dimensions for scaled contraction"
+
+    assert dims.m == [0], f"Got {dims.m}"
+    assert dims.n == [1], f"Got {dims.n}"
+    assert dims.k == [2], f"Got {dims.k}"
+    assert dims.kB == [3], f"Got {dims.kB}"
+    assert dims.batch == [], f"Got {dims.batch}"
+
+
+@run
+def test_infer_scaled_contraction_dimensions():
+    # Test 1: Verify dimension inference on a scaled matmul operation.
+    module_str = """
+        module {
+            func.func @scaled_matmul(%lhs: tensor<16x4x32xf4E2M1FN>, %rhs: tensor<16x4x32xf4E2M1FN>,
+                                     %lhs_scales: tensor<16x4xf8E8M0FNU>, %rhs_scales: tensor<16x4xf8E8M0FNU>,
+                                     %out: tensor<16x16xf32>) -> tensor<16x16xf32> {
+                %result = linalg.generic {
+                    indexing_maps = [
+                        affine_map<(d0, d1, d2, d3) -> (d0, d2, d3)>,
+                        affine_map<(d0, d1, d2, d3) -> (d1, d2, d3)>,
+                        affine_map<(d0, d1, d2, d3) -> (d0, d2)>,
+                        affine_map<(d0, d1, d2, d3) -> (d1, d2)>,
+                        affine_map<(d0, d1, d2, d3) -> (d0, d1)>
+                    ],
+                    iterator_types = ["parallel", "parallel", "reduction", "reduction"],
+                    root_op = #iree_codegen.root_op<set = 0>
+                } ins(%lhs, %rhs, %lhs_scales, %rhs_scales : tensor<16x4x32xf4E2M1FN>, tensor<16x4x32xf4E2M1FN>, tensor<16x4xf8E8M0FNU>, tensor<16x4xf8E8M0FNU>)
+                  outs(%out : tensor<16x16xf32>) {
+                ^bb0(%a: f4E2M1FN, %b: f4E2M1FN, %a_scale: f8E8M0FNU, %b_scale: f8E8M0FNU, %acc: f32):
+                    %a_scaled = arith.scaling_extf %a, %a_scale : f4E2M1FN, f8E8M0FNU to f32
+                    %b_scaled = arith.scaling_extf %b, %b_scale : f4E2M1FN, f8E8M0FNU to f32
+                    %prod = arith.mulf %a_scaled, %b_scaled : f32
+                    %sum = arith.addf %acc, %prod : f32
+                    linalg.yield %sum : f32
+                } -> tensor<16x16xf32>
+                return %result : tensor<16x16xf32>
+            }
+        }
+    """
+    input_module = ir.Module.parse(module_str)
+    root_op_list = iree_codegen.get_tuner_root_ops(input_module)
+    assert len(root_op_list) == 1, "Should have exactly one root op"
+    scaled_op = root_op_list[0]
+
+    assert iree_codegen.isa_scaled_contraction_op(
+        scaled_op
+    ), "Operation should be recognized as scaled contraction"
+
+    dims = iree_codegen.infer_scaled_contraction_dimensions(scaled_op)
+    assert dims is not None, "Should successfully infer dimensions"
+    assert dims.m == [0], f"Got {dims.m}"
+    assert dims.n == [1], f"Got {dims.n}"
+    assert dims.k == [2], f"Got {dims.k}"
+    assert dims.kB == [3], f"Got {dims.kB}"
+    assert dims.batch == [], f"Got {dims.batch}"
+
+    # Test 2: Non-scaled contraction should return None.
+    module_str_regular = """
+        module {
+            func.func @regular_matmul(%arg0: tensor<4x4xf32>, %arg1: tensor<4x4xf32>, %arg2: tensor<4x4xf32>) -> tensor<4x4xf32> {
+                %0 = linalg.matmul { root_op = #iree_codegen.root_op<set = 0> } ins(%arg0, %arg1 : tensor<4x4xf32>, tensor<4x4xf32>) outs(%arg2 : tensor<4x4xf32>) -> tensor<4x4xf32>
+                return %0 : tensor<4x4xf32>
+            }
+        }
+    """
+    input_module_regular = ir.Module.parse(module_str_regular)
+    regular_ops = iree_codegen.get_tuner_root_ops(input_module_regular)
+    assert len(regular_ops) == 1
+    regular_matmul = regular_ops[0]
+
+    # Regular matmul should not have scaled contraction dimensions.
+    # Check if all dimensions are empty (indicating it's not a scaled contraction).
+    dims_regular = iree_codegen.infer_scaled_contraction_dimensions(regular_matmul)
+    if dims_regular is not None:
+        all_empty = (
+            len(dims_regular.m) == 0
+            and len(dims_regular.n) == 0
+            and len(dims_regular.k) == 0
+            and len(dims_regular.kB) == 0
+            and len(dims_regular.batch) == 0
+        )
+        assert (
+            all_empty or dims_regular is None
+        ), "Regular matmul should not have valid scaled contraction dimensions"
+
+    # Test 3: Batched scaled matmul.
+    module_str_batched = """
+        module {
+            func.func @batched_scaled_matmul(%lhs: tensor<8x16x4x32xf4E2M1FN>, %rhs: tensor<8x16x4x32xf4E2M1FN>,
+                                             %lhs_scales: tensor<8x16x4xf8E8M0FNU>, %rhs_scales: tensor<8x16x4xf8E8M0FNU>,
+                                             %out: tensor<8x16x16xf32>) -> tensor<8x16x16xf32> {
+                %result = linalg.generic {
+                    indexing_maps = [
+                        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3, d4)>,
+                        affine_map<(d0, d1, d2, d3, d4) -> (d0, d2, d3, d4)>,
+                        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d3)>,
+                        affine_map<(d0, d1, d2, d3, d4) -> (d0, d2, d3)>,
+                        affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2)>
+                    ],
+                    iterator_types = ["parallel", "parallel", "parallel", "reduction", "reduction"],
+                    root_op = #iree_codegen.root_op<set = 0>
+                } ins(%lhs, %rhs, %lhs_scales, %rhs_scales : tensor<8x16x4x32xf4E2M1FN>, tensor<8x16x4x32xf4E2M1FN>, tensor<8x16x4xf8E8M0FNU>, tensor<8x16x4xf8E8M0FNU>)
+                  outs(%out : tensor<8x16x16xf32>) {
+                ^bb0(%a: f4E2M1FN, %b: f4E2M1FN, %a_scale: f8E8M0FNU, %b_scale: f8E8M0FNU, %acc: f32):
+                    %a_scaled = arith.scaling_extf %a, %a_scale : f4E2M1FN, f8E8M0FNU to f32
+                    %b_scaled = arith.scaling_extf %b, %b_scale : f4E2M1FN, f8E8M0FNU to f32
+                    %prod = arith.mulf %a_scaled, %b_scaled : f32
+                    %sum = arith.addf %acc, %prod : f32
+                    linalg.yield %sum : f32
+                } -> tensor<8x16x16xf32>
+                return %result : tensor<8x16x16xf32>
+            }
+        }
+    """
+    input_module_batched = ir.Module.parse(module_str_batched)
+    batched_ops = iree_codegen.get_tuner_root_ops(input_module_batched)
+    assert len(batched_ops) == 1, "Batched op should be found"
+    batched_op = batched_ops[0]
+    assert iree_codegen.isa_scaled_contraction_op(
+        batched_op
+    ), "Batched scaled matmul should be recognized"
+
+    dims_batched = iree_codegen.infer_scaled_contraction_dimensions(batched_op)
+    assert (
+        dims_batched is not None
+    ), "Batch dimension must be present in batched scaled matmul"
+    assert dims_batched.batch == [0], f"Got {dims_batched.batch}"
+    assert dims_batched.m == [1], f"Got {dims_batched.m}"
+    assert dims_batched.n == [2], f"Got {dims_batched.n}"
+    assert dims_batched.k == [3], f"Got {dims_batched.k}"
+    assert dims_batched.kB == [4], f"Got {dims_batched.kB}"
+
+
+@run
+def test_is_xor_shuffle_valid():
+    """Test XOR shuffle validation (pure function, no MLIR attributes)."""
+    # Valid: row and access divide tile; row >= access; tile >= row.
+    assert iree_gpu.is_xor_shuffle_valid(256, 32, 512)
+    assert iree_gpu.is_xor_shuffle_valid(512, 64, 512)
+    assert iree_gpu.is_xor_shuffle_valid(32, 8, 512)
+    # Invalid: row exceeds tile.
+    assert not iree_gpu.is_xor_shuffle_valid(512, 32, 256)
+    # Invalid: access exceeds row.
+    assert not iree_gpu.is_xor_shuffle_valid(256, 512, 512)
+    # Invalid: row does not evenly divide tile.
+    assert not iree_gpu.is_xor_shuffle_valid(300, 32, 512)
+    # Invalid: access does not evenly divide row.
+    assert not iree_gpu.is_xor_shuffle_valid(256, 33, 512)
+
+
+@run
+def test_get_xor_shuffle_bounds():
+    """Test XOR shuffle bounds for an MMA intrinsic (for use by SharkTuner)."""
+    # Use an MMA intrinsic that supports getXorShuffleBounds (InnerTileDescAttrInterface).
+    mma_attr = iree_gpu.MMAAttr.get(iree_gpu.MMAIntrinsic.MFMA_F32_16x16x16_F16)
+    bounds = iree_gpu.get_xor_shuffle_bounds(mma_attr, operand_index=0)
+    assert bounds is not None, "get_xor_shuffle_bounds should succeed for MMAAttr"
+    min_access_elems, total_tile_elems = bounds
+    assert min_access_elems == 4
+    assert total_tile_elems == 256
+    bounds_rhs = iree_gpu.get_xor_shuffle_bounds(mma_attr, operand_index=1)
+    assert bounds_rhs is not None
+
+
+@run
+def test_one_of_knob_attr():
+    """Test OneOfKnobAttr Python bindings."""
+    attr = ir.Attribute.parse(
+        '#iree_codegen.smt.one_of_knob<"mma_idx", ["opt_a", "opt_b", "opt_c"]>'
+    )
+    assert isinstance(attr, iree_codegen.OneOfKnobAttr)
+    assert attr.name == "mma_idx"
+    opts = attr.options
+    assert len(opts) == 3
+    assert str(opts[0]) == '"opt_a"'
+    assert str(opts[1]) == '"opt_b"'
+    assert str(opts[2]) == '"opt_c"'

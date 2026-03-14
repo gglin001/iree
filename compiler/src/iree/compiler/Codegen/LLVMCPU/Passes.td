@@ -32,11 +32,11 @@ def ConvertToLLVMPass :
 def ExpandF16OpToF32Pass :
     Pass<"iree-llvmcpu-expand-f16-op-to-f32", ""> {
   let summary =
-      "Preform f16 opertaions by expanding them to f32.";
+      "Preform f16 operations by expanding them to f32.";
   let description = [{
-    Pass to handel F16 bit operations, but converting f16 operands to F32.
-    Currently this pass is handeling fmaxf conversion from f16 to f32,
-    and then returing a f16 output back after preforming the operation.
+    Pass to handle F16 bit operations, but converting f16 operands to F32.
+    Currently this pass is handling fmaxf conversion from f16 to f32,
+    and then returning a f16 output back after preforming the operation.
     Can handle more operations if required in future.
   }];
 }
@@ -87,6 +87,12 @@ def LLVMCPULowerExecutableTargetPass :
     dialect. Currently this pass lowers to LLVM dialect, but could be
     generalized to lower to any "final" dialect like SPIR-V/NVVM, etc.
   }];
+  let options = [
+    Option<"cpuOptions", "cpu-options", "CPUCodegenOptions",
+      /*default=*/"CPUCodegenOptions::FromFlags::get()",
+      "Session-scoped CPU codegen options controlling optimization level, "
+      "distribution, etc.">,
+  ];
 }
 
 def LLVMCPUMmt4dVectorLoweringPass

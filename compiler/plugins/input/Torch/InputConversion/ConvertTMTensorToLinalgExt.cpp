@@ -27,7 +27,7 @@ namespace mlir::iree_compiler::TorchInput {
 namespace {
 
 template <typename SrcOpTy, typename TargetOpTy>
-struct TMTensorOpConversion : public OpRewritePattern<SrcOpTy> {
+struct TMTensorOpConversion : OpRewritePattern<SrcOpTy> {
   using OpRewritePattern<SrcOpTy>::OpRewritePattern;
   LogicalResult matchAndRewrite(SrcOpTy srcOp,
                                 PatternRewriter &rewriter) const override {
@@ -46,13 +46,14 @@ struct TMTensorOpConversion : public OpRewritePattern<SrcOpTy> {
 };
 
 struct ScatterOpConversion
-    : public OpRewritePattern<mlir::torch::TMTensor::ScatterOp> {
+    : OpRewritePattern<mlir::torch::TMTensor::ScatterOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(mlir::torch::TMTensor::ScatterOp op,
                                 PatternRewriter &rewriter) const override {
     auto indicesTy = op.getIndicesType();
-    if (!indicesTy.hasRank())
+    if (!indicesTy.hasRank()) {
       return failure();
+    }
 
     if (indicesTy.isDynamicDim(indicesTy.getRank() - 1)) {
       return rewriter.notifyMatchFailure(op, "number of indices is unknown");
@@ -60,8 +61,9 @@ struct ScatterOpConversion
 
     auto numIndices = indicesTy.getShape().back();
     llvm::SmallVector<int64_t> dimMap(numIndices);
-    for (int i = 0; i < numIndices; i++)
+    for (int i = 0; i < numIndices; i++) {
       dimMap[i] = i;
+    }
 
     auto updatesTy = op.getUpdateType();
 
@@ -89,8 +91,8 @@ struct ScatterOpConversion
     Value indicesVal = op.indices();
     auto scatterOp = IREE::LinalgExt::ScatterOp::create(
         rewriter, op.getLoc(), op->getResultTypes(),
-        ValueRange{updateVal, indicesVal}, op.getOutputs(), dimMap,
-        op.getUniqueIndices());
+        /*updates=*/updateVal, /*indices=*/indicesVal,
+        /*original=*/op.getOutputs()[0], dimMap, op.getUniqueIndices());
     rewriter.inlineRegionBefore(op.getRegion(), scatterOp.getRegion(),
                                 scatterOp.getRegion().begin());
     rewriter.replaceOp(op, scatterOp->getResults());
@@ -118,7 +120,7 @@ static SmallVector<AffineMap> getStandardAttentionIndexingMaps(MLIRContext *ctx,
 }
 
 struct AttentionOpConversion
-    : public OpRewritePattern<mlir::torch::TMTensor::AttentionOp> {
+    : OpRewritePattern<mlir::torch::TMTensor::AttentionOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(mlir::torch::TMTensor::AttentionOp op,
                                 PatternRewriter &rewriter) const override {
@@ -182,8 +184,9 @@ struct AttentionOpConversion
     int64_t numBatches = op.getQueryType().getRank() - 2;
     for (AffineMap &map : indexingMaps) {
       map = map.shiftDims(numBatches);
-      if (map.getNumResults() == 0)
+      if (map.getNumResults() == 0) {
         continue;
+      }
       for (int batch : llvm::seq<int>(numBatches)) {
         map = map.insertResult(rewriter.getAffineDimExpr(batch), batch);
       }

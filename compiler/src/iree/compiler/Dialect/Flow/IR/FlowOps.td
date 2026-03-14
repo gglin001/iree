@@ -513,7 +513,7 @@ def FLOW_ExecutableExportOp : FLOW_Op<"executable.export", [
       "FlatSymbolRefAttr":$function_ref)>,
   ];
 
-  let hasVerifier = 1;
+  let hasRegionVerifier = 1;
 }
 
 } // OpGroupExecutableOps
@@ -1573,6 +1573,107 @@ def FLOW_TensorTraceOp : FLOW_Op<"tensor.trace", [
 } // OpGroupTensorOps
 
 //===----------------------------------------------------------------------===//
+// Parameter ops
+//===----------------------------------------------------------------------===//
+
+def OpGroupParameterOps : OpDocGroup {
+  let summary = "Parameter ops";
+  let description = "";
+}
+
+let opDocGroup = OpGroupParameterOps in {
+
+def FLOW_ParameterLoadOp : FLOW_PureOp<"parameter.load", [
+  AttrSizedOperandSegments,
+  Util_ShapeAwareOp,
+]> {
+  let summary = [{Loads a tensor from a parameter archive.}];
+  let description = [{
+    Allocates a new tensor and populates it with data from a parameter archive
+    file (or in-memory buffer) at the specified byte offset. The scope is an
+    optional namespace for the parameter key.
+
+    Example:
+    ```mlir
+    %result = flow.parameter.load %key[%offset] : tensor<4x8xf32>
+    %result = flow.parameter.load %scope::%key[%offset] : tensor<?x8xf32>{%dim0}
+    ```
+  }];
+
+  let arguments = (ins
+    Optional<Util_BufferType>:$source_scope,
+    Util_BufferType:$source_key,
+    I64:$source_offset,
+    FLOW_ShapeDynamicDims:$result_dims
+  );
+  let results = (outs
+    FLOW_Tensor:$result
+  );
+
+  let assemblyFormat = [{
+    custom<ParameterReference>($source_scope, $source_key)
+    `` `[` $source_offset `]`
+    `:` type($result) (`{` $result_dims^ `}`)?
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    ValueRange getOperandDynamicDims(unsigned idx) { return ValueRange{}; }
+    ValueRange getResultDynamicDims(unsigned idx) { return getResultDims(); }
+  }];
+}
+
+def FLOW_ParameterWriteOp : FLOW_Op<"parameter.write", [
+  AllTypesMatch<["source", "result"]>,
+  AttrSizedOperandSegments,
+  Util_ShapeAwareOp,
+  DeclareOpInterfaceMethods<Util_TiedOpInterface, [
+    "getTiedResult",
+    "getTiedResultOperandIndex",
+    "getTiedResultOperandIndices",
+  ]>,
+]> {
+  let summary = [{Writes a tensor to a parameter archive.}];
+  let description = [{
+    Writes data from a source tensor to a parameter archive file (or in-memory
+    buffer) at the specified byte offset. The source tensor is returned
+    unchanged to establish proper data flow dependencies. The scope is an
+    optional namespace for the parameter key.
+
+    Example:
+    ```mlir
+    %written = flow.parameter.write %source -> %key[%offset] : tensor<4x8xf32>
+    %written = flow.parameter.write %source -> %scope::%key[%offset] : tensor<?x8xf32>{%dim0}
+    ```
+  }];
+
+  let arguments = (ins
+    FLOW_Tensor:$source,
+    FLOW_ShapeDynamicDims:$source_dims,
+    Optional<Util_BufferType>:$target_scope,
+    Util_BufferType:$target_key,
+    I64:$target_offset
+  );
+  let results = (outs
+    FLOW_Tensor:$result
+  );
+
+  let assemblyFormat = [{
+    $source `->` custom<ParameterReference>($target_scope, $target_key)
+    `` `[` $target_offset `]`
+    `:` type($source) (`{` $source_dims^ `}`)?
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    ValueRange getOperandDynamicDims(unsigned idx) { return getSourceDims(); }
+    ValueRange getResultDynamicDims(unsigned idx) { return getSourceDims(); }
+  }];
+}
+
+} // OpGroupParameterOps
+
+//===----------------------------------------------------------------------===//
 // Collective communication ops
 //===----------------------------------------------------------------------===//
 
@@ -1769,7 +1870,7 @@ def FLOW_CollectiveAllToAllOp : FLOW_Op<"collective.all_to_all", [
   ]>,
 ]> {
   let summary = [{Performs all-to-all operation.}];
-  let description = [{This operation mutually exchanges data acrosss all of the ranks in the channel.}];
+  let description = [{This operation mutually exchanges data across all of the ranks in the channel.}];
 
   let arguments = (ins
     FLOW_CollectiveElementTypeAttr:$element_type,
@@ -1846,7 +1947,7 @@ def FLOW_CollectiveSendRecvOp : FLOW_Op<"collective.send_recv", [
   ]>,
 ]> {
   let summary = [{Performs a grouped send and receive operation.}];
-  let description = [{The operation sends data to the rank specificied by send
+  let description = [{The operation sends data to the rank specified by send
     and receives data from the rank specified by recv. If send is -1, this rank
     will not send any data. If recv is -1, this rank will not receive any data
     and the output will be all zeros.}];

@@ -19,6 +19,7 @@ class TargetConverter:
                 # Internal utilities to emulate various binary/library options.
                 f"{iree_core_repo}//build_tools:pthreads": [],
                 f"{iree_core_repo}//build_tools:dl": ["${CMAKE_DL_LIBS}"],
+                f"{iree_core_repo}//build_tools:rt": [],
                 f"{iree_core_repo}//compiler/src/iree/compiler/API:CAPI": [
                     "IREECompilerCAPILib"
                 ],
@@ -60,6 +61,7 @@ class TargetConverter:
                 "@llvm-project//mlir:AllPassesAndDialects": ["MLIRAllDialects"],
                 "@llvm-project//mlir:ArithOpsIncGen": ["MLIRArithDialect"],
                 "@llvm-project//mlir:BufferizationInterfaces": [""],
+                "@llvm-project//mlir:BuiltinTypesIncGen": [""],
                 "@llvm-project//mlir:CommonFolders": [""],
                 "@llvm-project//mlir:ConversionPasses": [""],
                 "@llvm-project//mlir:DialectUtils": [""],
@@ -80,6 +82,12 @@ class TargetConverter:
                 "@llvm-project//mlir:MlirLspServerLib": ["MLIRLspServerLib"],
                 "@llvm-project//mlir:MlirTableGenMain": ["MLIRTableGen"],
                 "@llvm-project//mlir:MlirOptLib": ["MLIROptLib"],
+                "@llvm-project//mlir:CAPISMT": [
+                    "MLIRCAPISMT",
+                    "MLIRCAPIExportSMTLIB",
+                ],
+                "@llvm-project//mlir:SMTDialect": ["MLIRSMT"],
+                "@llvm-project//mlir:TargetSMTLIB": ["MLIRExportSMTLIB"],
                 "@llvm-project//mlir:VectorOps": ["MLIRVector"],
                 # StableHLO.
                 "@stablehlo//:chlo_ops": [
@@ -100,6 +108,10 @@ class TargetConverter:
                 "@stablehlo//:vhlo_ops": [
                     "VhloOps",
                 ],
+                # HIP
+                "@hip_api_headers//:headers": [
+                    "hip_api_headers::headers",
+                ],
                 # NCCL
                 "@nccl//:headers": [
                     "nccl::headers",
@@ -114,13 +126,18 @@ class TargetConverter:
                 "@vulkan_headers": ["Vulkan::Headers"],
                 # Misc single targets
                 "@com_google_benchmark//:benchmark": ["benchmark"],
+                "@printf_lib//:printf": ["printf::printf"],
                 "@com_github_dvidelabs_flatcc//:flatcc": ["flatcc"],
                 "@com_github_dvidelabs_flatcc//:parsing": ["flatcc::parsing"],
                 "@com_github_dvidelabs_flatcc//:runtime": ["flatcc::runtime"],
                 "@com_google_googletest//:gtest": ["gmock", "gtest"],
                 "@spirv_cross//:spirv_cross_lib": ["spirv-cross-msl"],
                 "@hsa_runtime_headers": ["hsa_runtime::headers"],
+                "@libbacktrace": ["libbacktrace::libbacktrace"],
                 "@webgpu_headers": [],
+                # py_binary targets have no CMake equivalent.
+                # This is the only target bazel needs to execute the lit tests.
+                ":python_with_numpy": [],
             }
         )
 
@@ -202,6 +219,9 @@ class TargetConverter:
             return self._convert_mlir_target(target)
         if target.startswith("@iree_cuda//"):
             return self._convert_iree_cuda_target(target)
+        # pip dependencies don't exist in CMake (system Python is used).
+        if target.startswith("@pip//"):
+            return []
         if target.startswith(f"{iree_core_repo}//"):
             return self._convert_iree_core_target(target)
         if target.startswith("@"):

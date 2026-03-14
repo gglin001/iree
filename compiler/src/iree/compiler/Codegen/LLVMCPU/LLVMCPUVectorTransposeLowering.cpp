@@ -7,7 +7,7 @@
 #include "iree/compiler/Codegen/LLVMCPU/Passes.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
-#include "mlir/Dialect/X86Vector/Transforms.h"
+#include "mlir/Dialect/X86/Transforms.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -24,8 +24,9 @@ static bool has16x16Transpose(mlir::FunctionOpInterface funcOp) {
   bool res = false;
   funcOp.walk([&](vector::TransposeOp op) {
     auto srcGtOneDims = isTranspose2DSlice(op);
-    if (failed(srcGtOneDims))
+    if (failed(srcGtOneDims)) {
       return WalkResult::advance();
+    }
     VectorType srcType = op.getSourceVectorType();
     int64_t m = srcType.getDimSize(std::get<0>(srcGtOneDims.value()));
     int64_t n = srcType.getDimSize(std::get<1>(srcGtOneDims.value()));
@@ -74,12 +75,9 @@ void LLVMCPUVectorTransposeLoweringPass::runOnOperation() {
       patterns, kNarrowTypeEmulationBenefit);
 
   if (lowerVectorTransposeToAVX2) {
-    auto avx2LoweringOptions =
-        x86vector::avx2::LoweringOptions().setTransposeOptions(
-            x86vector::avx2::TransposeLoweringOptions()
-                .lower4x8xf32()
-                .lower8x8xf32());
-    x86vector::avx2::populateSpecializedTransposeLoweringPatterns(
+    auto avx2LoweringOptions = x86::avx2::LoweringOptions().setTransposeOptions(
+        x86::avx2::TransposeLoweringOptions().lower4x8xf32().lower8x8xf32());
+    x86::avx2::populateSpecializedTransposeLoweringPatterns(
         patterns, avx2LoweringOptions, kSpecializedBenefit);
   }
   (void)applyPatternsGreedily(funcOp, std::move(patterns));

@@ -16,20 +16,21 @@ namespace mlir::iree_compiler {
 namespace {
 
 struct VMVXAssignConstantOrdinalsPass
-    : public impl::VMVXAssignConstantOrdinalsPassBase<
-          VMVXAssignConstantOrdinalsPass> {
+    : impl::VMVXAssignConstantOrdinalsPassBase<VMVXAssignConstantOrdinalsPass> {
   void runOnOperation() override {
     IREE::HAL::ExecutableVariantOp variantOp = getOperation();
 
     // Ignore non-VMVX variants.
     // TODO(benvanik): a way to nest this in the pipeline via dynamic passes.
-    if (variantOp.getTarget().getBackend().getValue() != "vmvx")
+    if (variantOp.getTarget().getBackend().getValue() != "vmvx") {
       return;
+    }
 
     // Get a constant key -> ordinal mapping.
     auto keyOrdinals = variantOp.gatherConstantOrdinals();
-    if (keyOrdinals.empty())
+    if (keyOrdinals.empty()) {
       return;
+    }
 
     // Update placeholders to hold the concrete ordinal values.
     // Eventually the VM global folding passes will inline them.
@@ -39,8 +40,9 @@ struct VMVXAssignConstantOrdinalsPass
                moduleOp.getOps<IREE::VM::GlobalI32Op>())) {
         auto keyAttr = globalOp->getAttr(
             IREE::HAL::ExecutableConstantBlockOp::getKeyAttrName());
-        if (!keyAttr)
+        if (!keyAttr) {
           continue;
+        }
         auto it = keyOrdinals.find(keyAttr);
         if (it == keyOrdinals.end()) {
           globalOp.emitOpError()

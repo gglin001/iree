@@ -150,11 +150,29 @@ func.func @memref_copy_fully_dynamic(%source: memref<1x4xbf16>, %dest: memref<32
 //       CHECK:     %[[CMP_1:.+]] = arith.cmpi sgt, %[[MIN_1]], %[[C0]] : index
 //       CHECK:     scf.if %[[CMP_1]] {
 //       CHECK:       %[[MIN_2:.+]] = affine.min affine_map<(d0)[s0] -> (-d0 + s0, 8)>(%[[C0]])[%[[MIN_1]]]
-//       CHECK:       %[[SUBIEW_2:.+]] = memref.subview %[[SUBVIEW_0]][0, 0] [1, %[[MIN_2]]] [1, 1]
+//       CHECK:       %[[SUBVIEW_2:.+]] = memref.subview %[[SUBVIEW_0]][0, 0] [1, %[[MIN_2]]] [1, 1]
 //  CHECK-SAME:       memref<?x?xbf16, strided<[4, 1]>> to memref<1x?xbf16, strided<[4, 1]>>
 //       CHECK:       %[[SUBVIEW_3:.+]] = memref.subview %[[SUBVIEW_1]][0, 0] [1, %[[MIN_2]]] [1, 1]
 //  CHECK-SAME:       memref<?x?xbf16, strided<[40, 1], offset: ?>> to memref<1x?xbf16, strided<[40, 1], offset: ?>>
-//       CHECK:       memref.copy %[[SUBIEW_2]], %[[SUBVIEW_3]]
+//       CHECK:       memref.copy %[[SUBVIEW_2]], %[[SUBVIEW_3]]
+
+// -----
+
+func.func @memref_copy_dynamic_outer_dim(%source: memref<?x1xf32>, %dest: memref<?x1xf32>) {
+  memref.copy %source, %dest : memref<?x1xf32> to memref<?x1xf32>
+  return
+}
+// CHECK-LABEL: func.func @memref_copy_dynamic_outer_dim
+//  CHECK-SAME:   %[[SOURCE:[A-Za-z0-9]+]]: memref<?x1xf32>
+//  CHECK-SAME:   %[[DEST:[A-Za-z0-9]+]]: memref<?x1xf32>
+//   CHECK-DAG:   %[[C0:.+]] = arith.constant 0 : index
+//   CHECK-DAG:   %[[C4:.+]] = arith.constant 4 : index
+//   CHECK-DAG:   %[[DIM:.+]] = memref.dim %[[SOURCE]], %[[C0]]
+//       CHECK:   scf.for %[[ARG:.+]] = %[[C0]] to %[[DIM]] step %[[C4]]
+//       CHECK:     %[[MIN:.+]] = affine.min affine_map<(d0)[s0] -> (-d0 + s0, 4)>(%[[ARG]])[%[[DIM]]]
+//       CHECK:     %[[SOURCE_SUBVIEW:.+]] = memref.subview %[[SOURCE]][%[[ARG]], 0] [%[[MIN]], 1] [1, 1]
+//       CHECK:     %[[DEST_SUBVIEW:.+]] = memref.subview %[[DEST]][%[[ARG]], 0] [%[[MIN]], 1] [1, 1]
+//       CHECK:     memref.copy %[[SOURCE_SUBVIEW]], %[[DEST_SUBVIEW]]
 
 // -----
 

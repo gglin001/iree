@@ -34,7 +34,7 @@ namespace {
 /// Pattern to convert a tensor.tensor operation into a fill +
 /// tensor.insert_slice. This is needed till tensor.pad op can be fused with its
 /// consumers.
-struct TensorPadOpConversion : public OpRewritePattern<tensor::PadOp> {
+struct TensorPadOpConversion : OpRewritePattern<tensor::PadOp> {
   using Base::Base;
   TensorPadOpConversion(MLIRContext *context, bool skipSingleLinalgOpUses)
       : OpRewritePattern<tensor::PadOp>(context, skipSingleLinalgOpUses),
@@ -49,8 +49,9 @@ struct TensorPadOpConversion : public OpRewritePattern<tensor::PadOp> {
     // scalar that is not one of the arguments of the linalg operation.
     Region &region = padTensorOp.getRegion();
     Block &block = region.front();
-    if (!llvm::hasSingleElement(block))
+    if (!llvm::hasSingleElement(block)) {
       return failure();
+    }
     auto yieldOp = cast<tensor::YieldOp>(block.getTerminator());
     Value yieldVal = yieldOp.getValue();
     if (llvm::any_of(block.getArguments(),
@@ -89,7 +90,7 @@ private:
 };
 
 struct TensorPadToTensorInsertSlicePass final
-    : public impl::TensorPadToTensorInsertSlicePassBase<
+    : impl::TensorPadToTensorInsertSlicePassBase<
           TensorPadToTensorInsertSlicePass> {
   using Base::Base;
   void runOnOperation() override {

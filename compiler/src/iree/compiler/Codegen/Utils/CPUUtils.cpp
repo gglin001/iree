@@ -26,14 +26,29 @@ static llvm::cl::opt<bool> clEnableScalableVectorization(
                    "target (e.g., +sve, +sve2 and/or +sme feature flags)"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<int> clVscaleFromUser(
+    "iree-experimental-vscale-value",
+    llvm::cl::desc(
+        "The runtime value of vscale. This will _only_ be used for host-side "
+        "code, e.g. to calculate storage sizes and workgroup counts. This is "
+        "due to a current limitation of the host-side code not being able to "
+        "properly query this value at runtime, see #21317 and #21590. Codegen "
+        "will be vector-length agnostic and will be querying the value of "
+        "vscale at runtime, as intended. For scalable vector code that "
+        "propagates vscale ops into the host-side code, this value has to be "
+        "explicitly set by the user, e.g. for SVE data-tiling on the AArch64 "
+        "backend."),
+    llvm::cl::Hidden, llvm::cl::init(-1));
+
 FailureOr<Operation *> getRootOperation(ArrayRef<Operation *> computeOps) {
   Operation *rootOperation = nullptr;
   for (auto op : llvm::reverse(computeOps)) {
     if (auto linalgOp = dyn_cast<linalg::LinalgOp>(op)) {
       // Do not treat linalg ops that are all parallel as root operations in
       // this sweep.
-      if (linalgOp.getNumLoops() == linalgOp.getNumParallelLoops())
+      if (linalgOp.getNumLoops() == linalgOp.getNumParallelLoops()) {
         continue;
+      }
 
       // All other linalg ops are root ops.
       rootOperation = op;
@@ -89,5 +104,25 @@ bool isOptEnabled(FunctionOpInterface funcOp, StringRef label) {
 }
 
 bool isScalableVectorizationEnabled() { return clEnableScalableVectorization; }
+
+unsigned getUserVscaleValue() {
+  assert(clVscaleFromUser >= 1 && "Currently, vscale needs to be specified by "
+                                  "the user for host-side code!");
+  return clVscaleFromUser;
+}
+
+bool isProducerOfRootOp(Operation *op, Operation *rootOp) {
+  if (!rootOp || op == rootOp) {
+    return false;
+  }
+  for (Value result : op->getResults()) {
+    for (Operation *user : result.getUsers()) {
+      if (user == rootOp) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 } // namespace mlir::iree_compiler

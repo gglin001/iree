@@ -98,9 +98,8 @@ iree_cc_library(
     ::topology
     iree::base
     iree::base::internal
-    iree::base::internal::bitmap
-    iree::base::internal::synchronization
-    iree::base::internal::threading
+    iree::base::threading
+    iree::base::threading::thread
     iree::hal::drivers::amdgpu::device::binaries
     iree::hal::drivers::amdgpu::device::headers
   PUBLIC
@@ -133,6 +132,7 @@ iree_cc_test(
     ::topology
     ::util
     iree::base
+    iree::hal::drivers::amdgpu::device::headers
     iree::testing::gtest
     iree::testing::gtest_main
   LABELS

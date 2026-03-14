@@ -100,14 +100,14 @@ static inline int iree_math_count_leading_zeros_u32(const uint32_t n) {
 static inline int iree_math_count_leading_zeros_u64(uint64_t n) {
 #if defined(IREE_COMPILER_MSVC_COMPAT) && \
     (defined(IREE_ARCH_ARM_64) || defined(IREE_ARCH_X86_64))
-  // MSVC does not have __buitin_clzll. Use _BitScanReverse64.
+  // MSVC does not have __builtin_clzll. Use _BitScanReverse64.
   unsigned long result = 0;  // NOLINT(runtime/int)
   if (_BitScanReverse64(&result, n)) {
     return (int)(63 - result);
   }
   return 64;
 #elif defined(IREE_COMPILER_MSVC_COMPAT)
-  // MSVC does not have __buitin_clzll. Compose two calls to _BitScanReverse
+  // MSVC does not have __builtin_clzll. Compose two calls to _BitScanReverse
   unsigned long result = 0;  // NOLINT(runtime/int)
   if ((n >> 32) && _BitScanReverse(&result, n >> 32)) {
     return (int)(31 - result);
@@ -199,15 +199,27 @@ static inline int iree_math_count_trailing_zeros_u64(uint64_t n) {
 
 // Returns the number of 1 bits in a 32 bit value.
 static inline int iree_math_count_ones_u32(uint32_t n) {
+#if defined(IREE_COMPILER_MSVC_COMPAT)
+  return __popcnt(n);
+#elif defined(IREE_COMPILER_GCC_COMPAT)
+  return __builtin_popcount(n);
+#else
   n -= ((n >> 1) & 0x55555555u);
   n = ((n >> 2) & 0x33333333u) + (n & 0x33333333u);
   return (int)((((n + (n >> 4)) & 0x0F0F0F0Fu) * 0x01010101u) >> 24);
+#endif
 }
 
 // Returns the number of 1 bits in a 64 bit value.
 static inline int iree_math_count_ones_u64(uint64_t n) {
+#if defined(IREE_COMPILER_MSVC_COMPAT) && defined(IREE_PTR_SIZE_64)
+  return __popcnt64(n);
+#elif defined(IREE_COMPILER_GCC_COMPAT)
+  return __builtin_popcountll(n);
+#else
   return iree_math_count_ones_u32(n >> 32) +
          iree_math_count_ones_u32(n & 0xFFFFFFFFu);
+#endif
 }
 
 //==============================================================================
@@ -309,10 +321,10 @@ static inline float iree_math_make_f32_from_bits(uint32_t src, int exp_bits,
       // NaN or Inf case.
       if (have_nan && src_mantissa) {
         return NAN;
-      } else {
-        return float_sign * INFINITY;
       }
-    } else if (have_nan) {
+      return float_sign * INFINITY;
+    }
+    if (have_nan) {
       // No infinities => more large finite values, unless this is a NaN.
       if (src_mantissa == src_mantissa_mask && !nan_as_neg_zero) {
         return NAN;
@@ -334,6 +346,15 @@ static inline float iree_math_make_f32_from_bits(uint32_t src, int exp_bits,
                 (src_exp >> src_exp_shift) - src_exp_bias - src_mantissa_bits);
 }
 
+// Helper for rounding to nearest-even. Does not right-shift. Returns the
+// biased value suitable for right-shifting.
+static inline uint32_t bias_to_nearest_even(uint32_t input, int shift_amount) {
+  uint32_t even_bit = 1u << shift_amount;
+  uint32_t odd_bit = even_bit >> 1;
+  uint32_t bias = (input & even_bit) ? (odd_bit) : (odd_bit - 1);
+  return input + bias;
+}
+
 // Generic conversion from f32 to any less-than-32-bit floating-point format,
 // rounding to nearest-even. The return value is typed as a uint32_t for
 // genericity but occupies only the bottom (1 + exp_bits + mantissa_bits) bits.
@@ -353,15 +374,15 @@ static inline uint32_t iree_math_truncate_f32_to_bits_rounding_to_nearest_even(
   uint32_t dst_mantissa = 0;
   // Flags that we set when we determine that we need to generate a NaN / an Inf
   // deferring to handlers are the end of this function.
-  bool convert_nan = false;
-  bool convert_inf = false;
+  bool generate_nan = false;
+  bool generate_inf = false;
   if (f32_exp >= f32_exp_mask) {
     // NaN or Inf case.
     dst_exp = dst_exp_mask;
     if (f32_mantissa) {
-      convert_nan = true;
+      generate_nan = true;
     } else {
-      convert_inf = true;
+      generate_inf = true;
     }
   } else if (f32_exp == 0) {
     // Zero or subnormal.
@@ -370,8 +391,8 @@ static inline uint32_t iree_math_truncate_f32_to_bits_rounding_to_nearest_even(
       // can remain nonzero. This happens only with the bf16 type.
       // Just divide the mantissa (rounding shift).
       int shift_amount = f32_mantissa_bits - dst_mantissa_bits;
-      uint32_t rounding_term = 1 << (shift_amount - 1);
-      dst_mantissa = (f32_mantissa + rounding_term) >> shift_amount;
+      dst_mantissa =
+          bias_to_nearest_even(f32_mantissa, shift_amount) >> shift_amount;
     }
     // The destination type has fewer exponent bits, so f32 subnormal values
     // become exactly zero. Leave the mantissa zero.
@@ -383,7 +404,7 @@ static inline uint32_t iree_math_truncate_f32_to_bits_rounding_to_nearest_even(
     // max exponent value for additional finite values.
     if (arithmetic_exp > (1 << (dst_exp_bits - 1)) - have_infinity) {
       // Overflow.
-      convert_inf = true;
+      generate_inf = true;
     } else if (arithmetic_exp + dst_exp_bias <= 0) {
       // Underflow. Generate a subnormal or zero.
       dst_exp = 0;
@@ -398,31 +419,28 @@ static inline uint32_t iree_math_truncate_f32_to_bits_rounding_to_nearest_even(
         dst_mantissa = 0;
       } else {
         // Source f32 value is normal so has an implied 1... leading bit.
-        int effective_f32_mantissa = (1 << f32_mantissa_bits) + f32_mantissa;
-        // Add this term to achieve rounding to nearest instead of truncation
-        // towards zero.
-        int rounding_term = 1 << (shift_amount - 1);
-        // Finally compute the destination mantissa as a rounded right shift.
-        dst_mantissa = (effective_f32_mantissa + rounding_term) >> shift_amount;
+        uint32_t effective_f32_mantissa =
+            (1u << f32_mantissa_bits) + f32_mantissa;
+        dst_mantissa =
+            bias_to_nearest_even(effective_f32_mantissa, shift_amount) >>
+            shift_amount;
       }
     } else {
       // Normal case.
       // Implement round-to-nearest-even, by adding a bias before truncating.
-      int even_bit = 1u << (f32_mantissa_bits - dst_mantissa_bits);
-      int odd_bit = even_bit >> 1;
+      int shift_amount = f32_mantissa_bits - dst_mantissa_bits;
       uint32_t biased_f32_mantissa =
-          f32_mantissa +
-          ((f32_mantissa & even_bit) ? (odd_bit) : (odd_bit - 1));
+          bias_to_nearest_even(f32_mantissa, shift_amount);
       // Adding the bias may cause an exponent increment.
       if (biased_f32_mantissa > f32_mantissa_mask) {
         // Note: software implementations that try to be fast tend to get this
         // conditional increment of exp and zeroing of mantissa for free by
-        // simplying incrementing the whole uint32 encoding of the float value,
-        // so that the mantissa overflows into the exponent bits.
-        // This results in magical-looking code like in the following links.
-        // We'd rather not care too much about performance of this function;
-        // we should only care about fp16 performance on fp16 hardware, and
-        // then, we should use hardware instructions.
+        // simplifying incrementing the whole uint32 encoding of the float
+        // value, so that the mantissa overflows into the exponent bits. This
+        // results in magical-looking code like in the following links. We'd
+        // rather not care too much about performance of this function; we
+        // should only care about fp16 performance on fp16 hardware, and then,
+        // we should use hardware instructions.
         // https://github.com/pytorch/pytorch/blob/e1502c0cdbfd17548c612f25d5a65b1e4b86224d/c10/util/BFloat16.h#L76
         // https://gitlab.com/libeigen/eigen/-/blob/21cd3fe20990a5ac1d683806f605110962aac3f1/Eigen/src/Core/arch/Default/BFloat16.h#L565
         biased_f32_mantissa = 0;
@@ -439,18 +457,19 @@ static inline uint32_t iree_math_truncate_f32_to_bits_rounding_to_nearest_even(
       dst_mantissa =
           biased_f32_mantissa >> (f32_mantissa_bits - dst_mantissa_bits);
       if (!have_infinity && dst_exp > dst_exp_mask) {
-        convert_nan = true;
+        generate_nan = true;
       }
     }
   }
 
   // Handler for converting Inf values. Needs to be before handler for Nan as it
   // may fall through to either when the destination type does not have Inf.
-  if (convert_inf) {
+  if (generate_inf) {
     if (have_infinity) {
       return dst_sign | dst_exp_mask;
-    } else if (have_nan) {
-      convert_nan = true;
+    }
+    if (have_nan) {
+      generate_nan = true;
     } else {
       // Generate the max finite value.
       // As we are here in the case where there is no NaN, the max finite value
@@ -460,16 +479,16 @@ static inline uint32_t iree_math_truncate_f32_to_bits_rounding_to_nearest_even(
   }
 
   // Handler for converting NaN values.
-  if (convert_nan) {
+  if (generate_nan) {
     if (!have_nan) {
       // When the destination type has no NaN encoding, conversion of NaN is
       // implementation-defined. We choose to convert NaN to +0.0.
       return 0;
-    } else if (nan_as_neg_zero) {
-      return dst_sign_mask;
-    } else {
-      return dst_sign | dst_exp_mask | dst_mantissa_mask;
     }
+    if (nan_as_neg_zero) {
+      return dst_sign_mask;
+    }
+    return dst_sign | dst_exp_mask | dst_mantissa_mask;
   }
 
   // Normal case.
@@ -477,9 +496,8 @@ static inline uint32_t iree_math_truncate_f32_to_bits_rounding_to_nearest_even(
     // Negative zero needs to be rounded to positive zero to avoid
     // accidentally producing NaN when negative-zero is the NaN encoding.
     return 0;
-  } else {
-    return dst_sign | dst_exp | dst_mantissa;
   }
+  return dst_sign | dst_exp | dst_mantissa;
 }
 
 #define IREE_MATH_MAKE_FLOAT_TYPE_HELPERS(                                   \

@@ -6,6 +6,7 @@
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenInterfaces.h"
 #include "iree/compiler/Codegen/LLVMGPU/KernelConfig.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "mlir/Pass/Pass.h"
@@ -43,8 +44,9 @@ static LogicalResult verifyLoweringConfiguration(
     IREE::Codegen::TranslationInfoAttr translationInfo) {
   auto walkResult = funcOp.walk([&](Operation *op) -> WalkResult {
     auto loweringConfig = getLoweringConfig<IREE::GPU::LoweringConfigAttr>(op);
-    if (!loweringConfig)
+    if (!loweringConfig) {
       return success();
+    }
 
     if (translationInfo.getDispatchLoweringPassPipeline() ==
         IREE::Codegen::DispatchLoweringPassPipeline::LLVMGPUVectorDistribute) {
@@ -85,6 +87,12 @@ void LLVMGPUSelectLoweringStrategyPass::runOnOperation() {
     if (!translationInfo) {
       // Dont do anything if translation info is not set.
       return;
+    }
+
+    // Custom pipelines via PipelineAttrInterface skip enum-based verification.
+    if (isa<IREE::Codegen::PipelineAttrInterface>(
+            translationInfo.getPassPipeline())) {
+      continue;
     }
 
     // Verify the properties of each entry point based on the target pipeline.

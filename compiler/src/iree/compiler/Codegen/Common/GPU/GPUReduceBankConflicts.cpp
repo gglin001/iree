@@ -40,16 +40,13 @@ static bool hasCollapseShapeUser(memref::AllocOp allocOp) {
 static void padAlloc(MLIRContext *context, memref::AllocOp allocOp,
                      unsigned paddingSizeBits) {
   auto allocOpShape = allocOp.getType().getShape();
-  if (allocOpShape.empty())
+  if (allocOpShape.empty()) {
     return;
+  }
   int64_t innerDim = allocOpShape.back();
-  if (ShapedType::isDynamic(innerDim))
+  if (ShapedType::isDynamic(innerDim)) {
     return;
-
-  // Return if we have CollapseShape op as an user as padding in that case is
-  // unsupported.
-  if (hasCollapseShapeUser(allocOp))
-    return;
+  }
 
   Type elType = allocOp.getType().getElementType();
   unsigned bitwidth =
@@ -65,12 +62,21 @@ static void padAlloc(MLIRContext *context, memref::AllocOp allocOp,
   IRRewriter rewriter(context);
   rewriter.setInsertionPoint(allocOp);
   Location loc = allocOp.getLoc();
-  Value paddedAlloc = memref::AllocOp::create(rewriter, loc, allocType);
   SmallVector<int64_t> offsets(shape.size(), 0);
   SmallVector<int64_t> strides(shape.size(), 1);
-  Value subview =
-      memref::SubViewOp::create(rewriter, loc, paddedAlloc, offsets,
-                                allocOp.getType().getShape(), strides);
+  ArrayRef<int64_t> sizes = allocOp.getType().getShape();
+  // Before performing any transformation, verify that we can propagate the new
+  // type through the program. This could fail due to collapse_shape ops in the
+  // use chain of the alloc.
+  MemRefType resultType = memref::SubViewOp::inferRankReducedResultType(
+      sizes, allocType, offsets, sizes, strides);
+  if (failed(canReplaceMemrefUsesAndPropagateType(allocOp.getResult(),
+                                                  resultType))) {
+    return;
+  }
+  Value paddedAlloc = memref::AllocOp::create(rewriter, loc, allocType);
+  Value subview = memref::SubViewOp::create(rewriter, loc, paddedAlloc, offsets,
+                                            sizes, strides);
   replaceMemrefUsesAndPropagateType(rewriter, loc, allocOp, subview);
   rewriter.eraseOp(allocOp);
 }
@@ -125,8 +131,9 @@ static unsigned computeEffectiveExtraBytes(mlir::FunctionOpInterface funcOp,
       MemRefType allocType = cast<MemRefType>(allocOp.getType());
 
       ArrayRef<int64_t> shape = allocType.getShape();
-      if (shape.empty())
+      if (shape.empty()) {
         return;
+      }
 
       int outerProduct = 1;
       for (std::size_t i = 0; i < shape.size() - 1; ++i) {
@@ -181,8 +188,9 @@ struct GPUReduceBankConflictsPass final
       return;
     }
 
-    if (failed(reduceSharedMemoryBankConflicts(funcOp, paddingBits)))
+    if (failed(reduceSharedMemoryBankConflicts(funcOp, paddingBits))) {
       signalPassFailure();
+    }
   }
 };
 
@@ -198,8 +206,9 @@ LogicalResult reduceSharedMemoryBankConflicts(mlir::FunctionOpInterface funcOp,
       sharedMemAllocs.push_back(allocOp);
     }
   });
-  for (memref::AllocOp alloc : sharedMemAllocs)
+  for (memref::AllocOp alloc : sharedMemAllocs) {
     padAlloc(funcOp->getContext(), alloc, paddingSize);
+  }
 
   // In the current form this always succeeds.
   return success();

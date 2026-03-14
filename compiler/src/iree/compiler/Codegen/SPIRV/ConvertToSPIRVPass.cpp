@@ -101,8 +101,9 @@ createResourceVariable(Location loc, const SubspanResourceInfo &resource,
         llvm::formatv("__resource_var_{}_{}_", resource.set, resource.binding);
     variable = spirv::GlobalVariableOp::create(
         builder, loc, globalVariableType, name, resource.set, resource.binding);
-    if (resource.aliased)
+    if (resource.aliased) {
       variable->setAttr("aliased", builder.getUnitAttr());
+    }
   } else {
     std::string name =
         llvm::formatv("__resource_var_indirect_{}_", resource.set);
@@ -221,7 +222,7 @@ createIndirectResourceVariables(mlir::ModuleOp module) {
   SymbolTable symbolTable(module);
   InterfaceResourceMap interfaceToResourceInfo;
 
-  // We insert each new global variable at the begining of the module,
+  // We insert each new global variable at the beginning of the module,
   // therefore, to preserve the original order, we process all functions and all
   // subspan ops in the reverse order.
   auto functions = llvm::to_vector(module.getOps<func::FuncOp>());
@@ -543,8 +544,9 @@ public:
   LogicalResult initializeOptions(
       StringRef options,
       function_ref<LogicalResult(const Twine &)> errorHandler) override {
-    if (failed(Pass::initializeOptions(options, errorHandler)))
+    if (failed(Pass::initializeOptions(options, errorHandler))) {
       return failure();
+    }
     indexBits = indexBitsOption;
     return success();
   }
@@ -561,17 +563,20 @@ void ConvertToSPIRVPass::runOnOperation() {
   MLIRContext *context = &getContext();
   ModuleOp moduleOp = getOperation();
 
-  if (moduleOp.getBody()->empty())
+  if (moduleOp.getBody()->empty()) {
     return;
+  }
 
   bool useIndirectBindings = usesIndirectBindingsAttr(moduleOp);
 
   for (auto funcOp : moduleOp.getOps<mlir::FunctionOpInterface>()) {
     auto exportOp = getEntryPoint(funcOp);
-    if (!exportOp)
+    if (!exportOp) {
       continue;
-    if (funcOp->hasAttr(spirv::getEntryPointABIAttrName()))
+    }
+    if (funcOp->hasAttr(spirv::getEntryPointABIAttrName())) {
       continue;
+    }
     std::optional<ArrayAttr> workgroupSize = exportOp->getWorkgroupSize();
     if (!workgroupSize) {
       exportOp->emitOpError(
@@ -628,6 +633,8 @@ void ConvertToSPIRVPass::runOnOperation() {
   {
     RewritePatternSet patterns(context);
     arith::populateExpandBFloat16Patterns(patterns);
+    arith::populateExpandF4E2M1Patterns(patterns);
+    arith::populateExpandF8E8M0Patterns(patterns);
     arith::BitcastOp::getCanonicalizationPatterns(patterns, context);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
       moduleOp.emitOpError() << "failed running bf16 extf/trunc patterns";
@@ -730,8 +737,8 @@ void ConvertToSPIRVPass::runOnOperation() {
   patterns.add<HALInterfaceLoadConstantConverter>(typeConverter, context,
                                                   supportsAssume);
 
-  // Performs a prelimiary step to analyze all hal.interface.binding.subspan ops
-  // and creates spirv.GlobalVariables.
+  // Performs a preliminary step to analyze all hal.interface.binding.subspan
+  // ops and creates spirv.GlobalVariables.
   InterfaceResourceMap interfaceToResourceVars =
       useIndirectBindings ? createIndirectResourceVariables(moduleOp)
                           : createResourceVariables(moduleOp);
@@ -757,8 +764,9 @@ void ConvertToSPIRVPass::runOnOperation() {
 
   SmallVector<mlir::FunctionOpInterface, 1> functions;
   for (auto fn : moduleOp.getOps<mlir::FunctionOpInterface>()) {
-    if (!fn.isPublic())
+    if (!fn.isPublic()) {
       continue;
+    }
     functions.push_back(fn);
   }
 
@@ -770,8 +778,9 @@ void ConvertToSPIRVPass::runOnOperation() {
   }
 
   auto addressingModel = spirv::AddressingModel::Logical;
-  if (useIndirectBindings)
+  if (useIndirectBindings) {
     addressingModel = spirv::AddressingModel::PhysicalStorageBuffer64;
+  }
 
   // Collect all SPIR-V ops into a spirv.module.
   OpBuilder builder = OpBuilder::atBlockBegin(moduleOp.getBody());
@@ -781,10 +790,12 @@ void ConvertToSPIRVPass::runOnOperation() {
   Dialect *spvDialect = spvModule->getDialect();
   for (Operation &op : llvm::make_early_inc_range(*moduleOp.getBody())) {
     // Skip the newly created spirv.module itself.
-    if (&op == spvModule)
+    if (&op == spvModule) {
       continue;
-    if (op.getDialect() == spvDialect)
+    }
+    if (op.getDialect() == spvDialect) {
       op.moveBefore(body, body->end());
+    }
   }
 }
 

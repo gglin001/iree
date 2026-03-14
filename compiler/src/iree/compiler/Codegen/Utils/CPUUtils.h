@@ -32,12 +32,22 @@ StringAttr getEnableLoopPeelingAttrName(MLIRContext *ctx);
 std::string getEnableLoopPeelingStr();
 
 /// Returns true if the UnitAttr of the `label` is enabled for the input
-/// function. This is is infered from the config dictionary. attribute that's
-/// part of to the translation info corresponding to this funciton.
+/// function. This is is inferred from the config dictionary. attribute that's
+/// part of to the translation info corresponding to this function.
 bool isOptEnabled(FunctionOpInterface funcOp, StringRef label);
 
 /// Returns if scalable vectorization is enabled or not.
 bool isScalableVectorizationEnabled();
+
+/// Returns the runtime value of vscale specified by the user. This is not meant
+/// to be used for codegen and is meant to circumvent the current limitation on
+/// host-side querying of this value at runtime. This is temporary until #21317
+/// is resolved.
+unsigned getUserVscaleValue();
+
+/// Returns true if `op` is a direct producer of `rootOp`, i.e., at least one
+/// of `op`'s results is used as an operand of `rootOp`.
+bool isProducerOfRootOp(Operation *op, Operation *rootOp);
 
 } // namespace mlir::iree_compiler
 

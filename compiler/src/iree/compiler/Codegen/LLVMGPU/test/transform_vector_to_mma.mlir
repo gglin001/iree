@@ -9,7 +9,6 @@ hal.executable private @matmul  {
 builtin.module {
 // CHECK-LABEL: func.func @matmul
 func.func @matmul() {
-  %c8 = arith.constant 8 : index
   %c0 = arith.constant 0 : index
   %cst = arith.constant dense<0.000000e+00> : vector<16x16xf32>
   %c16 = arith.constant 16 : index
@@ -18,8 +17,8 @@ func.func @matmul() {
   %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : memref<32x32xf32>
   %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : memref<32x32xf32>
   %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(2) alignment(64) offset(%c0) : memref<32x32xf32>
-  %3 = gpu.thread_id  x
-  %4 = gpu.thread_id  y
+  %3 = gpu.thread_id x
+  %4 = gpu.thread_id y
   %5 = affine.apply affine_map<()[s0] -> (s0 * 16)>()[%4]
   %6 = affine.apply affine_map<()[s0] -> ((s0 floordiv 32) * 16)>()[%3]
 // CHECK: gpu.subgroup_mma_constant_matrix %{{.*}} : !gpu.mma_matrix<16x16xf32, "COp">
@@ -81,7 +80,6 @@ hal.executable private @gathered_matmul  {
 builtin.module {
 // CHECK-LABEL: func.func @gathered_matmul
 func.func @gathered_matmul() {
-  %c8 = arith.constant 8 : index
   %c0 = arith.constant 0 : index
   %cst = arith.constant dense<0.000000e+00> : vector<16x16xf32>
   %cst_mask = arith.constant dense<true> : vector<4x4xi1>
@@ -95,8 +93,8 @@ func.func @gathered_matmul() {
   %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : memref<32x32xf32>
   %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(2) alignment(64) offset(%c0) : memref<32x32xf32>
   %alloc = memref.alloc() {alignment = 64 : i64} : memref<32x32xf32>
-  %3 = gpu.thread_id  x
-  %4 = gpu.thread_id  y
+  %3 = gpu.thread_id x
+  %4 = gpu.thread_id y
   %5 = affine.apply affine_map<()[s0] -> (s0 * 16)>()[%4]
   %6 = affine.apply affine_map<()[s0] -> ((s0 floordiv 32) * 16)>()[%3]
 // CHECK: gpu.subgroup_mma_constant_matrix %{{.*}} : !gpu.mma_matrix<16x16xf32, "COp">
@@ -119,7 +117,7 @@ func.func @gathered_matmul() {
     %13 = arith.addi %12, %cst_2 : vector<4x4xindex>
     %14 = vector.gather %0[%c0, %c0] [%13], %cst_mask, %cst_pt : memref<32x32xf32>, vector<4x4xindex>, vector<4x4xi1>, vector<4x4xf32> into vector<4x4xf32>
     vector.transfer_write %14, %alloc[%c0, %c0] {in_bounds = [true, true]} : vector<4x4xf32>, memref<32x32xf32>
-    gpu.barrier
+    gpu.barrier memfence [#gpu.address_space<workgroup>]
     %15 = affine.apply affine_map<(d0)[s0] -> (d0 + s0)>(%c0)[%5]
     %16 = affine.apply affine_map<(d0)[s0] -> (d0 + s0)>(%c0)[%arg0]
     %17 = vector.transfer_read %alloc[%15, %16], %cst_0 {in_bounds = [true, true]} : memref<32x32xf32>, vector<16x16xf32>

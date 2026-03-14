@@ -12,6 +12,7 @@
 #include "iree/compiler/Dialect/VM/Conversion/TargetOptions.h"
 #include "iree/compiler/Dialect/VM/Conversion/TypeConverter.h"
 #include "iree/compiler/Dialect/VM/IR/VMOps.h"
+#include "llvm/Support/MathExtras.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
@@ -24,7 +25,7 @@ namespace mlir::iree_compiler {
 
 namespace {
 
-struct ConstantOpConversion : public OpConversionPattern<arith::ConstantOp> {
+struct ConstantOpConversion : OpConversionPattern<arith::ConstantOp> {
   TypeConverter &typeConverter;
   ConstantOpConversion(MLIRContext *context, TypeConverter &typeConverter)
       : OpConversionPattern(context), typeConverter(typeConverter) {}
@@ -95,13 +96,14 @@ struct ConstantOpConversion : public OpConversionPattern<arith::ConstantOp> {
   }
 };
 
-struct CmpI32OpConversion : public OpConversionPattern<arith::CmpIOp> {
+struct CmpI32OpConversion : OpConversionPattern<arith::CmpIOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::CmpIOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!adaptor.getLhs().getType().isInteger(32))
+    if (!adaptor.getLhs().getType().isInteger(32)) {
       return failure();
+    }
     auto returnType = rewriter.getIntegerType(32);
     switch (srcOp.getPredicate()) {
     case arith::CmpIPredicate::eq:
@@ -150,13 +152,14 @@ struct CmpI32OpConversion : public OpConversionPattern<arith::CmpIOp> {
   }
 };
 
-struct CmpI64OpConversion : public OpConversionPattern<arith::CmpIOp> {
+struct CmpI64OpConversion : OpConversionPattern<arith::CmpIOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::CmpIOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!adaptor.getLhs().getType().isInteger(64))
+    if (!adaptor.getLhs().getType().isInteger(64)) {
       return failure();
+    }
     auto returnType = rewriter.getIntegerType(32);
     switch (srcOp.getPredicate()) {
     case arith::CmpIPredicate::eq:
@@ -205,13 +208,14 @@ struct CmpI64OpConversion : public OpConversionPattern<arith::CmpIOp> {
   }
 };
 
-struct CmpF32OpConversion : public OpConversionPattern<arith::CmpFOp> {
+struct CmpF32OpConversion : OpConversionPattern<arith::CmpFOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::CmpFOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!adaptor.getLhs().getType().isF32())
+    if (!adaptor.getLhs().getType().isF32()) {
       return failure();
+    }
     auto returnType = rewriter.getIntegerType(32);
     switch (srcOp.getPredicate()) {
     case arith::CmpFPredicate::AlwaysFalse: // 0
@@ -295,13 +299,14 @@ struct CmpF32OpConversion : public OpConversionPattern<arith::CmpFOp> {
   }
 };
 
-struct CmpF64OpConversion : public OpConversionPattern<arith::CmpFOp> {
+struct CmpF64OpConversion : OpConversionPattern<arith::CmpFOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::CmpFOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!adaptor.getLhs().getType().isF64())
+    if (!adaptor.getLhs().getType().isF64()) {
       return failure();
+    }
     auto returnType = rewriter.getIntegerType(32);
     switch (srcOp.getPredicate()) {
     case arith::CmpFPredicate::AlwaysFalse: // 0
@@ -386,7 +391,7 @@ struct CmpF64OpConversion : public OpConversionPattern<arith::CmpFOp> {
 };
 
 template <typename SrcOpTy, typename Dst32OpTy, typename Dst64OpTy>
-struct UnaryArithmeticOpConversion : public OpConversionPattern<SrcOpTy> {
+struct UnaryArithmeticOpConversion : OpConversionPattern<SrcOpTy> {
   using OpConversionPattern<SrcOpTy>::OpConversionPattern;
   LogicalResult
   matchAndRewrite(SrcOpTy srcOp, typename SrcOpTy::Adaptor adaptor,
@@ -408,7 +413,7 @@ struct UnaryArithmeticOpConversion : public OpConversionPattern<SrcOpTy> {
 };
 
 template <typename SrcOpTy, typename Dst32OpTy, typename Dst64OpTy>
-struct BinaryArithmeticOpConversion : public OpConversionPattern<SrcOpTy> {
+struct BinaryArithmeticOpConversion : OpConversionPattern<SrcOpTy> {
   using OpConversionPattern<SrcOpTy>::OpConversionPattern;
   LogicalResult
   matchAndRewrite(SrcOpTy srcOp, typename SrcOpTy::Adaptor adaptor,
@@ -432,7 +437,7 @@ struct BinaryArithmeticOpConversion : public OpConversionPattern<SrcOpTy> {
 };
 
 template <typename SrcOpTy, typename Dst32OpTy, typename Dst64OpTy>
-struct ShiftArithmeticOpConversion : public OpConversionPattern<SrcOpTy> {
+struct ShiftArithmeticOpConversion : OpConversionPattern<SrcOpTy> {
   using OpConversionPattern<SrcOpTy>::OpConversionPattern;
   LogicalResult
   matchAndRewrite(SrcOpTy srcOp, typename SrcOpTy::Adaptor adaptor,
@@ -460,7 +465,7 @@ struct ShiftArithmeticOpConversion : public OpConversionPattern<SrcOpTy> {
 };
 
 template <typename OpTy, typename ExtOpTy>
-struct IndexCastOpConversion : public OpConversionPattern<OpTy> {
+struct IndexCastOpConversion : OpConversionPattern<OpTy> {
   using OpConversionPattern<OpTy>::OpConversionPattern;
   LogicalResult
   matchAndRewrite(OpTy srcOp, typename OpTy::Adaptor adaptor,
@@ -482,19 +487,23 @@ struct IndexCastOpConversion : public OpConversionPattern<OpTy> {
   }
 };
 
-struct ZeroExtendIOpConversion : public OpConversionPattern<arith::ExtUIOp> {
+struct ZeroExtendIOpConversion : OpConversionPattern<arith::ExtUIOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::ExtUIOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto srcType = srcOp.getIn().getType();
     auto dstType = getTypeConverter()->convertType(srcOp.getResult().getType());
-    if (srcType.isInteger(1)) {
-      // NOTE: this may not be required - if we know that the i1 is never able
-      // to have more than bit 0 manipulated then this is wasted work.
+    unsigned srcBits = srcType.getIntOrFloatBitWidth();
+
+    // Handle sub-byte integers (i1, i2, i4) that are stored in i32.
+    // The adaptor value is already i32, but we need to mask to the correct
+    // number of bits for proper zero extension semantics.
+    if (llvm::isPowerOf2_32(srcBits) && srcBits < 8) {
+      unsigned mask = (1u << srcBits) - 1;
       auto maskedValue = rewriter.createOrFold<IREE::VM::AndI32Op>(
           srcOp.getLoc(), rewriter.getI32Type(), adaptor.getIn(),
-          rewriter.createOrFold<IREE::VM::ConstI32Op>(srcOp.getLoc(), 1));
+          rewriter.createOrFold<IREE::VM::ConstI32Op>(srcOp.getLoc(), mask));
       if (dstType.isInteger(32)) {
         rewriter.replaceOp(srcOp, maskedValue);
       } else if (dstType.isInteger(64)) {
@@ -502,7 +511,7 @@ struct ZeroExtendIOpConversion : public OpConversionPattern<arith::ExtUIOp> {
                                                             maskedValue);
       } else {
         return rewriter.notifyMatchFailure(srcOp,
-                                           "unsupported i1 zero extension");
+                                           "unsupported sub-byte extension");
       }
     } else if (srcType.isInteger(8) && dstType.isInteger(32)) {
       rewriter.replaceOpWithNewOp<IREE::VM::ExtI8I32UOp>(srcOp, dstType,
@@ -526,14 +535,19 @@ struct ZeroExtendIOpConversion : public OpConversionPattern<arith::ExtUIOp> {
   }
 };
 
-struct SignExtendIOpConversion : public OpConversionPattern<arith::ExtSIOp> {
+struct SignExtendIOpConversion : OpConversionPattern<arith::ExtSIOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::ExtSIOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto srcType = srcOp.getIn().getType();
     auto dstType = getTypeConverter()->convertType(srcOp.getResult().getType());
-    if (srcType.isInteger(1)) {
+    unsigned srcBits = srcType.getIntOrFloatBitWidth();
+
+    // Handle sub-byte integers (i1, i2, i4) with shift-based sign extension.
+    // For i1, we use select for efficiency; for others, shift left then
+    // arithmetic shift right to sign-extend.
+    if (srcBits == 1) {
       if (dstType.isInteger(32)) {
         rewriter.replaceOpWithNewOp<IREE::VM::SelectI32Op>(
             srcOp, dstType, adaptor.getIn(),
@@ -549,6 +563,25 @@ struct SignExtendIOpConversion : public OpConversionPattern<arith::ExtSIOp> {
         return rewriter.notifyMatchFailure(srcOp,
                                            "unsupported i1 sign extension");
       }
+    } else if (llvm::isPowerOf2_32(srcBits) && srcBits < 8) {
+      if (!dstType.isInteger(32) && !dstType.isInteger(64)) {
+        return rewriter.notifyMatchFailure(srcOp,
+                                           "unsupported sub-byte sign ext");
+      }
+      // Sign extend by shifting left then arithmetic right.
+      // This puts the sign bit in the MSB, then propagates it.
+      unsigned shiftAmount = 32 - srcBits;
+      auto shiftConst = rewriter.createOrFold<IREE::VM::ConstI32Op>(
+          srcOp.getLoc(), shiftAmount);
+      auto shifted = rewriter.createOrFold<IREE::VM::ShlI32Op>(
+          srcOp.getLoc(), rewriter.getI32Type(), adaptor.getIn(), shiftConst);
+      Value result = IREE::VM::ShrI32SOp::create(
+          rewriter, srcOp.getLoc(), rewriter.getI32Type(), shifted, shiftConst);
+      if (dstType.isInteger(64)) {
+        result = IREE::VM::ExtI32I64SOp::create(rewriter, srcOp.getLoc(),
+                                                dstType, result);
+      }
+      rewriter.replaceOp(srcOp, result);
     } else if (srcType.isInteger(8) && dstType.isInteger(32)) {
       rewriter.replaceOpWithNewOp<IREE::VM::ExtI8I32SOp>(srcOp, dstType,
                                                          adaptor.getIn());
@@ -571,7 +604,7 @@ struct SignExtendIOpConversion : public OpConversionPattern<arith::ExtSIOp> {
   }
 };
 
-struct TruncateIOpConversion : public OpConversionPattern<arith::TruncIOp> {
+struct TruncateIOpConversion : OpConversionPattern<arith::TruncIOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::TruncIOp srcOp, OpAdaptor adaptor,
@@ -579,18 +612,20 @@ struct TruncateIOpConversion : public OpConversionPattern<arith::TruncIOp> {
     auto srcType = srcOp.getIn().getType();
     auto resultType = srcOp.getResult().getType();
     auto dstType = getTypeConverter()->convertType(resultType);
-    if (resultType.isInteger(1)) {
-      // i1 is represented as i32, so just mask off the bit and truncate as
-      // normal. Note that if we started as i64 we need to first get that into
-      // an i32 that we can work with.
+    unsigned resultBits = resultType.getIntOrFloatBitWidth();
+
+    // Handle sub-byte results (i1, i2, i4) by masking.
+    // These are all represented as i32 in VM.
+    if (llvm::isPowerOf2_32(resultBits) && resultBits < 8) {
       auto value = adaptor.getIn();
       if (srcType.isInteger(64)) {
         value = rewriter.createOrFold<IREE::VM::TruncI64I32Op>(srcOp.getLoc(),
                                                                dstType, value);
       }
+      unsigned mask = (1u << resultBits) - 1;
       rewriter.replaceOpWithNewOp<IREE::VM::AndI32Op>(
           srcOp, dstType, value,
-          rewriter.createOrFold<IREE::VM::ConstI32Op>(srcOp.getLoc(), 1));
+          rewriter.createOrFold<IREE::VM::ConstI32Op>(srcOp.getLoc(), mask));
     } else if (srcType.isInteger(16) && resultType.isInteger(8)) {
       rewriter.replaceOpWithNewOp<IREE::VM::TruncI16I8Op>(srcOp, dstType,
                                                           adaptor.getIn());
@@ -616,27 +651,29 @@ struct TruncateIOpConversion : public OpConversionPattern<arith::TruncIOp> {
   }
 };
 
-struct ExtendFOpConversion : public OpConversionPattern<arith::ExtFOp> {
+struct ExtendFOpConversion : OpConversionPattern<arith::ExtFOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::ExtFOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto srcType = dyn_cast_if_present<FloatType>(srcOp.getIn().getType());
     auto resultType = dyn_cast_if_present<FloatType>(srcOp.getType());
-    if (!srcType || !resultType)
+    if (!srcType || !resultType) {
       return failure();
+    }
     auto dstType = getTypeConverter()->convertType(resultType);
     auto srcBits = srcType.getWidth();
     auto resultBits = resultType.getWidth();
-    if (srcBits != 32 || resultBits != 64)
+    if (srcBits != 32 || resultBits != 64) {
       return rewriter.notifyMatchFailure(srcOp, "unsupported extf conversion");
+    }
     rewriter.replaceOpWithNewOp<IREE::VM::ExtF32F64Op>(srcOp, dstType,
                                                        adaptor.getIn());
     return success();
   }
 };
 
-struct SIToFPOpConversion : public OpConversionPattern<arith::SIToFPOp> {
+struct SIToFPOpConversion : OpConversionPattern<arith::SIToFPOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::SIToFPOp srcOp, OpAdaptor adaptor,
@@ -683,7 +720,7 @@ struct SIToFPOpConversion : public OpConversionPattern<arith::SIToFPOp> {
   }
 };
 
-struct UIToFPOpConversion : public OpConversionPattern<arith::UIToFPOp> {
+struct UIToFPOpConversion : OpConversionPattern<arith::UIToFPOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::UIToFPOp srcOp, OpAdaptor adaptor,
@@ -731,7 +768,7 @@ struct UIToFPOpConversion : public OpConversionPattern<arith::UIToFPOp> {
   }
 };
 
-struct FPToSIOpConversion : public OpConversionPattern<arith::FPToSIOp> {
+struct FPToSIOpConversion : OpConversionPattern<arith::FPToSIOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::FPToSIOp srcOp, OpAdaptor adaptor,
@@ -757,7 +794,7 @@ struct FPToSIOpConversion : public OpConversionPattern<arith::FPToSIOp> {
   }
 };
 
-struct FPToUIOpConversion : public OpConversionPattern<arith::FPToUIOp> {
+struct FPToUIOpConversion : OpConversionPattern<arith::FPToUIOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::FPToUIOp srcOp, OpAdaptor adaptor,
@@ -781,15 +818,23 @@ struct FPToUIOpConversion : public OpConversionPattern<arith::FPToUIOp> {
   }
 };
 
-struct BitcastOpConversion : public OpConversionPattern<arith::BitcastOp> {
+struct BitcastOpConversion : OpConversionPattern<arith::BitcastOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::BitcastOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto srcType = srcOp.getIn().getType();
     auto dstType = srcOp.getResult().getType();
-    auto resultType =
-        getTypeConverter()->convertType(srcOp.getResult().getType());
+    auto convertedSrcType = getTypeConverter()->convertType(srcType);
+    auto resultType = getTypeConverter()->convertType(dstType);
+
+    // If both source and destination types convert to the same type,
+    // the bitcast is a no-op (e.g., f8 -> i8 both become i32).
+    if (convertedSrcType == resultType) {
+      rewriter.replaceOp(srcOp, adaptor.getOperands()[0]);
+      return success();
+    }
+
     if (srcType.isF32() && dstType.isInteger(32)) {
       rewriter.replaceOpWithNewOp<IREE::VM::BitcastF32I32Op>(
           srcOp, resultType, adaptor.getOperands()[0]);
@@ -809,7 +854,7 @@ struct BitcastOpConversion : public OpConversionPattern<arith::BitcastOp> {
   }
 };
 
-struct SelectOpConversion : public OpConversionPattern<arith::SelectOp> {
+struct SelectOpConversion : OpConversionPattern<arith::SelectOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(arith::SelectOp srcOp, OpAdaptor adaptor,

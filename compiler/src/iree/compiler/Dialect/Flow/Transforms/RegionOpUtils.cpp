@@ -96,10 +96,10 @@ SmallVector<Range> getLoopRanges(Operation *op, Location loc,
             tensor::InsertSliceOp>([&](auto op) {
         return getLoopRangesFromValue(op.getSource(), loc, builder);
       })
-      .Case<TilingInterface>([&](TilingInterface op) {
+      .Case([&](TilingInterface op) {
         return getLoopRangesImpl(op, loc, builder);
       })
-      .Case<ReifyRankedShapedTypeOpInterface>([&](auto shapedOp) {
+      .Case([&](ReifyRankedShapedTypeOpInterface shapedOp) {
         return getLoopRangesImpl(shapedOp, loc, builder);
       })
       .Default([](Operation *op) -> SmallVector<Range> {
@@ -110,8 +110,9 @@ SmallVector<Range> getLoopRanges(Operation *op, Location loc,
 /// Return `true` if an operation is within a `flow.dispatch.region` or
 /// `flow.dispatch.workgroups` op.
 bool isNonNullAndOutsideDispatch(Operation *op) {
-  if (!op)
+  if (!op) {
     return false;
+  }
   Operation *parentOp = op->getParentOp();
   while (parentOp) {
     if (isa<IREE::Flow::DispatchRegionOp, IREE::Flow::DispatchWorkgroupsOp>(
@@ -204,8 +205,9 @@ static void createWorkgroupCountFromDagRootRegion(
     RewriterBase &rewriter, IREE::Flow::DispatchRegionOp &regionOp,
     TypeRange workloadTypes, ArrayRef<Location> workloadLocs) {
   Region &countRegion = regionOp.getWorkgroupCount();
-  if (!countRegion.empty())
+  if (!countRegion.empty()) {
     return;
+  }
   Block *body = rewriter.createBlock(&countRegion, countRegion.begin(),
                                      workloadTypes, workloadLocs);
   auto args = body->getArguments();
@@ -221,8 +223,9 @@ static void createWorkgroupCountFromDagRootRegion(
 /// dynamic dimension.
 static bool hasDynamicShape(Type t) {
   auto shapedType = dyn_cast<ShapedType>(t);
-  if (!shapedType)
+  if (!shapedType) {
     return false;
+  }
   return !shapedType.hasStaticShape();
 }
 
@@ -234,8 +237,9 @@ reifyDynamicResultDimsImpl(OpBuilder &b, Value value,
   OpBuilder::InsertionGuard guard(b);
 
   // Case 1: No dynamic result dims.
-  if (!hasDynamicShape(value.getType()))
+  if (!hasDynamicShape(value.getType())) {
     return success();
+  }
 
   // There is at least one dynamic dimension, continue...
   ShapedType shapedType = cast<ShapedType>(value.getType());
@@ -252,8 +256,9 @@ reifyDynamicResultDimsImpl(OpBuilder &b, Value value,
 
   // Case 2: Value is a block argument.
   if (auto bbArg = dyn_cast<BlockArgument>(value)) {
-    if (!createTensorDimOps)
+    if (!createTensorDimOps) {
       return failure();
+    }
 
     b.setInsertionPointToStart(bbArg.getOwner());
     emitTensorDimOps();
@@ -277,20 +282,24 @@ reifyDynamicResultDimsImpl(OpBuilder &b, Value value,
   auto tiedOp = dyn_cast<IREE::Util::TiedOpInterface>(op);
   if (tiedOp) {
     Value tiedOperand = tiedOp.getTiedResultOperand(value);
-    if (tiedOperand && tiedOperand.getType() == value.getType())
+    if (tiedOperand && tiedOperand.getType() == value.getType()) {
       return reifyDynamicResultDimsImpl(b, tiedOperand, dynamicDims,
                                         /*createTensorDimOps=*/true);
+    }
   }
 
   // Case 5: Query ReifyRankedShapedTypeOpInterface.
   auto reifyShapeOp = dyn_cast<ReifyRankedShapedTypeOpInterface>(op);
   if (reifyShapeOp) {
     ReifiedRankedShapedTypeDims dims;
-    if (failed(reifyShapeOp.reifyResultShapes(b, dims)))
+    if (failed(reifyShapeOp.reifyResultShapes(b, dims))) {
       return failure();
-    for (int64_t i = 0; i < shapedType.getRank(); ++i)
-      if (shapedType.isDynamicDim(i))
+    }
+    for (int64_t i = 0; i < shapedType.getRank(); ++i) {
+      if (shapedType.isDynamicDim(i)) {
         dynamicDims.push_back(cast<Value>(dims[opResult.getResultNumber()][i]));
+      }
+    }
     return success();
   }
 
@@ -303,8 +312,9 @@ reifyDynamicResultDimsImpl(OpBuilder &b, Value value,
         /*createTensorDimOps=*/true);
   }
 
-  if (!createTensorDimOps)
+  if (!createTensorDimOps) {
     return failure();
+  }
 
   // None of the above. Insert tensor.dim ops.
   b.setInsertionPointAfter(op);
@@ -416,8 +426,9 @@ clonePrecedingOpIntoDispatchRegion(RewriterBase &rewriter, Operation *target,
     Region *parentRegion = parentOperation->getParentRegion();
 
     while ((parentOperation = parentOperation->getParentOp())) {
-      if (regionOp.getOperation() == parentOperation)
+      if (regionOp.getOperation() == parentOperation) {
         break;
+      }
       parentRegion = parentOperation->getParentRegion();
     }
 
@@ -543,20 +554,14 @@ moveFollowingOpIntoDispatchRegion(RewriterBase &rewriter, Operation *target,
   rewriter.setInsertionPoint(body.getTerminator());
   Operation *clonedTarget = rewriter.clone(*target);
 
-  // Replace any operands returned by the `regionOp` with the results yielded
-  // inside of the `regionOp`.
-  for (OpOperand &operand : clonedTarget->getOpOperands()) {
-    if (operand.get().getDefiningOp() != regionOp) {
-      continue;
-    }
-    auto returnOp =
-        cast<IREE::Flow::ReturnOp>(regionOp.getBody().front().getTerminator());
-    auto opResult = cast<OpResult>(operand.get());
-    Value yieldedValue = returnOp->getOperand(opResult.getResultNumber());
-    rewriter.modifyOpInPlace(clonedTarget, [&]() {
-      clonedTarget->setOperand(operand.getOperandNumber(), yieldedValue);
-    });
-  }
+  // Replace all of `clonedTarget` uses of `regionOp` with the values yielded
+  // from inside the region.
+  auto returnOp =
+      cast<IREE::Flow::ReturnOp>(regionOp.getBody().front().getTerminator());
+  rewriter.replaceOpUsesWithIf(
+      regionOp, returnOp.getOperands(), [&](OpOperand &operand) {
+        return clonedTarget->isAncestor(operand.getOwner());
+      });
 
   // Gather all uses of `target`.
   for (auto [index, result] : llvm::enumerate(target->getResults())) {
@@ -638,13 +643,12 @@ FailureOr<Operation *> hoistOutOfDispatch(RewriterBase &rewriter,
         return producer && producer->getParentOfType<DispatchRegionOp>();
       })) {
     rewriter.setInsertionPoint(dispatchRegionOp);
-  } else if (llvm::all_of(op->getUsers(), [&](Operation *user) {
-               return isa<IREE::Flow::ReturnOp>(user);
-             })) {
+  } else if (llvm::all_of(op->getUsers(),
+                          llvm::IsaPred<IREE::Flow::ReturnOp>)) {
     rewriter.setInsertionPointAfter(dispatchRegionOp);
   } else {
     return rewriter.notifyMatchFailure(
-        op, "op has both operands and users insided of its dispatch");
+        op, "op has both operands and users inside of its dispatch");
   }
   Operation *hoistedOp = rewriter.clone(*op);
 
@@ -800,10 +804,10 @@ FailureOr<Operation *> hoistOutOfDispatch(RewriterBase &rewriter,
 // Utilities to make a dispatch region isolated from above
 //===---------------------------------------------------------------------===//
 
-// White list of operations we could ever want to clone. All clonable operations
-// must be part of this white list before any other consideration. Any operation
-// that returns `true` here is never cloned.
-static bool isUnclonableOp(Operation *op) {
+// White list of operations we could ever want to clone. All cloneable
+// operations must be part of this white list before any other consideration.
+// Any operation that returns `true` here is never cloned.
+static bool isUncloneableOp(Operation *op) {
   if (!op) {
     return true;
   }
@@ -846,15 +850,15 @@ static bool isScatterIndicesGenerator(Operation *op) {
 
 /// Operations that are cloned into dispatch regions formed with other
 /// operations as roots.
-bool isClonableIntoDispatchOp(Operation *op,
-                              ClonableIntoDispatchOptions options) {
-  if (isUnclonableOp(op)) {
+bool isCloneableIntoDispatchOp(Operation *op,
+                               CloneableIntoDispatchOptions options) {
+  if (isUncloneableOp(op)) {
     return false;
   }
 
   // TODO(#8637): `tensor.collapse_shape` and `tensor.expand_shape` are
-  // trivially clonable too, but they cause problems
-  // with bufferization. Make them clonable when fixed.
+  // trivially cloneable too, but they cause problems
+  // with bufferization. Make them cloneable when fixed.
   if (isa<affine::AffineApplyOp, arith::IndexCastOp, linalg::FillOp,
           tensor::EmptyOp, tensor::ExtractOp, tensor::ExtractSliceOp,
           complex::CreateOp, IREE::Encoding::UnsetEncodingOp>(op)) {
@@ -882,8 +886,9 @@ bool isClonableIntoDispatchOp(Operation *op,
   }
 
   if (isa<arith::ConstantOp>(op) || isa<complex::ConstantOp>(op)) {
-    if (clInlineConstantByteLength == 0)
+    if (clInlineConstantByteLength == 0) {
       return false;
+    }
     Attribute constantValueAttr;
     if (!matchPattern(op->getResult(0), m_Constant(&constantValueAttr))) {
       return false;
@@ -936,26 +941,29 @@ static bool hasUnfusableUseInDispatch(Value v, Operation *dispatchOp) {
     Operation *owner = ownerWorkgroupsOp ? ownerWorkgroupsOp : ownerRegionOp;
 
     // Ignore uses outside of dispatch workgroups op.
-    if (owner != dispatchOp)
+    if (owner != dispatchOp) {
       continue;
+    }
 
     // Cannot fuse producer of `dest` with `tensor.insert_slice`.
     if (auto insertSliceUser = dyn_cast<tensor::InsertSliceOp>(user)) {
-      if (insertSliceUser.getDest() == v)
+      if (insertSliceUser.getDest() == v) {
         return true;
+      }
     }
   }
   return false;
 }
 
 SmallVector<Operation *> getCloneableOps(IREE::Flow::DispatchRegionOp regionOp,
-                                         ClonableIntoDispatchOptions options) {
+                                         CloneableIntoDispatchOptions options) {
   // Find values that are used inside of the dispatch region but defined outside
   // of the dispatch region.
   llvm::SetVector<Value> valuesDefinedAbove;
   mlir::getUsedValuesDefinedAbove(regionOp.getBody(), valuesDefinedAbove);
-  if (valuesDefinedAbove.empty())
+  if (valuesDefinedAbove.empty()) {
     return {};
+  }
 
   // Traverse the defining ops of these values (and the ops on their reverse
   // SSA use-def chain).
@@ -966,13 +974,14 @@ SmallVector<Operation *> getCloneableOps(IREE::Flow::DispatchRegionOp regionOp,
   while (!worklist.empty()) {
     Value outsideValue = worklist.pop_back_val();
     // Skip values that were already visited.
-    if (visited.count(outsideValue))
+    if (visited.contains(outsideValue)) {
       continue;
+    }
     visited.insert(outsideValue);
 
     Operation *definingOp = outsideValue.getDefiningOp();
     if (!definingOp ||
-        !IREE::Flow::isClonableIntoDispatchOp(definingOp, options) ||
+        !IREE::Flow::isCloneableIntoDispatchOp(definingOp, options) ||
         hasUnfusableUseInDispatch(outsideValue, regionOp)) {
       valuesDefinedAbove.insert(outsideValue);
       continue;
@@ -990,7 +999,7 @@ SmallVector<Operation *> getCloneableOps(IREE::Flow::DispatchRegionOp regionOp,
 /// Clone producers into the dispatch region.
 LogicalResult cloneProducersToRegion(RewriterBase &rewriter,
                                      IREE::Flow::DispatchRegionOp regionOp,
-                                     ClonableIntoDispatchOptions options) {
+                                     CloneableIntoDispatchOptions options) {
   SmallVector<Operation *> cloneableOps;
   do {
     cloneableOps = getCloneableOps(regionOp, options);

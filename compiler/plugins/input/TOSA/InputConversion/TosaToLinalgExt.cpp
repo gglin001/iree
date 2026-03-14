@@ -42,9 +42,10 @@ public:
     auto updatesTy = dyn_cast<RankedTensorType>(updates.getType());
     ImplicitLocOpBuilder builder(op.getLoc(), rewriter);
 
-    if (!valuesTy || !indicesTy || !updatesTy)
+    if (!valuesTy || !indicesTy || !updatesTy) {
       return rewriter.notifyMatchFailure(op,
                                          "tosa.gather has unknown input rank");
+    }
 
     // TOSA's scatter does not include a index dimension, instead it implicitly
     // supports an index depth of one. We materialize that implicit index of
@@ -68,9 +69,11 @@ public:
     // Materialize the batch indice as LinalgExt scatter is not batched.
     {
       llvm::SmallVector<Value> dynDims;
-      for (int i = 0, s = indicesTy.getRank(); i < s; ++i)
-        if (indicesTy.isDynamicDim(i))
+      for (int i = 0, s = indicesTy.getRank(); i < s; ++i) {
+        if (indicesTy.isDynamicDim(i)) {
           dynDims.push_back(tensor::DimOp::create(builder, indices, i));
+        }
+      }
 
       Value empty = tensor::EmptyOp::create(
           builder, indicesTy.getShape(), indicesTy.getElementType(), dynDims);
@@ -133,8 +136,8 @@ public:
 
     // Create the LinalgExt scatter operation.
     auto scatter = IREE::LinalgExt::ScatterOp::create(
-        builder, TypeRange{values.getType()}, ValueRange{updates, indices},
-        ValueRange{values}, builder.getDenseI64ArrayAttr({0, 1}),
+        builder, TypeRange{values.getType()}, updates, indices,
+        /*original=*/values, builder.getDenseI64ArrayAttr({0, 1}),
         builder.getBoolAttr(true));
 
     llvm::SmallVector<Type> args(2, valuesTy.getElementType());
@@ -159,8 +162,9 @@ public:
 
     mlir::FunctionOpInterface funcOp = getOperation();
     mlir::iree_compiler::populateTosaToLinalgExtPatterns(&patterns);
-    if (failed(applyFullConversion(funcOp, target, std::move(patterns))))
+    if (failed(applyFullConversion(funcOp, target, std::move(patterns)))) {
       signalPassFailure();
+    }
   }
 };
 

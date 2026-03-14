@@ -7,6 +7,7 @@
 #include "iree/compiler/Codegen/Common/Transforms.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/Transforms/Transforms.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -32,11 +33,13 @@ getExpandedShape(SmallVector<ReassociationIndices> reIndices,
                  SmallVectorImpl<int64_t> &expandedShape,
                  SmallVectorImpl<int64_t> &totalInnerSizes) {
   auto destType = dyn_cast<ShapedType>(dest.getType());
-  if (!destType)
+  if (!destType) {
     return failure();
+  }
   // TODO (nirvedhmeshram): Support rank reducing parallel_insert_slice.
-  if (reIndices.size() != destType.getShape().size())
+  if (reIndices.size() != destType.getShape().size()) {
     return failure();
+  }
   // Iterator to insert outer sizes.
   auto outerShapeIdx = 0;
   for (auto [reassociations, destSize] :
@@ -57,13 +60,15 @@ getExpandedShape(SmallVector<ReassociationIndices> reIndices,
     for (int64_t reasociation : llvm::drop_begin(reassociations)) {
       int64_t expandedInnerSize = sliceStaticSizes[reasociation];
       // It is not safe to do this pattern if inner dimensions are dynamic.
-      if (ShapedType::isDynamic(expandedInnerSize))
+      if (ShapedType::isDynamic(expandedInnerSize)) {
         return failure();
+      }
       expandedShape.push_back(expandedInnerSize);
       totalInnerSize *= expandedInnerSize;
     }
-    if (destSize % totalInnerSize != 0)
+    if (destSize % totalInnerSize != 0) {
       return failure();
+    }
     totalInnerSizes.push_back(totalInnerSize);
     // insert the outer size in front of any inner sizes.
     expandedShape.insert(expandedShape.begin() + outerShapeIdx,
@@ -87,20 +92,26 @@ static LogicalResult verifyAndCollectExpandableUsers(
       continue;
     }
     auto extractSliceOp = dyn_cast<tensor::ExtractSliceOp>(user);
-    if (!extractSliceOp)
+    if (!extractSliceOp) {
       return failure();
-    if (extractSliceOp.getMixedSizes() != parallelInsertOp.getMixedSizes())
+    }
+    if (extractSliceOp.getMixedSizes() != parallelInsertOp.getMixedSizes()) {
       return failure();
-    if (extractSliceOp.getMixedOffsets() != parallelInsertOp.getMixedOffsets())
+    }
+    if (extractSliceOp.getMixedOffsets() !=
+        parallelInsertOp.getMixedOffsets()) {
       return failure();
+    }
     for (Operation *user : extractSliceOp->getUsers()) {
       auto expandShapeOp = dyn_cast<tensor::ExpandShapeOp>(user);
-      if (!expandShapeOp)
+      if (!expandShapeOp) {
         return failure();
+      }
       SmallVector<ReassociationIndices> expandReIndices =
           expandShapeOp.getReassociationIndices();
-      if (reIndices != expandReIndices)
+      if (reIndices != expandReIndices) {
         return failure();
+      }
     }
     expandableUsers.push_back(extractSliceOp);
   }
@@ -186,8 +197,9 @@ struct ExpandDestinationForallOp final
     auto collapseOp =
         parallelInsertOp.getSource().getDefiningOp<tensor::CollapseShapeOp>();
     // No collapse op to hoist out.
-    if (!collapseOp)
+    if (!collapseOp) {
       return failure();
+    }
 
     // Ignore trivially foldable collapse ops.
     if (collapseOp.getSrcType().getRank() ==
@@ -203,8 +215,9 @@ struct ExpandDestinationForallOp final
     int64_t tiedResultIdx = tiedResult.getResultNumber();
 
     auto forallOp = dyn_cast<scf::ForallOp>(tiedResult.getOwner());
-    if (!forallOp)
+    if (!forallOp) {
       return failure();
+    }
 
     SmallVector<int64_t> expandedDestShape;
     SmallVector<int64_t> totalInnerSizes;
@@ -226,16 +239,19 @@ struct ExpandDestinationForallOp final
       auto storeOp =
           dyn_cast<IREE::TensorExt::DispatchTensorStoreOp>(foralluser);
       if (storeOp && isFullSlice(storeOp, storeOp.getTargetType(),
-                                 storeOp.getTargetDims()))
+                                 storeOp.getTargetDims())) {
         continue;
+      }
       auto storeToBufferOp =
           dyn_cast<IREE::Codegen::StoreToBufferOp>(foralluser);
-      if (!storeToBufferOp)
+      if (!storeToBufferOp) {
         return failure();
+      }
       MemRefType bufferType = storeToBufferOp.getBuffer().getType();
       if (failed(memref::ExpandShapeOp::computeExpandedType(
-              bufferType, expandedDestShape, reIndices)))
+              bufferType, expandedDestShape, reIndices))) {
         return failure();
+      }
     }
 
     // This allows us to assume that the extract/inserts in the loop are
@@ -301,6 +317,114 @@ struct ExpandDestinationForallOp final
       } else {
         forallOp->getResult(idx).replaceAllUsesWith(
             newForallOp->getResult(idx));
+      }
+    }
+    return success();
+  }
+};
+
+/// This pattern hoists expand_shape & collapse_shape ops out of scf.for loops.
+struct ExpandDestinationForOp final : OpRewritePattern<scf::YieldOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(scf::YieldOp yieldOp,
+                                PatternRewriter &rewriter) const override {
+    Location loc = yieldOp.getLoc();
+    auto forOp = dyn_cast<scf::ForOp>(yieldOp->getParentOp());
+    if (!forOp) {
+      return failure();
+    }
+    tensor::CollapseShapeOp collapseOp;
+    tensor::ExpandShapeOp expandOp;
+    int64_t tiedResultIdx = 0;
+
+    for (auto [idx, operand] : llvm::enumerate(yieldOp.getOperands())) {
+      collapseOp = operand.getDefiningOp<tensor::CollapseShapeOp>();
+      if (!collapseOp) {
+        continue;
+      }
+      if (collapseOp.getSrcType().getRank() ==
+          collapseOp.getResultType().getRank()) {
+        continue;
+      }
+
+      // Get the corresponding expandOp.
+      auto iterArg = forOp.getRegionIterArgs()[idx];
+      for (auto user : iterArg.getUsers()) {
+        expandOp = dyn_cast<tensor::ExpandShapeOp>(user);
+        if (expandOp &&
+            (expandOp.getReassociationIndices() ==
+             collapseOp.getReassociationIndices()) &&
+            (expandOp.getResultType() == collapseOp.getSrcType())) {
+          break;
+        } else {
+          expandOp = nullptr;
+        }
+      }
+
+      if (expandOp && collapseOp) {
+        bool hasOtherUsers = false;
+        for (auto user : iterArg.getUsers()) {
+          if (user != expandOp) {
+            hasOtherUsers = true;
+            expandOp = nullptr;
+            collapseOp = nullptr;
+            break;
+          }
+        }
+        if (!hasOtherUsers) {
+          tiedResultIdx = idx;
+          break;
+        }
+      }
+    }
+    if (!expandOp || !collapseOp) {
+      return failure();
+    }
+
+    // Create the expand -> new scf.for -> collapse chain.
+    rewriter.setInsertionPoint(forOp);
+
+    Value initArg = forOp.getInitArgs()[tiedResultIdx];
+    auto expandedDest = tensor::ExpandShapeOp::create(
+        rewriter, loc, expandOp.getResultType(), initArg,
+        expandOp.getReassociationIndices());
+
+    auto expandedInitArgs = llvm::to_vector_of<Value>(forOp.getInitArgs());
+    expandedInitArgs[tiedResultIdx] = expandedDest.getResult();
+
+    scf::ForOp newForOp = scf::ForOp::create(
+        rewriter, loc, forOp.getLowerBound(), forOp.getUpperBound(),
+        forOp.getStep(), expandedInitArgs);
+
+    auto collapsedOutput = tensor::CollapseShapeOp::create(
+        rewriter, loc, collapseOp.getResultType(),
+        newForOp.getResults()[tiedResultIdx],
+        collapseOp.getReassociationIndices());
+
+    // Users of the result of collapseOp must use the input to the collapseOp.
+    collapseOp->getResult(0).replaceAllUsesWith(collapseOp.getOperand());
+
+    // Users of the result of expandOp must use the iter_arg of the new forOp.
+    for (auto user : forOp.getRegionIterArgs()[tiedResultIdx].getUsers()) {
+      if (user->getNumResults() > 0) {
+        user->getResult(0).replaceAllUsesWith(
+            newForOp.getRegionIterArgs()[tiedResultIdx]);
+      }
+    }
+
+    // Merge the old scf.for block with the new scf.for block.
+    SmallVector<Value> ivs = {newForOp.getInductionVar()};
+    SmallVector<Value> argReplacements(ivs);
+    argReplacements.append(newForOp.getRegionIterArgs().begin(),
+                           newForOp.getRegionIterArgs().end());
+    rewriter.mergeBlocks(forOp.getBody(), newForOp.getBody(), argReplacements);
+
+    // Replace the uses of the old scf.for with the new scf.for.
+    for (int idx = 0; idx < forOp->getNumResults(); ++idx) {
+      if (idx == tiedResultIdx) {
+        forOp->getResult(idx).replaceAllUsesWith(collapsedOutput->getResult(0));
+      } else {
+        forOp->getResult(idx).replaceAllUsesWith(newForOp->getResult(idx));
       }
     }
     return success();
@@ -412,6 +536,8 @@ void PropagateReshapesByExpansionPass::runOnOperation() {
       };
   linalg::populateFoldReshapeOpsByExpansionPatterns(bubbleExpandShapePatterns,
                                                     bubbleUpExpansionControlFn);
+  IREE::Codegen::populateFoldReshapeOpsByExpansionPatterns(
+      bubbleExpandShapePatterns, bubbleUpExpansionControlFn);
   // Add patterns to do some additional cleanup (on top of canonicalizations
   // that can be done later) of reshape ops.
   tensor::populateFoldTensorEmptyPatterns(bubbleExpandShapePatterns);
@@ -426,8 +552,8 @@ void PropagateReshapesByExpansionPass::runOnOperation() {
   populateReshapeToInterfaceTensorPatterns(bubbleExpandShapePatterns);
   populateFoldTensorReshapeIntoBufferPatterns(bubbleExpandShapePatterns);
   bubbleExpandShapePatterns
-      .add<ExpandDestinationForallOp, SwapInnerBitcastWithExtractSlice>(
-          context);
+      .add<ExpandDestinationForallOp, ExpandDestinationForOp,
+           SwapInnerBitcastWithExtractSlice>(context);
 
   if (failed(applyPatternsGreedily(getOperation(),
                                    std::move(bubbleExpandShapePatterns)))) {

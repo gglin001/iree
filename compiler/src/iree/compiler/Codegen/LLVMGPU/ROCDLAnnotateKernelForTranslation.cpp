@@ -27,6 +27,32 @@ namespace mlir::iree_compiler {
 #include "iree/compiler/Codegen/LLVMGPU/ROCDLPasses.h.inc"
 
 namespace {
+// Maps IREE denormal fp math mode to LLVM denormal mode kind for the
+// denormal_fpenv attribute. Only PreserveSign and PositiveZero are valid;
+// None should not be passed.
+static LLVM::DenormalModeKind
+toLLVMDenormalModeKind(IREE::Codegen::DenormalFpMath mode) {
+  switch (mode) {
+  case IREE::Codegen::DenormalFpMath::PreserveSign:
+    return LLVM::DenormalModeKind::PreserveSign;
+  case IREE::Codegen::DenormalFpMath::PositiveZero:
+    return LLVM::DenormalModeKind::PositiveZero;
+  default:
+    return LLVM::DenormalModeKind::IEEE;
+  }
+}
+
+// Sets denormal_fpenv on the function for float (f32) only: default mode
+// remains IEEE, float mode is set to the given kind.
+static void setDenormalFpenvForF32(LLVM::LLVMFuncOp funcOp,
+                                   LLVM::DenormalModeKind floatMode) {
+  MLIRContext *ctx = funcOp.getContext();
+  auto attr = LLVM::DenormalFPEnvAttr::get(ctx, LLVM::DenormalModeKind::IEEE,
+                                           LLVM::DenormalModeKind::IEEE,
+                                           floatMode, floatMode);
+  funcOp.setDenormalFpenvAttr(attr);
+}
+
 // Extracts the amdgpu chipset version from the chip architecture in the
 // executable target attribute.
 static FailureOr<amdgpu::Chipset>
@@ -78,18 +104,17 @@ annotateKernelForTranslation(LLVM::LLVMFuncOp funcOp,
   if (IREE::Codegen::DenormalFpMathAttr attr =
           getConfigDenormalFpMathF32Attr(targetAttr.getConfiguration());
       attr && attr.getValue() != IREE::Codegen::DenormalFpMath::None) {
-    funcOp.setDenormalFpMathF32(
-        IREE::Codegen::stringifyDenormalFpMath(attr.getValue()));
+    setDenormalFpenvForF32(funcOp, toLLVMDenormalModeKind(attr.getValue()));
   }
 
-  // Check if the `denormal_fp_math_f32` dictionary is set and proccess it.
+  // Check if the `denormal_fp_math_f32` dictionary is set and process it.
   auto denormalFp32 = cast_or_null<IREE::Codegen::DenormalFpMathAttr>(
       funcOp->getDiscardableAttr(
           IREE::Codegen::DenormalFpMathAttr::getFP32DictKeyName()));
   if (denormalFp32) {
     if (denormalFp32.getValue() != IREE::Codegen::DenormalFpMath::None) {
-      funcOp.setDenormalFpMathF32(
-          IREE::Codegen::stringifyDenormalFpMath(denormalFp32.getValue()));
+      setDenormalFpenvForF32(funcOp,
+                             toLLVMDenormalModeKind(denormalFp32.getValue()));
     }
 
     // Discard the attribute.
@@ -102,16 +127,19 @@ annotateKernelForTranslation(LLVM::LLVMFuncOp funcOp,
   // attribute.
   FailureOr<amdgpu::Chipset> chipset =
       getChipsetVersion(builder.getContext(), targetAttr);
-  if (failed(chipset))
+  if (failed(chipset)) {
     return variantOp.emitError() << "failed to parse amdgpu chipset";
+  }
 
-  if (chipset->majorVersion != 9 || *chipset < amdgpu::Chipset(9, 4, 0))
+  if (chipset->majorVersion != 9 || *chipset < amdgpu::Chipset(9, 4, 0)) {
     return success();
+  }
 
   auto inRegAttrName =
       builder.getStringAttr(LLVM::LLVMDialect::getInRegAttrName());
-  for (unsigned i = 0, e = funcOp.getNumArguments(); i < e; ++i)
+  for (unsigned i = 0, e = funcOp.getNumArguments(); i < e; ++i) {
     funcOp.setArgAttr(i, inRegAttrName, unitAttr);
+  }
 
   return success();
 }
@@ -142,8 +170,9 @@ struct ROCDLAnnotateKernelForTranslationPass final
 
     // Un-exported functions are library functions or otherwise not kernels, so
     // don't need these annotations.
-    if (!exportOp)
+    if (!exportOp) {
       return;
+    }
 
     if (failed(annotateKernelForTranslation(funcOp, variantOp, exportOp))) {
       return signalPassFailure();

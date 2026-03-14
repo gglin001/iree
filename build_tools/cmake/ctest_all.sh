@@ -40,8 +40,12 @@ export IREE_VULKAN_F16_DISABLE="${IREE_VULKAN_F16_DISABLE:-1}"
 export IREE_NVIDIA_GPU_TESTS_DISABLE="${IREE_NVIDIA_GPU_TESTS_DISABLE:-1}"
 # Respect the user setting, but default to skipping tests that require SM80 Nvidia GPU.
 export IREE_NVIDIA_SM80_TESTS_DISABLE="${IREE_NVIDIA_SM80_TESTS_DISABLE:-1}"
+# Respect the user setting, but default to skipping tests that require CDNA3 AMD GPU.
+export IREE_AMD_CDNA3_TESTS_DISABLE="${IREE_AMD_CDNA3_TESTS_DISABLE:-1}"
 # Respect the user setting, but default to skipping tests that require RDNA3 AMD GPU.
 export IREE_AMD_RDNA3_TESTS_DISABLE="${IREE_AMD_RDNA3_TESTS_DISABLE:-1}"
+# Respect the user setting, but default to skipping tests that require CDNA4 AMD GPU.
+export IREE_AMD_CDNA4_TESTS_DISABLE="${IREE_AMD_CDNA4_TESTS_DISABLE:-1}"
 # Respect the user setting, but default to skipping tests that require RDNA4 AMD GPU.
 export IREE_AMD_RDNA4_TESTS_DISABLE="${IREE_AMD_RDNA4_TESTS_DISABLE:-1}"
 # Respect the user setting, but default to skipping tests that require more than one device(GPU).
@@ -96,6 +100,12 @@ fi
 if (( IREE_NVIDIA_SM80_TESTS_DISABLE == 1 )); then
   label_exclude_args+=("^requires-gpu-sm80$")
 fi
+if (( IREE_AMD_CDNA3_TESTS_DISABLE == 1 )); then
+  label_exclude_args+=("^requires-gpu-cdna3$")
+fi
+if (( IREE_AMD_CDNA4_TESTS_DISABLE == 1 )); then
+  label_exclude_args+=("^requires-gpu-cdna4$")
+fi
 if (( IREE_AMD_RDNA3_TESTS_DISABLE == 1 )); then
   label_exclude_args+=("^requires-gpu-rdna3$")
 fi
@@ -149,6 +159,12 @@ excluded_tests+=(
   "iree/samples/custom_dispatch/cpu/embedded/example_stream.mlir.test"
   "iree/samples/custom_dispatch/cpu/embedded/example_transform.mlir.test"
 )
+
+if [[ -n "${IREE_EXTRA_NEWLINE_SEPARATED_CTEST_TESTS_TO_EXCLUDE:-}" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && excluded_tests+=("$line")
+  done <<< "${IREE_EXTRA_NEWLINE_SEPARATED_CTEST_TESTS_TO_EXCLUDE}"
+fi
 
 ctest_args=(
   "--test-dir ${BUILD_DIR}"

@@ -18,7 +18,7 @@
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
-#include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/Passes.h"
@@ -57,14 +57,23 @@ void buildVMVXConfigurationPassPipeline(OpPassManager &variantPassManager) {
 
 static void
 buildVectorVMVXTransformPassPipeline(OpPassManager &variantPassManager) {
-  OpPassManager &modulePassManager = variantPassManager.nest<ModuleOp>();
   // ---------------------------------------------------------------------------
   // Tensor-level optimization, kernel dispatch and lower to buffers.
   // ---------------------------------------------------------------------------
-  {
-    FunctionLikeNest(modulePassManager)
-        .addPass(createVMVXLowerExecutableTargetPass);
-  }
+  FunctionLikeNest(variantPassManager.nest<ModuleOp>())
+      .addPass(createVMVXLowerExecutableTargetPass);
+
+  // Resolve workgroup distribution before lowering ukernels to calls.
+  // CPULowerToUKernelsPass (inside VMVXLowerExecutableTargetPass) lowers
+  // iree_codegen.query_tile_sizes to iree_codegen.ukernel.generic which is
+  // memory-effect-free at the tensor level (no memref operands). The WAR hack
+  // in materializeSliceFromOrdinals replaces it with a constant in the count
+  // region. After LowerUKernelOpsToCallsPass it becomes a func.call which is
+  // memory-effecting and would be rejected by the backward slice.
+  variantPassManager.addPass(createReconcileTranslationInfoPass());
+  variantPassManager.addPass(createResolveWorkgroupCountHintsPass());
+
+  OpPassManager &modulePassManager = variantPassManager.nest<ModuleOp>();
   modulePassManager.addPass(createLowerUKernelOpsToCallsPass());
 
   // ---------------------------------------------------------------------------
@@ -82,7 +91,17 @@ buildVectorVMVXTransformPassPipeline(OpPassManager &variantPassManager) {
       .addPass(createCSEPass)
       .addPass([]() { return createConvertVectorToSCFPass(); })
       .addPass(createCanonicalizerPass)
-      .addPass(arith::createArithExpandOpsPass);
+      .addPass([&]() {
+        arith::ArithExpandOpsPassOptions options;
+        options.includeBf16 = true;
+        options.includeF8E8M0 = true;
+        return arith::createArithExpandOpsPass(options);
+      })
+      .addPass(createConvertUnsupportedFloatArithPass)
+      .addPass([]() {
+        return createEmulateNarrowTypePass(
+            EmulateNarrowTypePassOptions{/*disableAtomicRMW=*/true});
+      });
 
   // Handle tensor-type constants.
   modulePassManager.addPass(createIREEBufferizeConstantsPass());
@@ -112,7 +131,7 @@ buildVectorVMVXTransformPassPipeline(OpPassManager &variantPassManager) {
 
 static void buildLoopOptimizationVMVXTransformPassPipeline(
     FunctionLikeNest &funcPassManager) {
-  funcPassManager.addPass(createLowerAffinePass)
+  funcPassManager.addPass(createIREECodegenLowerAffinePass)
       .addPass(createForOpCanonicalizationPass)
       .addPass(createIREELoopInvariantCodeMotionPass);
 }
@@ -124,7 +143,6 @@ void buildVMVXTransformPassPipeline(OpPassManager &variantPassManager) {
 
   buildVectorVMVXTransformPassPipeline(variantPassManager);
 
-  variantPassManager.addPass(createReconcileTranslationInfoPass());
   // ---------------------------------------------------------------------------
   // Standard/Vector/HAL/etc -> VMVX conversion
   // ---------------------------------------------------------------------------

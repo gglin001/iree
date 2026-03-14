@@ -40,11 +40,12 @@ iree_cc_library(
     ::IREEVectorExtOpsGen
     LLVMSupport
     MLIRAffineDialect
+    MLIRControlFlowInterfaces
     MLIRIR
-    MLIRMaskableOpInterface
     MLIRSideEffectInterfaces
     MLIRSupport
     MLIRTensorDialect
+    MLIRValueBoundsOpInterface
     MLIRVectorDialect
     MLIRVectorInterfaces
     iree::compiler::Codegen::Utils::VectorOpUtils

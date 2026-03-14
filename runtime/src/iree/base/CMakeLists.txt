@@ -60,10 +60,14 @@ iree_cc_library(
     "assert.h"
     "bitfield.c"
     "bitfield.h"
+    "bitmap.c"
+    "bitmap.h"
     "loop.c"
     "loop.h"
     "loop_inline.c"
     "loop_inline.h"
+    "printf.c"
+    "printf.h"
     "status.c"
     "status.h"
     "status_cc.h"
@@ -83,10 +87,24 @@ iree_cc_library(
     ${_IREE_ALLOCATOR_SYSTEM_DEFINES}
   DEPS
     ::core_headers
+    iree::base::internal
     iree::base::internal::time
     iree::base::tracing::provider
+    printf::printf
+    ${IREE_LIBBACKTRACE_TARGET}
     ${_IREE_ALLOCATOR_SYSTEM_DEPS}
   PUBLIC
+)
+
+iree_cc_test(
+  NAME
+    allocator_test
+  SRCS
+    "allocator_test.cc"
+  DEPS
+    ::base
+    iree::testing::gtest
+    iree::testing::gtest_main
 )
 
 iree_cc_test(
@@ -94,6 +112,30 @@ iree_cc_test(
     bitfield_test
   SRCS
     "bitfield_test.cc"
+  DEPS
+    ::base
+    iree::testing::gtest
+    iree::testing::gtest_main
+)
+
+iree_cc_binary_benchmark(
+  NAME
+    bitmap_benchmark
+  SRCS
+    "bitmap_benchmark.cc"
+  DEPS
+    ::base
+    iree::base
+    iree::testing::benchmark
+    iree::testing::benchmark_main
+  TESTONLY
+)
+
+iree_cc_test(
+  NAME
+    bitmap_test
+  SRCS
+    "bitmap_test.cc"
   DEPS
     ::base
     iree::testing::gtest
@@ -145,6 +187,15 @@ iree_cc_test(
     ::base
     iree::testing::gtest
     iree::testing::gtest_main
+)
+
+iree_cc_fuzz(
+  NAME
+    string_view_fuzz
+  SRCS
+    "string_view_fuzz.cc"
+  DEPS
+    ::base
 )
 
 iree_cc_test(

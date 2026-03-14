@@ -21,7 +21,7 @@ namespace mlir::iree_compiler::IREE::Check {
 // not compiled in (we just ignore them). This allows us to run benchmarks on
 // modules using the check ops.
 template <typename T, typename Adaptor = typename T::Adaptor>
-struct OptionalCheckImportConversion : public VMImportOpConversion<T, Adaptor> {
+struct OptionalCheckImportConversion : VMImportOpConversion<T, Adaptor> {
   using VMImportOpConversion<T, Adaptor>::VMImportOpConversion;
   LogicalResult
   matchAndRewrite(T op, typename T::Adaptor adaptor,
@@ -37,8 +37,9 @@ struct OptionalCheckImportConversion : public VMImportOpConversion<T, Adaptor> {
     rewriter.setInsertionPointToStart(callBlock);
     auto results = rewriteToCall(op, adaptor, this->importOp,
                                  *this->getTypeConverter(), rewriter);
-    if (!results.has_value())
+    if (!results.has_value()) {
       return failure();
+    }
     rewriter.replaceOp(op, results.value());
     IREE::VM::BranchOp::create(rewriter, op.getLoc(), followingBlock);
     return success();

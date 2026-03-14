@@ -47,7 +47,7 @@
 #
 # - Need to add an include directory?
 #   Don't do that here. Always prefer to fully-specify the path from the IREE
-#   workspace root when it's known that the compilation will be occuring using
+#   workspace root when it's known that the compilation will be occurring using
 #   the files within the IREE checkout; for example, instead of adding a global
 #   include path to third_party/foo/ and #include <foo.h>'ing, just
 #   #include "third_party/foo/foo.h". This reduces build configuration, makes it
@@ -173,7 +173,10 @@ iree_select_compiler_opts(IREE_DEFAULT_COPTS
     "-Wno-invalid-offsetof" # Technically UB but needed for intrusive ptrs
     "-Wno-unused-const-variable"
     "-Wno-unused-function"
+    "-Wno-unused-lambda-capture"
     "-Wno-unused-private-field"
+    "-Wno-pointer-sign"
+    "-Wno-char-subscripts"
 
     # Explicitly enable some additional warnings.
     # Some of these aren't on by default, or under -Wall, or are subsets of
@@ -359,6 +362,13 @@ if(IREE_ENABLE_THREADING)
   iree_select_compiler_opts(IREE_DEFAULT_COPTS
     ALL
       "-DIREE_THREADING_ENABLE=1"
+  )
+endif()
+
+if(IREE_SYNCHRONIZATION_DISABLE_UNSAFE)
+  iree_select_compiler_opts(IREE_DEFAULT_COPTS
+    ALL
+      "-DIREE_SYNCHRONIZATION_DISABLE_UNSAFE=1"
   )
 endif()
 

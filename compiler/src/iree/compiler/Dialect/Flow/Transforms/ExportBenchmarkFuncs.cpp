@@ -225,8 +225,9 @@ createEntryPointBenchmarkFunc(mlir::ModuleOp moduleOp,
   for (auto arg : entryFuncOp.getArguments()) {
     auto dummyVar =
         createDummyInput(funcName, arg, symbolTable, moduleBuilder, explorer);
-    if (!dummyVar)
+    if (!dummyVar) {
       return failure();
+    }
     dummyInputVariableOps.push_back(dummyVar);
   }
 
@@ -273,8 +274,7 @@ createEntryPointBenchmarkFunc(mlir::ModuleOp moduleOp,
 // attribute from the old functions.
 // The input are provided using util.globals.
 struct ExportBenchmarkFuncsPass
-    : public IREE::Flow::impl::ExportBenchmarkFuncsPassBase<
-          ExportBenchmarkFuncsPass> {
+    : IREE::Flow::impl::ExportBenchmarkFuncsPassBase<ExportBenchmarkFuncsPass> {
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
 

@@ -22,8 +22,9 @@ namespace {
 
 LogicalResult handleRuntimeError(Location loc, iree_status_t status,
                                  bool freeStatus = true) {
-  if (iree_status_is_ok(status))
+  if (iree_status_is_ok(status)) {
     return success();
+  }
   std::string statusString = iree::Status::ToString(status);
   if (freeStatus) {
     iree_status_ignore(status);
@@ -99,29 +100,18 @@ static TypedAttr createAttributeFromRawData(Location loc,
                                             MutableArrayRef<char> rawBuffer) {
   Type elementType = tensorType.getElementType();
   // For numeric types that are byte-width aligned, we just use the raw buffer
-  // loading support of DenseElementsAttr.
+  // loading support of DenseElementsAttr. i1 is included here because both
+  // IREE and MLIR store i1 as full bytes (not bit-packed).
   if (elementType.isIntOrFloat() &&
-      elementType.getIntOrFloatBitWidth() % 8 == 0) {
-    bool detectedSplat = false;
-    if (DenseElementsAttr::isValidRawBuffer(tensorType, rawBuffer,
-                                            detectedSplat)) {
+      (elementType.getIntOrFloatBitWidth() % 8 == 0 ||
+       elementType.isInteger(1))) {
+    if (DenseElementsAttr::isValidRawBuffer(tensorType, rawBuffer)) {
       return DenseElementsAttr::getFromRawBuffer(tensorType, rawBuffer);
-    } else {
-      emitError(loc) << "mapped memory region was not valid for constructing "
-                        "tensor of type "
-                     << tensorType << " (length=" << rawBuffer.size() << ")";
-      return {};
     }
-  }
-
-  // For i1, IREE (currently) returns these as 8bit integer values and MLIR
-  // has a loader that accepts bool arrays (the raw buffer loader also
-  // supports them but bit-packed, which is not convenient for us).
-  if (elementType.isInteger(1)) {
-    // Note: cannot use std::vector because it specializes bool in a way
-    // that is not compatible with ArrayRef.
-    SmallVector<bool> boolVector(rawBuffer);
-    return DenseElementsAttr::get(tensorType, boolVector);
+    emitError(loc) << "mapped memory region was not valid for constructing "
+                      "tensor of type "
+                   << tensorType << " (length=" << rawBuffer.size() << ")";
+    return {};
   }
 
   emitError(loc) << "unhandled case when converting raw buffer of "
@@ -136,8 +126,8 @@ CompiledBinary::CompiledBinary() = default;
 CompiledBinary::~CompiledBinary() = default;
 
 void CompiledBinary::deinitialize() {
-  hal_module.reset();
-  main_module.reset();
+  halModule.reset();
+  mainModule.reset();
   context.reset();
   device.reset();
 }
@@ -213,8 +203,9 @@ FunctionCall::importSerializableAttr(
 LogicalResult FunctionCall::addBufferArgumentAttr(
     Location loc, IREE::Util::SerializableAttrInterface serializableAttr) {
   auto buffer = importSerializableAttr(loc, serializableAttr);
-  if (failed(buffer))
+  if (failed(buffer)) {
     return failure();
+  }
   return handleRuntimeError(
       loc, iree_vm_list_push_ref_move(inputs.get(), std::move(*buffer)));
 }
@@ -230,14 +221,16 @@ LogicalResult FunctionCall::addBufferViewArgumentAttr(
     shape[i] = shapedType.getDimSize(i);
   }
   iree_hal_element_type_t elementType = IREE_HAL_ELEMENT_TYPE_NONE;
-  if (failed(
-          convertToElementType(loc, shapedType.getElementType(), &elementType)))
+  if (failed(convertToElementType(loc, shapedType.getElementType(),
+                                  &elementType))) {
     return failure();
+  }
 
   // Import buffer contents.
   auto buffer = importSerializableAttr(loc, serializableAttr);
-  if (failed(buffer))
+  if (failed(buffer)) {
     return failure();
+  }
 
   // Construct buffer view.
   iree::vm::ref<iree_hal_buffer_view_t> bufferView;
@@ -245,8 +238,9 @@ LogicalResult FunctionCall::addBufferViewArgumentAttr(
           loc,
           iree_hal_buffer_view_create(buffer->get(), rank, shape, elementType,
                                       IREE_HAL_ENCODING_TYPE_DENSE_ROW_MAJOR,
-                                      iree_allocator_system(), &bufferView))))
+                                      iree_allocator_system(), &bufferView)))) {
     return failure();
+  }
 
   return handleRuntimeError(
       loc, iree_vm_list_push_ref_move(inputs.get(), std::move(bufferView)));
@@ -331,7 +325,7 @@ LogicalResult FunctionCall::invoke(Location loc, StringRef name) {
   // Lookup function.
   iree_vm_function_t function;
   if (auto status = iree_vm_module_lookup_function_by_name(
-          binary.main_module.get(), IREE_VM_FUNCTION_LINKAGE_EXPORT,
+          binary.mainModule.get(), IREE_VM_FUNCTION_LINKAGE_EXPORT,
           iree_string_view_t{name.data(),
                              static_cast<iree_host_size_t>(name.size())},
           &function)) {
@@ -351,12 +345,14 @@ LogicalResult FunctionCall::getResultAsAttr(Location loc, size_t index,
                                             Type mlirType, TypedAttr &outAttr) {
   iree_vm_variant_t variant = iree_vm_variant_empty();
   if (failed(handleRuntimeError(loc, iree_vm_list_get_variant_assign(
-                                         outputs.get(), index, &variant))))
+                                         outputs.get(), index, &variant)))) {
     return failure();
+  }
 
   outAttr = binary.convertVariantToAttribute(loc, variant, mlirType);
-  if (!outAttr)
+  if (!outAttr) {
     return failure();
+  }
 
   return success();
 }
@@ -400,8 +396,9 @@ TypedAttr CompiledBinary::convertVariantToAttribute(Location loc,
       iree_hal_element_type_t halElementType =
           iree_hal_buffer_view_element_type(bufferView);
       Type elementType = mapElementType(loc, halElementType);
-      if (!elementType)
+      if (!elementType) {
         return {};
+      }
 
       auto tensorType = RankedTensorType::get(shape, elementType);
 
@@ -465,28 +462,34 @@ LogicalResult CompiledBinary::initialize(Location loc, void *data,
   }
   iree_hal_driver_release(driver);
 
-  // Create hal module.
+  // Create device group and hal module.
+  iree_hal_device_group_t *deviceGroup = nullptr;
   if (iree_status_is_ok(status)) {
-    std::array<iree_hal_device_t *, 1> devices = {device.get()};
-    status = iree_hal_module_create(
-        runtime.instance.get(), iree_hal_module_device_policy_default(),
-        devices.size(), devices.data(), IREE_HAL_MODULE_FLAG_NONE,
-        iree_hal_module_debug_sink_stdio(stderr), iree_allocator_system(),
-        &hal_module);
+    status = iree_hal_device_group_create_from_device(
+        device.get(), iree_allocator_system(), &deviceGroup);
   }
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_module_create(runtime.instance.get(),
+                                    iree_hal_module_device_policy_default(),
+                                    deviceGroup, IREE_HAL_MODULE_FLAG_NONE,
+                                    iree_hal_module_debug_sink_stdio(stderr),
+                                    iree_allocator_system(), &halModule);
+  }
+  iree_hal_device_group_release(deviceGroup);
 
   // Bytecode module.
   if (iree_status_is_ok(status)) {
     status = iree_vm_bytecode_module_create(
-        runtime.instance.get(), iree_make_const_byte_span(data, length),
-        iree_allocator_null(), iree_allocator_system(), &main_module);
+        runtime.instance.get(), IREE_VM_BYTECODE_MODULE_FLAG_NONE,
+        iree_make_const_byte_span(data, length), iree_allocator_null(),
+        iree_allocator_system(), &mainModule);
   }
 
   // Create context.
   if (iree_status_is_ok(status)) {
     std::array<iree_vm_module_t *, 2> modules = {
-        hal_module.get(),
-        main_module.get(),
+        halModule.get(),
+        mainModule.get(),
     };
     status = iree_vm_context_create_with_modules(
         runtime.instance.get(), IREE_VM_CONTEXT_FLAG_NONE, modules.size(),

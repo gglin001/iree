@@ -27,15 +27,17 @@ static bool hasAllOneValues(ArrayRef<int64_t> attr) {
 
 static Value createAdd(Location loc, Value x, Value y, OpBuilder &builder) {
   bool isInt = isa<IntegerType>(x.getType());
-  if (isInt)
+  if (isInt) {
     return arith::AddIOp::create(builder, loc, x, y);
+  }
   return arith::AddFOp::create(builder, loc, x, y);
 }
 
 static Value createMul(Location loc, Value x, Value y, OpBuilder &builder) {
   bool isInt = isa<IntegerType>(x.getType());
-  if (isInt)
+  if (isInt) {
     return arith::MulIOp::create(builder, loc, x, y);
+  }
   return arith::MulFOp::create(builder, loc, x, y);
 }
 
@@ -56,10 +58,10 @@ static SmallVector<NamedAttribute> getPrunedAttributeList(linalg::LinalgOp op) {
 // Helper to convert a shape into basis for im2col op.
 static SmallVector<int64_t> getBasisFromShape(ArrayRef<int64_t> shape) {
   SmallVector<int64_t> basis(shape.size());
-  int64_t cummulativeProduct = 1;
+  int64_t cumulativeProduct = 1;
   for (int i = shape.size() - 1; i >= 0; --i) {
-    basis[i] = cummulativeProduct;
-    cummulativeProduct *= shape[i];
+    basis[i] = cumulativeProduct;
+    cumulativeProduct *= shape[i];
   }
   return basis;
 }
@@ -153,9 +155,10 @@ public:
 
     auto igemmConvDetailsOrFailure =
         LinalgExt::getIGEMMGenericConvDetails(linalgOp);
-    if (failed(igemmConvDetailsOrFailure))
+    if (failed(igemmConvDetailsOrFailure)) {
       return rewriter.notifyMatchFailure(linalgOp,
                                          "Failed to extract IGEMM details");
+    }
 
     LinalgExt::IGEMMGenericConvDetails igemmConvDetails =
         *igemmConvDetailsOrFailure;

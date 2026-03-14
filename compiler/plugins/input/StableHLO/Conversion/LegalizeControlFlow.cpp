@@ -65,17 +65,19 @@ struct ScfForBounds {
 std::optional<ScfForBounds> extractForBounds(mlir::stablehlo::WhileOp op) {
   Block &cond = op.getCond().front();
   Block &body = op.getBody().front();
-  if (cond.getOperations().size() != 2)
+  if (cond.getOperations().size() != 2) {
     return std::nullopt;
+  }
 
   auto matchBbArg = [](Value v, Block &block) -> std::optional<unsigned> {
-    if (!isa<BlockArgument>(v) || v.getParentBlock() != &block)
+    if (!isa<BlockArgument>(v) || v.getParentBlock() != &block) {
       return std::nullopt;
+    }
     return cast<BlockArgument>(v).getArgNumber();
   };
 
   auto compare = dyn_cast<mlir::stablehlo::CompareOp>(cond.front());
-  // If the rhs of the comapare is defined outside the block, it's a constant
+  // If the rhs of the compare is defined outside the block, it's a constant
   // within the loop.
   if (!compare ||
       compare.getComparisonDirection() !=
@@ -87,8 +89,9 @@ std::optional<ScfForBounds> extractForBounds(mlir::stablehlo::WhileOp op) {
   }
 
   std::optional<unsigned> iterArg = matchBbArg(compare.getLhs(), cond);
-  if (!iterArg)
+  if (!iterArg) {
     return std::nullopt;
+  }
 
   auto add = dyn_cast_if_present<mlir::stablehlo::AddOp>(
       body.getTerminator()->getOperand(*iterArg).getDefiningOp());
@@ -183,7 +186,7 @@ struct IfOpPattern final : OpConversionPattern<mlir::stablehlo::IfOp> {
 };
 
 // Rewrites `stablehlo.case` to a nested `scf.if`.
-struct CaseOpPattern : public OpConversionPattern<mlir::stablehlo::CaseOp> {
+struct CaseOpPattern : OpConversionPattern<mlir::stablehlo::CaseOp> {
   using Base::Base;
 
   // Recursively create if/else ops to handle each possible value in a case op.

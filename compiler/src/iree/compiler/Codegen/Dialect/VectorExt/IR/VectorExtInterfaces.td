@@ -42,6 +42,12 @@ def VectorLayoutInterface : AttrInterface<"VectorLayoutInterface"> {
       /*args=*/(ins "::mlir::AffineMap":$map)
     >,
     InterfaceMethod<
+      /*description=*/"Reshape the given layout to the new shape",
+      /*retTy=*/"VectorLayoutInterface",
+      /*methodName=*/"reshape",
+      /*args=*/(ins "::llvm::ArrayRef<int64_t>":$newShape)
+    >,
+    InterfaceMethod<
       /*description=*/"Get the expected undistributed shape for the given vector type.",
       /*retTy=*/"SmallVector<int64_t>",
       /*methodName=*/"getUndistributedShape",
@@ -58,6 +64,12 @@ def VectorLayoutInterface : AttrInterface<"VectorLayoutInterface"> {
       /*retTy=*/"int64_t",
       /*methodName=*/"getRank",
       /*args=*/(ins)
+    >,
+    InterfaceMethod<
+      /*description=*/"Given a target layout, check if we need shared memory for the conversion.",
+      /*retTy=*/"bool",
+      /*methodName=*/"needsSharedMemoryForConversion",
+      /*args=*/(ins "VectorLayoutInterface":$targetLayout)
     >,
     StaticInterfaceMethod<
       /*description=*/"Given operand layouts and indexing maps, create a recombined layout for result indexing map",

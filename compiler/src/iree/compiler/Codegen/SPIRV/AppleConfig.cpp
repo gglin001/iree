@@ -40,18 +40,20 @@ LogicalResult setAppleCodeGenConfig(IREE::GPU::TargetAttr target,
   int subgroupSize = target.getPreferredSubgroupSize();
 
   if (auto linalgOp = dyn_cast<linalg::LinalgOp>(rootOp)) {
-    if (isMatmulOrBatchMatmul(linalgOp))
+    if (isMatmulOrBatchMatmul(linalgOp)) {
       return setAppleMatmulConfig(linalgOp, target);
+    }
   }
 
   if (auto convOp = dyn_cast<linalg::ConvolutionOpInterface>(rootOp)) {
     // Use the result type in case of larger bitwidth for accumulators.
     auto type = cast<ShapedType>(convOp->getResult(0).getType());
     const int bitwidth = type.getElementTypeBitWidth();
-    if (bitwidth > 32)
+    if (bitwidth > 32) {
       return failure();
-    const int multipler = 32 / bitwidth;
-    const int bestTilingFactor = 16 * multipler;
+    }
+    const int multiplier = 32 / bitwidth;
+    const int bestTilingFactor = 16 * multiplier;
     return setConvOpConfig(cast<linalg::LinalgOp>(rootOp), subgroupSize,
                            bestTilingFactor);
   }

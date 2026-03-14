@@ -45,8 +45,9 @@ static OpFoldResult computeProduct(Location loc, OpBuilder &builder,
   SmallVector<Value> dynamicPart;
   AffineExpr result = builder.getAffineConstantExpr(1);
   for (OpFoldResult term : terms) {
-    if (!term)
+    if (!term) {
       return term;
+    }
     std::optional<int64_t> maybeConst = getConstantIntValue(term);
     if (maybeConst) {
       result = result * builder.getAffineConstantExpr(*maybeConst);
@@ -55,8 +56,9 @@ static OpFoldResult computeProduct(Location loc, OpBuilder &builder,
       result = result * builder.getAffineSymbolExpr(nDynamic++);
     }
   }
-  if (auto constant = dyn_cast<AffineConstantExpr>(result))
+  if (auto constant = dyn_cast<AffineConstantExpr>(result)) {
     return getAsIndexOpFoldResult(builder.getContext(), constant.getValue());
+  }
   return affine::AffineApplyOp::create(builder, loc, result, dynamicPart)
       .getResult();
 }
@@ -152,7 +154,7 @@ static std::pair<Value, Value> getFlattenMemrefAndOffset(OpBuilder &rewriter,
       getValueFromOpFoldResult(rewriter, loc, index));
 }
 
-static bool needFlattenning(Value val) {
+static bool needFlattening(Value val) {
   auto type = cast<MemRefType>(val.getType());
   return type.getRank() > 1;
 }
@@ -240,14 +242,15 @@ static void replaceOp(T op, PatternRewriter &rewriter, Value flatMemref,
 }
 
 template <typename T>
-struct MemRefRewritePatternBase : public OpRewritePattern<T> {
+struct MemRefRewritePatternBase : OpRewritePattern<T> {
   using OpRewritePattern<T>::OpRewritePattern;
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
     Value memref = getTargetMemref<T>(op);
-    if (!needFlattenning(memref) || !checkLayout(memref))
+    if (!needFlattening(memref) || !checkLayout(memref)) {
       return rewriter.notifyMatchFailure(op,
                                          "nothing to do or unsupported layout");
+    }
     auto &&[flatMemref, offset] = getFlattenMemrefAndOffset(
         rewriter, op->getLoc(), memref, op.getIndices());
     replaceOp<T>(op, rewriter, flatMemref, offset);
@@ -255,57 +258,59 @@ struct MemRefRewritePatternBase : public OpRewritePattern<T> {
   }
 };
 
-struct FlattenMemrefLoad : public MemRefRewritePatternBase<memref::LoadOp> {
+struct FlattenMemrefLoad : MemRefRewritePatternBase<memref::LoadOp> {
   using MemRefRewritePatternBase<memref::LoadOp>::MemRefRewritePatternBase;
 };
 
-struct FlattenVectorLoad : public MemRefRewritePatternBase<vector::LoadOp> {
+struct FlattenVectorLoad : MemRefRewritePatternBase<vector::LoadOp> {
   using MemRefRewritePatternBase<vector::LoadOp>::MemRefRewritePatternBase;
 };
 
-struct FlattenMemrefStore : public MemRefRewritePatternBase<memref::StoreOp> {
+struct FlattenMemrefStore : MemRefRewritePatternBase<memref::StoreOp> {
   using MemRefRewritePatternBase<memref::StoreOp>::MemRefRewritePatternBase;
 };
 
-struct FlattenVectorStore : public MemRefRewritePatternBase<vector::StoreOp> {
+struct FlattenVectorStore : MemRefRewritePatternBase<vector::StoreOp> {
   using MemRefRewritePatternBase<vector::StoreOp>::MemRefRewritePatternBase;
 };
 
 struct FlattenVectorMaskedLoad
-    : public MemRefRewritePatternBase<vector::MaskedLoadOp> {
+    : MemRefRewritePatternBase<vector::MaskedLoadOp> {
   using MemRefRewritePatternBase<
       vector::MaskedLoadOp>::MemRefRewritePatternBase;
 };
 
 struct FlattenVectorMaskedStore
-    : public MemRefRewritePatternBase<vector::MaskedStoreOp> {
+    : MemRefRewritePatternBase<vector::MaskedStoreOp> {
   using MemRefRewritePatternBase<
       vector::MaskedStoreOp>::MemRefRewritePatternBase;
 };
 
 struct FlattenVectorTransferRead
-    : public MemRefRewritePatternBase<vector::TransferReadOp> {
+    : MemRefRewritePatternBase<vector::TransferReadOp> {
   using MemRefRewritePatternBase<
       vector::TransferReadOp>::MemRefRewritePatternBase;
 };
 
 struct FlattenVectorTransferWrite
-    : public MemRefRewritePatternBase<vector::TransferWriteOp> {
+    : MemRefRewritePatternBase<vector::TransferWriteOp> {
   using MemRefRewritePatternBase<
       vector::TransferWriteOp>::MemRefRewritePatternBase;
 };
 
-struct FlattenSubview : public OpRewritePattern<memref::SubViewOp> {
+struct FlattenSubview : OpRewritePattern<memref::SubViewOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(memref::SubViewOp op,
                                 PatternRewriter &rewriter) const override {
     Value memref = op.getSource();
-    if (!needFlattenning(memref))
+    if (!needFlattening(memref)) {
       return rewriter.notifyMatchFailure(op, "nothing to do");
+    }
 
-    if (!checkLayout(memref))
+    if (!checkLayout(memref)) {
       return rewriter.notifyMatchFailure(op, "unsupported layout");
+    }
 
     Location loc = op.getLoc();
     SmallVector<OpFoldResult> subOffsets = op.getMixedOffsets();
@@ -327,8 +332,9 @@ struct FlattenSubview : public OpRewritePattern<memref::SubViewOp> {
     finalStrides.reserve(subRank);
 
     for (auto i : llvm::seq(0u, static_cast<unsigned>(srcType.getRank()))) {
-      if (droppedDims.test(i))
+      if (droppedDims.test(i)) {
         continue;
+      }
 
       finalSizes.push_back(subSizes[i]);
       finalStrides.push_back(strides[i]);
@@ -341,7 +347,7 @@ struct FlattenSubview : public OpRewritePattern<memref::SubViewOp> {
 };
 
 struct DecomposeMemrefsPass
-    : public impl::DecomposeMemrefsPassBase<DecomposeMemrefsPass> {
+    : impl::DecomposeMemrefsPassBase<DecomposeMemrefsPass> {
   using Base::Base;
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -354,8 +360,9 @@ struct DecomposeMemrefsPass
 
     mlir::iree_compiler::populateDecomposeMemrefsPatterns(patterns);
 
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       return signalPassFailure();
+    }
   }
 };
 

@@ -577,6 +577,14 @@ def Stream_ResourcePackOp : Stream_PureOp<"resource.pack", [
     attr-dict-with-keyword
   }];
 
+  let builders = [
+    OpBuilder<(ins
+      "Value":$offset,
+      "ValueRange":$valueSizes,
+      CArg<"AffinityAttr", "{}">:$affinityAttr
+    )>,
+  ];
+
   let hasVerifier = 1;
 
   let extraClassDeclaration = [{
@@ -670,6 +678,7 @@ def Stream_ResourceConstantsOp : Stream_PureOp<"resource.constants", [
     Value getOperandSize(unsigned idx) { return {}; }
     Value getResultSize(unsigned idx) { return getResultSizes()[idx]; }
     SmallVector<Value> getAwaitTimepoints() { return {}; }
+    void setAwaitTimepoint(Value timepoint) {}
   }];
 }
 
@@ -735,6 +744,7 @@ def Stream_ResourceTransientsOp : Stream_PureOp<"resource.transients", [
   DeclareOpInterfaceMethods<Stream_AffinityOp, [
     "pinsValueAffinity",
   ]>,
+  Stream_TiedResourcePassthrough,
   Stream_TimelineOp,
   Util_SizeAwareOp,
   DeclareOpInterfaceMethods<Util_TiedOpInterface, [
@@ -1784,6 +1794,138 @@ def Stream_TensorDispatchOp : Stream_PureOp<"tensor.dispatch", [
 } // OpGroupTensorOps
 
 //===----------------------------------------------------------------------===//
+// Tensor parameter (stream.tensor.parameter.*) ops
+//===----------------------------------------------------------------------===//
+
+def OpGroupTensorParameterOps : OpDocGroup {
+  let summary = "Tensor parameter ops";
+  let description = "";
+}
+
+let opDocGroup = OpGroupTensorParameterOps in {
+
+def Stream_TensorParameterLoadOp : Stream_PureOp<"tensor.parameter.load", [
+  AttrSizedOperandSegments,
+  Stream_AffinityOp,
+  Stream_StreamableOp,
+  Stream_TensorPhaseOp,
+  Util_ShapeAwareOp,
+  Util_SizeAwareOp,
+]> {
+  let summary = [{Loads a new resource from a parameter archive.}];
+  let description = [{
+    Allocates a new resource and populates it with data from a parameter archive
+    file (or in-memory buffer) at the specified byte offset. This is the
+    tensor-phase equivalent of `stream.async.parameter.load` and retains tensor
+    encoding metadata for proper size calculation during encoding.
+
+    Example:
+    ```mlir
+    %r = stream.tensor.parameter.load %key[%offset]
+        : tensor<4x8xf32> in !stream.resource<*>{%size}
+    %r = stream.tensor.parameter.load %scope::%key[%offset]
+        : tensor<?x8xf32>{%dim0} in !stream.resource<*>{%size}
+    ```
+  }];
+
+  let arguments = (ins
+    Optional<Util_BufferType>:$source_scope,
+    Util_BufferType:$source_key,
+    I64:$source_offset,
+    TypeAttr:$result_encoding,
+    Stream_ShapeDynamicDims:$result_encoding_dims,
+    Stream_Size:$result_size,
+    OptionalAttr<Stream_AffinityAttr>:$affinity
+  );
+  let results = (outs
+    Stream_AnyStreamResource:$result
+  );
+
+  let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
+    custom<ParameterReference>($source_scope, $source_key)
+    `` `[` $source_offset `]`
+    `:` $result_encoding (`` `{` $result_encoding_dims^ `}`)?
+    `in` type($result) `` `{` $result_size `}`
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    ValueRange getOperandDynamicDims(unsigned idx) { return ValueRange{}; }
+    ValueRange getResultDynamicDims(unsigned idx) { return getResultEncodingDims(); }
+    Value getOperandSize(unsigned idx) { return {}; }
+    Value getResultSize(unsigned idx) { return getResultSize(); }
+  }];
+
+  let hasVerifier = 1;
+}
+
+def Stream_TensorParameterWriteOp : Stream_Op<"tensor.parameter.write", [
+  AllTypesMatch<["source", "result"]>,
+  AttrSizedOperandSegments,
+  Stream_AffinityOp,
+  Stream_TensorPhaseOp,
+  Util_ShapeAwareOp,
+  Util_SizeAwareOp,
+  DeclareOpInterfaceMethods<Util_TiedOpInterface, [
+    "getTiedResult",
+    "getTiedResultOperandIndex",
+    "getTiedResultOperandIndices",
+  ]>,
+]> {
+  let summary = [{Writes a resource to a parameter archive.}];
+  let description = [{
+    Writes data from a source resource to a parameter archive file (or in-memory
+    buffer) at the specified byte offset. The source resource is returned
+    unchanged to establish proper data flow dependencies. This is the
+    tensor-phase equivalent of `stream.async.parameter.write` and retains tensor
+    encoding metadata for proper size calculation during encoding.
+
+    Example:
+    ```mlir
+    %r = stream.tensor.parameter.write %source -> %key[%offset]
+        : tensor<4x8xf32> in !stream.resource<*>{%size}
+    %r = stream.tensor.parameter.write %source -> %scope::%key[%offset]
+        : tensor<?x8xf32>{%dim0} in !stream.resource<*>{%size}
+    ```
+  }];
+
+  let arguments = (ins
+    Stream_AnyStreamResource:$source,
+    TypeAttr:$source_encoding,
+    Stream_ShapeDynamicDims:$source_encoding_dims,
+    Stream_Size:$source_size,
+    Optional<Util_BufferType>:$target_scope,
+    Util_BufferType:$target_key,
+    I64:$target_offset,
+    OptionalAttr<Stream_AffinityAttr>:$affinity
+  );
+  let results = (outs
+    Stream_AnyStreamResource:$result
+  );
+
+  let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
+    $source `->` custom<ParameterReference>($target_scope, $target_key)
+    `` `[` $target_offset `]`
+    `:` $source_encoding (`` `{` $source_encoding_dims^ `}`)?
+    `in` type($source) `` `{` $source_size `}`
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    ValueRange getOperandDynamicDims(unsigned idx) { return getSourceEncodingDims(); }
+    ValueRange getResultDynamicDims(unsigned idx) { return getSourceEncodingDims(); }
+    Value getOperandSize(unsigned idx) { return getSourceSize(); }
+    Value getResultSize(unsigned idx) { return getSourceSize(); }
+  }];
+
+  let hasVerifier = 1;
+}
+
+} // OpGroupTensorParameterOps
+
+//===----------------------------------------------------------------------===//
 // Async (stream.async*) ops
 //===----------------------------------------------------------------------===//
 
@@ -1836,21 +1978,30 @@ def Stream_AsyncAllocaOp : Stream_Op<"async.alloca", [
 def Stream_AsyncConstantOp : Stream_PureOp<"async.constant", [
   Stream_AffinityOp,
   Stream_AsyncPhaseOp,
+  Stream_TimelineOp,
   DeclareOpInterfaceMethods<Stream_StreamableOp, [
     "isMetadata",
   ]>,
   DeclareOpInterfaceMethods<Stream_AsyncAccessOp, [
     "getAsyncAccessRanges",
   ]>,
+  Util_HoistableOpInterface,
   Util_SizeAwareOp,
   DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
 ]> {
   let summary = [{Defines a constant resource.}];
   let description = [{
     Returns a new resource with the given constant value.
+
+    When no await_timepoint is specified the constant may be hoisted and
+    materialized at any point prior to its first use. When an await_timepoint
+    is specified the constant will not begin materialization until that
+    timepoint is reached, allowing for explicit ordering with other timeline
+    operations.
   }];
 
   let arguments = (ins
+    Optional<Stream_Timepoint>:$await_timepoint,
     AnyAttr:$value,
     Stream_Size:$result_size,
     OptionalAttr<Stream_AffinityAttr>:$affinity
@@ -1861,6 +2012,7 @@ def Stream_AsyncConstantOp : Stream_PureOp<"async.constant", [
 
   let assemblyFormat = [{
     (`on` `(` $affinity^ `)`)?
+    (`await` `(` $await_timepoint^ `)`)?
     `:`
     type($result) `` `{` $result_size `}`
     `=`
@@ -1871,6 +2023,13 @@ def Stream_AsyncConstantOp : Stream_PureOp<"async.constant", [
   let extraClassDeclaration = [{
     Value getOperandSize(unsigned idx) { return {}; }
     Value getResultSize(unsigned idx) { return getResultSize(); }
+
+    // TimelineOpInterface methods.
+    SmallVector<Value> getAwaitTimepoints() {
+      if (getAwaitTimepoint()) return {getAwaitTimepoint()};
+      return {};
+    }
+    Value getResultTimepoint() { return {}; }
   }];
 
   let hasVerifier = 1;
@@ -1881,6 +2040,7 @@ def Stream_AsyncConstantOp : Stream_PureOp<"async.constant", [
 def Stream_AsyncSplatOp : Stream_Op<"async.splat", [
   Stream_AffinityOp,
   Stream_AsyncPhaseOp,
+  Stream_TimelineOp,
   DeclareOpInterfaceMethods<Stream_StreamableOp, [
     "preferCloneToConsumers",
   ]>,
@@ -1888,14 +2048,21 @@ def Stream_AsyncSplatOp : Stream_Op<"async.splat", [
     "getAsyncAccessRanges",
   ]>,
   Util_SizeAwareOp,
+  Util_HoistableOpInterface,
 ]> {
   let summary = [{Splats a value into a resource.}];
   let description = [{
     Returns a new resource with the given primitive value splatted out to fill
     the entire contents.
+
+    When no await_timepoint is specified the splat may be hoisted and
+    materialized at any point prior to its first use. When an await_timepoint
+    is specified the splat will not begin until that timepoint is reached,
+    allowing for explicit ordering with other timeline operations.
   }];
 
   let arguments = (ins
+    Optional<Stream_Timepoint>:$await_timepoint,
     Stream_FillPatternType:$value,
     Stream_Size:$result_size,
     OptionalAttr<Stream_AffinityAttr>:$affinity
@@ -1906,13 +2073,31 @@ def Stream_AsyncSplatOp : Stream_Op<"async.splat", [
 
   let assemblyFormat = [{
     (`on` `(` $affinity^ `)`)?
+    (`await` `(` $await_timepoint^ `)`)?
     $value `:` type($value) `->` type($result) `` `{` $result_size `}`
     attr-dict-with-keyword
   }];
 
+  let builders = [
+    OpBuilder<(ins
+      "Type":$result_type,
+      "Value":$value,
+      "Value":$result_size,
+      CArg<"Attribute", "{}">:$affinity,
+      CArg<"Value", "Value()">:$await_timepoint
+    )>
+  ];
+
   let extraClassDeclaration = [{
     Value getOperandSize(unsigned idx) { return {}; }
     Value getResultSize(unsigned idx) { return getResultSize(); }
+
+    // TimelineOpInterface methods.
+    SmallVector<Value> getAwaitTimepoints() {
+      if (getAwaitTimepoint()) return {getAwaitTimepoint()};
+      return {};
+    }
+    Value getResultTimepoint() { return {}; }
   }];
 
   let hasVerifier = 1;
@@ -1930,6 +2115,7 @@ def Stream_AsyncCloneOp : Stream_Op<"async.clone", [
     "getAsyncAccessRanges",
   ]>,
   Util_SizeAwareOp,
+  Util_HoistableOpInterface,
 ]> {
   let summary = [{Clones the contents of a value.}];
   let description = [{
@@ -1974,6 +2160,7 @@ def Stream_AsyncSliceOp : Stream_PureOp<"async.slice", [
   DeclareOpInterfaceMethods<Stream_AsyncAccessOp, [
     "getAsyncAccessRanges",
   ]>,
+  Util_HoistableOpInterface,
   Util_SizeAwareOp,
 ]> {
   let summary = [{Slices out a cloned subview of a value.}];
@@ -2027,6 +2214,7 @@ def Stream_AsyncFillOp : Stream_Op<"async.fill", [
     "getTiedResultOperandIndex",
     "getTiedResultOperandIndices",
   ]>,
+  Util_HoistableOpInterface,
 ]> {
   let summary = [{Fills a subview of a stream resource with a value.}];
   let description = [{
@@ -2082,6 +2270,7 @@ def Stream_AsyncUpdateOp : Stream_Op<"async.update", [
     "getTiedResultOperandIndex",
     "getTiedResultOperandIndices",
   ]>,
+  Util_HoistableOpInterface,
 ]> {
   let summary = [{Updates a slice of a subview of a resource in-place.}];
   let description = [{
@@ -2139,6 +2328,7 @@ def Stream_AsyncCopyOp : Stream_Op<"async.copy", [
     "getTiedResultOperandIndex",
     "getTiedResultOperandIndices",
   ]>,
+  Util_HoistableOpInterface,
 ]> {
   let summary = [{Copies a subview of a stream resource to another.}];
   let description = [{
@@ -2202,6 +2392,7 @@ def Stream_AsyncCollectiveOp : Stream_Op<"async.collective", [
     "getTiedResultOperandIndex",
     "getTiedResultOperandIndices",
   ]>,
+  Util_HoistableOpInterface,
 ]> {
   let summary = [{Performs a collective operation.}];
   let description = [{
@@ -2262,6 +2453,7 @@ def Stream_AsyncBarrierOp : Stream_Op<"async.barrier", [
   AllTypesMatch<["source", "result"]>,
   Stream_AffinityOp,
   Stream_AsyncPhaseOp,
+  Stream_TiedResourcePassthrough,
   DeclareOpInterfaceMethods<Stream_StreamableOp, [
     "isMetadata",
   ]>,
@@ -2316,12 +2508,14 @@ def Stream_AsyncTransferOp : Stream_PureOp<"async.transfer", [
     "getAffinityAttr",
     "setAffinityAttr",
     "getResultAffinityAttr",
+    "removeAffinityAttrs",
   ]>,
   Stream_AsyncPhaseOp,
   Stream_StreamableOp,
   DeclareOpInterfaceMethods<Stream_AsyncAccessOp, [
     "getAsyncAccessRanges",
   ]>,
+  Util_HoistableOpInterface,
   Util_SizeAwareOp,
 ]> {
   let summary = [{Transfers a resource from one location/state to another.}];
@@ -2462,6 +2656,7 @@ def Stream_AsyncDispatchOp : Stream_PureOp<"async.dispatch", [
   DeclareOpInterfaceMethods<Stream_AsyncAccessOp, [
     "getAsyncAccessRanges",
   ]>,
+  Util_HoistableOpInterface,
   Util_SizeAwareOp,
   DeclareOpInterfaceMethods<Util_TiedOpInterface, [
     "getTiedOperandsIndexAndLength",
@@ -2511,7 +2706,7 @@ def Stream_AsyncDispatchOp : Stream_PureOp<"async.dispatch", [
     OpBuilder<(ins
       "ExecutableExportOp":$exportOp, "ValueRange":$workload,
       "TypeRange":$resultTypes, "ValueRange":$operands,
-      "ValueRange":$operandSizes, "ValueRange":$operandOffests,
+      "ValueRange":$operandSizes, "ValueRange":$operandOffsets,
       "ValueRange":$operandEnds, "ValueRange":$operandLengths,
       "ValueRange":$resultSizes,
       CArg<"ArrayRef<int64_t>", "{}">:$tiedOperands,
@@ -2736,6 +2931,7 @@ def Stream_AsyncExecuteOp : Stream_Op<"async.execute", [
   RecursiveMemoryEffects,
   DeclareOpInterfaceMethods<RegionBranchOpInterface, [
     "getEntrySuccessorOperands",
+    "getSuccessorInputs",
   ]>,
   SingleBlockImplicitTerminator<"IREE::Stream::YieldOp">,
   Stream_AffinityOp,
@@ -2831,6 +3027,7 @@ def Stream_AsyncConcurrentOp : Stream_Op<"async.concurrent", [
   RecursiveMemoryEffects,
   DeclareOpInterfaceMethods<RegionBranchOpInterface, [
     "getEntrySuccessorOperands",
+    "getSuccessorInputs",
   ]>,
   SingleBlockImplicitTerminator<"IREE::Stream::YieldOp">,
   Stream_AffinityOp,
@@ -2935,6 +3132,393 @@ def Stream_AsyncConcurrentOp : Stream_Op<"async.concurrent", [
 }
 
 } // OpGroupAsyncControlFlowOps
+
+//===----------------------------------------------------------------------===//
+// Async-phase Parameter I/O ops
+//===----------------------------------------------------------------------===//
+
+def OpGroupAsyncParameterOps : OpDocGroup {
+  let summary = "Async-phase resource parameter I/O ops";
+  let description = [{
+    Operations for loading and reading parameter data in the async phase.
+    `load` allocates and returns a new resource while `read` writes into an
+    existing allocation. Use `load` when the parameter data defines a new
+    resource, and `read` when populating or updating an existing one.
+  }];
+}
+
+let opDocGroup = OpGroupAsyncParameterOps in {
+
+def Stream_AsyncParameterLoadOp : Stream_PureOp<"async.parameter.load", [
+  AttrSizedOperandSegments,
+  Stream_AffinityOp,
+  Stream_AsyncPhaseOp,
+  Stream_TimelineOp,
+  DeclareOpInterfaceMethods<Stream_AsyncAccessOp, [
+    "getAsyncAccessRanges",
+  ]>,
+  Util_SizeAwareOp,
+]> {
+  let summary = [{Allocates and loads a new resource from a parameter archive.}];
+  let description = [{
+    Allocates a new resource and populates it with data from a parameter archive
+    file (or in-memory buffer) at the specified byte offset. Unlike `read` which
+    writes into an existing allocation, `load` returns a freshly allocated
+    resource. The implementation may use direct access or memory mapping when
+    the result resource type allows, avoiding copies entirely.
+
+    When no await_timepoint is specified the load may be hoisted and begin at
+    any point prior to the first use. When an await_timepoint is specified the
+    load will not begin until that timepoint is reached, allowing for explicit
+    ordering with other timeline operations.
+
+    Example:
+    ```mlir
+    %result, %result_timepoint = stream.async.parameter.load "scope"::"key"[%offset]
+        : !stream.resource<constant>{%size} => !stream.timepoint
+    %ordered, %ordered_timepoint = stream.async.parameter.load await(%tp) "scope"::"key2"[%offset]
+        : !stream.resource<constant>{%size} => !stream.timepoint
+    ```
+  }];
+
+  let arguments = (ins
+    Optional<Stream_Timepoint>:$await_timepoint,
+    Optional<Util_BufferType>:$source_scope,
+    Util_BufferType:$source_key,
+    I64:$source_offset,
+    Stream_Size:$result_size,
+    OptionalAttr<Stream_AffinityAttr>:$affinity
+  );
+  let results = (outs
+    Stream_AnyStreamResource:$result,
+    Stream_Timepoint:$result_timepoint
+  );
+
+  let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
+    (`await` `(` $await_timepoint^ `)`)?
+    custom<ParameterReference>($source_scope, $source_key)
+    `` `[` $source_offset `]` `:`
+    type($result)  `` `{` $result_size `}` `=` `` `>` type($result_timepoint)
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    Value getOperandSize(unsigned idx) { return {}; }
+    Value getResultSize(unsigned idx) { return getResultSize(); }
+
+    // TimelineOpInterface methods.
+    SmallVector<Value> getAwaitTimepoints() {
+      if (getAwaitTimepoint()) return {getAwaitTimepoint()};
+      return {};
+    }
+  }];
+
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+}
+
+def Stream_AsyncParameterReadOp : Stream_Op<"async.parameter.read", [
+  AllTypesMatch<["target", "result"]>,
+  AttrSizedOperandSegments,
+  Stream_AffinityOp,
+  Stream_AsyncPhaseOp,
+  Stream_TimelineOp,
+  DeclareOpInterfaceMethods<Stream_AsyncAccessOp, [
+    "getAsyncAccessRanges",
+  ]>,
+  Util_SizeAwareOp,
+  DeclareOpInterfaceMethods<Util_TiedOpInterface, [
+    "getTiedResult",
+    "getTiedResultOperandIndex",
+    "getTiedResultOperandIndices",
+  ]>,
+]> {
+  let summary = [{Reads parameter data into an existing resource allocation.}];
+  let description = [{
+    Reads data from a parameter archive file (or in-memory buffer) at the
+    specified byte offset into an existing target resource. Unlike `load` which
+    allocates a new resource, `read` writes into a caller-provided allocation.
+    This is useful for partial updates, populating sub-regions of larger
+    resources, or when the allocation is managed separately (e.g., staging
+    buffers). The target resource is a tied operand: the input is mutated and
+    returned with the specified range updated.
+
+    Example:
+    ```mlir
+    %updated, %result_timepoint = stream.async.parameter.read "scope"::"key"[%param_offset]
+        -> %target[%target_offset to %target_end for %length]
+        : !stream.resource<staging>{%target_size} => !stream.timepoint
+    ```
+  }];
+
+  let arguments = (ins
+    Stream_AnyStreamResource:$target,
+    Stream_Size:$target_size,
+    Stream_Offset:$target_offset,
+    Stream_Offset:$target_end,
+    Stream_Size:$target_length,
+    Optional<Util_BufferType>:$source_scope,
+    Util_BufferType:$source_key,
+    I64:$source_offset,
+    Optional<Stream_Timepoint>:$await_timepoint,
+    OptionalAttr<Stream_AffinityAttr>:$affinity
+  );
+  let results = (outs
+    Stream_AnyStreamResource:$result,
+    Stream_Timepoint:$result_timepoint
+  );
+
+  let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
+    (`await` `(` $await_timepoint^ `)`)?
+    custom<ParameterReference>($source_scope, $source_key)
+    `` `[` $source_offset `]` `->`
+    $target `` `[` $target_offset `to` $target_end `for` $target_length `]` `:`
+    type($target) `` `{` $target_size `}` `=` `` `>` type($result_timepoint)
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    Value getOperandSize(unsigned idx) { return getTargetSize(); }
+    Value getResultSize(unsigned idx) { return getTargetSize(); }
+
+    // TimelineOpInterface methods.
+    SmallVector<Value> getAwaitTimepoints() {
+      if (getAwaitTimepoint()) return {getAwaitTimepoint()};
+      return {};
+    }
+  }];
+
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+}
+
+def Stream_AsyncParameterWriteOp : Stream_Op<"async.parameter.write", [
+  AllTypesMatch<["source", "result"]>,
+  AttrSizedOperandSegments,
+  Stream_AffinityOp,
+  Stream_AsyncPhaseOp,
+  Stream_TimelineOp,
+  DeclareOpInterfaceMethods<Stream_AsyncAccessOp, [
+    "getAsyncAccessRanges",
+  ]>,
+  Util_SizeAwareOp,
+  DeclareOpInterfaceMethods<Util_TiedOpInterface, [
+    "getTiedResult",
+    "getTiedResultOperandIndex",
+    "getTiedResultOperandIndices",
+  ]>,
+]> {
+  let summary = [{Writes a resource to a parameter archive from a source resource.}];
+  let description = [{
+    Writes data from a source resource to a parameter archive file (or in-memory
+    buffer) at the specified byte offset. This is useful for checkpointing or
+    saving model weights. The source resource is returned unchanged to establish
+    proper data flow dependencies.
+
+    Example:
+    ```mlir
+    %result, %result_timepoint = stream.async.parameter.write %source[%source_offset to %source_end for %length]
+        -> "scope"::"key"[%param_offset]
+        : !stream.resource<staging>{%source_size} => !stream.timepoint
+    ```
+  }];
+
+  let arguments = (ins
+    Stream_AnyStreamResource:$source,
+    Stream_Size:$source_size,
+    Stream_Offset:$source_offset,
+    Stream_Offset:$source_end,
+    Stream_Size:$source_length,
+    Optional<Util_BufferType>:$target_scope,
+    Util_BufferType:$target_key,
+    I64:$target_offset,
+    Optional<Stream_Timepoint>:$await_timepoint,
+    OptionalAttr<Stream_AffinityAttr>:$affinity
+  );
+  let results = (outs
+    Stream_AnyStreamResource:$result,
+    Stream_Timepoint:$result_timepoint
+  );
+
+  let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
+    (`await` `(` $await_timepoint^ `)`)?
+    $source `` `[` $source_offset `to` $source_end `for` $source_length `]` `->`
+    custom<ParameterReference>($target_scope, $target_key)
+    `` `[` $target_offset `]` `:`
+    type($source) `` `{` $source_size `}` `=` `` `>` type($result_timepoint)
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    Value getOperandSize(unsigned idx) { return getSourceSize(); }
+    Value getResultSize(unsigned idx) { return getSourceSize(); }
+
+    // TimelineOpInterface methods.
+    SmallVector<Value> getAwaitTimepoints() {
+      if (getAwaitTimepoint()) return {getAwaitTimepoint()};
+      return {};
+    }
+  }];
+
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+}
+
+def Stream_AsyncParameterGatherOp : Stream_Op<"async.parameter.gather", [
+  AttrSizedOperandSegments,
+  DeclareOpInterfaceMethods<InferTypeOpInterface>,
+  Stream_AffinityOp,
+  Stream_AsyncPhaseOp,
+  Stream_TimelineOp,
+  DeclareOpInterfaceMethods<Stream_AsyncAccessOp, [
+    "getAsyncAccessRanges",
+  ]>,
+  Util_SizeAwareOp,
+  DeclareOpInterfaceMethods<Util_TiedOpInterface, [
+    "getTiedResult",
+    "getTiedResultOperandIndex",
+    "getTiedResultOperandIndices",
+  ]>,
+]> {
+  let summary = [{Gathers multiple resources from parameter archives into a target resource.}];
+  let description = [{
+    Reads multiple parameter ranges from parameter archives and gathers them
+    into a single target resource at specified offsets. This is equivalent to
+    multiple async.parameter.read operations but allows implementations to
+    batch operations for better performance.
+
+    Example:
+    ```mlir
+    %updated, %result_timepoint = stream.async.parameter.gather {
+      "scope"::"key0"[%offset0] -> %target[%target_offset0 to %target_end0 for %length0],
+      "scope"::"key1"[%offset1] -> %target[%target_offset1 to %target_end1 for %length1]
+    } : !stream.resource<staging>{%target_size} => !stream.timepoint
+    ```
+  }];
+
+  let arguments = (ins
+    Optional<Util_BufferType>:$source_scope,
+    Variadic<Util_BufferType>:$source_keys,
+    Variadic<I64>:$source_offsets,
+    Stream_AnyStreamResource:$target,
+    Stream_Size:$target_size,
+    Variadic<Stream_Offset>:$target_offsets,
+    Variadic<Stream_Offset>:$target_ends,
+    Variadic<Stream_Size>:$target_lengths,
+    Optional<Stream_Timepoint>:$await_timepoint,
+    OptionalAttr<Stream_AffinityAttr>:$affinity
+  );
+  let results = (outs
+    Stream_AnyStreamResource:$result,
+    Stream_Timepoint:$result_timepoint
+  );
+
+  let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
+    (`await` `(` $await_timepoint^ `)`)?
+    `{`
+    custom<AsyncParameterGatherOperations>(
+        $source_scope, $source_keys, $source_offsets,
+        $target, type($target), $target_size, $target_offsets, $target_ends, $target_lengths)
+    `}` `:` type($result) `=` `` `>` type($result_timepoint)
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    Value getOperandSize(unsigned idx) { return getTargetSize(); }
+    Value getResultSize(unsigned idx) { return getTargetSize(); }
+
+    // TimelineOpInterface methods.
+    SmallVector<Value> getAwaitTimepoints() {
+      if (getAwaitTimepoint()) return {getAwaitTimepoint()};
+      return {};
+    }
+  }];
+
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+}
+
+def Stream_AsyncParameterScatterOp : Stream_Op<"async.parameter.scatter", [
+  AttrSizedOperandSegments,
+  DeclareOpInterfaceMethods<InferTypeOpInterface>,
+  Stream_AffinityOp,
+  Stream_AsyncPhaseOp,
+  Stream_TimelineOp,
+  DeclareOpInterfaceMethods<Stream_AsyncAccessOp, [
+    "getAsyncAccessRanges",
+  ]>,
+  Util_SizeAwareOp,
+  DeclareOpInterfaceMethods<Util_TiedOpInterface, [
+    "getTiedResult",
+    "getTiedResultOperandIndex",
+    "getTiedResultOperandIndices",
+  ]>,
+]> {
+  let summary = [{Scatters multiple ranges from a source resource to parameter archives.}];
+  let description = [{
+    Writes multiple ranges from a single source resource to parameter archives
+    at specified offsets. This is equivalent to multiple async.parameter.write
+    operations but allows implementations to batch operations for better
+    performance. The source resource is returned unchanged to establish proper
+    data flow dependencies.
+
+    Example:
+    ```mlir
+    %result, %result_timepoint = stream.async.parameter.scatter {
+      %source[%source_offset0 to %source_end0 for %length0] -> "scope"::"key0"[%target_offset0],
+      %source[%source_offset1 to %source_end1 for %length1] -> "scope"::"key1"[%target_offset1]
+    } : !stream.resource<staging>{%source_size} => !stream.timepoint
+    ```
+  }];
+
+  let arguments = (ins
+    Stream_AnyStreamResource:$source,
+    Stream_Size:$source_size,
+    Variadic<Stream_Offset>:$source_offsets,
+    Variadic<Stream_Offset>:$source_ends,
+    Variadic<Stream_Size>:$source_lengths,
+    Optional<Util_BufferType>:$target_scope,
+    Variadic<Util_BufferType>:$target_keys,
+    Variadic<I64>:$target_offsets,
+    Optional<Stream_Timepoint>:$await_timepoint,
+    OptionalAttr<Stream_AffinityAttr>:$affinity
+  );
+  let results = (outs
+    Stream_AnyStreamResource:$result,
+    Stream_Timepoint:$result_timepoint
+  );
+
+  let assemblyFormat = [{
+    (`on` `(` $affinity^ `)`)?
+    (`await` `(` $await_timepoint^ `)`)?
+    `{`
+    custom<AsyncParameterScatterOperations>(
+        $source, type($source), $source_size, $source_offsets, $source_ends, $source_lengths,
+        $target_scope, $target_keys, $target_offsets)
+    `}` `:` type($result) `=` `` `>` type($result_timepoint)
+    attr-dict-with-keyword
+  }];
+
+  let extraClassDeclaration = [{
+    Value getOperandSize(unsigned idx) { return getSourceSize(); }
+    Value getResultSize(unsigned idx) { return getSourceSize(); }
+
+    // TimelineOpInterface methods.
+    SmallVector<Value> getAwaitTimepoints() {
+      if (getAwaitTimepoint()) return {getAwaitTimepoint()};
+      return {};
+    }
+  }];
+
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+}
+
+} // OpGroupAsyncParameterOps
 
 //===----------------------------------------------------------------------===//
 // Explicit command (stream.cmd.*) ops
@@ -3416,6 +4000,7 @@ def Stream_CmdExecuteOp : Stream_Op<"cmd.execute", [
   RecursiveMemoryEffects,
   DeclareOpInterfaceMethods<RegionBranchOpInterface, [
     "getEntrySuccessorOperands",
+    "getSuccessorInputs",
   ]>,
   SingleBlockImplicitTerminator<"IREE::Stream::YieldOp">,
   Stream_AffinityOp,
@@ -3496,7 +4081,7 @@ def Stream_CmdSerialOp : Stream_Op<"cmd.serial", [
     "IREE::Stream::CmdConcurrentOp",
   ]>,
   RecursiveMemoryEffects,
-  DeclareOpInterfaceMethods<RegionBranchOpInterface>,
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getSuccessorInputs"]>,
   SingleBlockImplicitTerminator<"IREE::Stream::YieldOp">,
   Stream_CmdPhaseOp,
   Stream_StreamableOp,
@@ -3562,7 +4147,7 @@ def Stream_CmdConcurrentOp : Stream_Op<"cmd.concurrent", [
     "IREE::Stream::CmdConcurrentOp",
   ]>,
   RecursiveMemoryEffects,
-  DeclareOpInterfaceMethods<RegionBranchOpInterface>,
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getSuccessorInputs"]>,
   SingleBlockImplicitTerminator<"IREE::Stream::YieldOp">,
   Stream_CmdPhaseOp,
   Stream_StreamableOp,
@@ -3648,8 +4233,8 @@ def Stream_CmdParameterLoadOp : Stream_PureOp<"cmd.parameter.load", [
   }];
 
   let arguments = (ins
-    OptionalAttr<StrAttr>:$source_scope,
-    StrArrayAttr:$source_keys,
+    Optional<Util_BufferType>:$source_scope,
+    Variadic<Util_BufferType>:$source_keys,
     Variadic<I64>:$source_offsets,
     Variadic<Stream_Size>:$result_sizes,
     Optional<Stream_Timepoint>:$await_timepoint,
@@ -3687,6 +4272,7 @@ def Stream_CmdParameterLoadOp : Stream_PureOp<"cmd.parameter.load", [
 }
 
 def Stream_CmdParameterReadOp : Stream_Op<"cmd.parameter.read", [
+  AttrSizedOperandSegments,
   Stream_AffinityOp,
   Stream_CmdPhaseOp,
   Stream_TimelineOp,
@@ -3699,8 +4285,8 @@ def Stream_CmdParameterReadOp : Stream_Op<"cmd.parameter.read", [
   }];
 
   let arguments = (ins
-    OptionalAttr<StrAttr>:$source_scope,
-    StrAttr:$source_key,
+    Optional<Util_BufferType>:$source_scope,
+    Util_BufferType:$source_key,
     I64:$source_offset,
     Stream_AnyStreamResource:$target,
     Stream_Size:$target_size,
@@ -3739,6 +4325,7 @@ def Stream_CmdParameterReadOp : Stream_Op<"cmd.parameter.read", [
 }
 
 def Stream_CmdParameterWriteOp : Stream_Op<"cmd.parameter.write", [
+  AttrSizedOperandSegments,
   Stream_AffinityOp,
   Stream_CmdPhaseOp,
   Stream_TimelineOp,
@@ -3755,8 +4342,8 @@ def Stream_CmdParameterWriteOp : Stream_Op<"cmd.parameter.write", [
     Stream_Size:$source_size,
     Stream_Offset:$source_offset,
     Stream_Size:$source_length,
-    OptionalAttr<StrAttr>:$target_scope,
-    StrAttr:$target_key,
+    Optional<Util_BufferType>:$target_scope,
+    Util_BufferType:$target_key,
     I64:$target_offset,
     Optional<Stream_Timepoint>:$await_timepoint,
     OptionalAttr<Stream_AffinityAttr>:$affinity
@@ -3806,8 +4393,8 @@ def Stream_CmdParameterGatherOp : Stream_Op<"cmd.parameter.gather", [
   }];
 
   let arguments = (ins
-    OptionalAttr<StrAttr>:$source_scope,
-    StrArrayAttr:$source_keys,
+    Optional<Util_BufferType>:$source_scope,
+    Variadic<Util_BufferType>:$source_keys,
     Variadic<I64>:$source_offsets,
     Stream_AnyStreamResource:$target,
     Stream_Size:$target_size,
@@ -3824,7 +4411,7 @@ def Stream_CmdParameterGatherOp : Stream_Op<"cmd.parameter.gather", [
     (`on` `(` $affinity^ `)`)?
     (`await` `(` $await_timepoint^ `)` `=` `` `>`)?
     `{`
-    custom<ParameterGatherOperations>(
+    custom<CmdParameterGatherOperations>(
         $source_scope, $source_keys, $source_offsets,
         $target, type($target), $target_size, $target_offsets, $target_lengths)
     `}`
@@ -3866,8 +4453,8 @@ def Stream_CmdParameterScatterOp : Stream_Op<"cmd.parameter.scatter", [
     Stream_Size:$source_size,
     Variadic<Stream_Offset>:$source_offsets,
     Variadic<Stream_Size>:$source_lengths,
-    OptionalAttr<StrAttr>:$target_scope,
-    StrArrayAttr:$target_keys,
+    Optional<Util_BufferType>:$target_scope,
+    Variadic<Util_BufferType>:$target_keys,
     Variadic<I64>:$target_offsets,
     Optional<Stream_Timepoint>:$await_timepoint,
     OptionalAttr<Stream_AffinityAttr>:$affinity
@@ -3880,7 +4467,7 @@ def Stream_CmdParameterScatterOp : Stream_Op<"cmd.parameter.scatter", [
     (`on` `(` $affinity^ `)`)?
     (`await` `(` $await_timepoint^ `)` `=` `` `>`)?
     `{`
-    custom<ParameterScatterOperations>(
+    custom<CmdParameterScatterOperations>(
         $source, type($source), $source_size, $source_offsets, $source_lengths,
         $target_scope, $target_keys, $target_offsets)
     `}`
@@ -3939,6 +4526,7 @@ def Stream_TimepointImmediateOp : Stream_PureOp<"timepoint.immediate", [
 
   let extraClassDeclaration = [{
     SmallVector<Value> getAwaitTimepoints() { return {}; }
+    void setAwaitTimepoint(Value timepoint) {}
   }];
 
   let hasFolder = 1;
@@ -4032,7 +4620,10 @@ def Stream_TimepointChainExternalOp :
 }
 
 def Stream_TimepointJoinOp : Stream_PureOp<"timepoint.join", [
-  Stream_TimelineOp,
+  DeclareOpInterfaceMethods<Stream_TimelineOp, [
+    "setAwaitTimepoint",
+    "setAwaitTimepoints",
+  ]>,
 ]> {
   let summary = [{Joins one or more timepoints into the max of all of them.}];
   let description = [{
@@ -4068,6 +4659,7 @@ def Stream_TimepointJoinOp : Stream_PureOp<"timepoint.join", [
 def Stream_TimepointBarrierOp : Stream_PureOp<"timepoint.barrier", [
   AllTypesMatch<["resource", "result"]>,
   Stream_AffinityOp,
+  Stream_TiedResourcePassthrough,
   Stream_TimelineOp,
   Util_SizeAwareOp,
   DeclareOpInterfaceMethods<Util_TiedOpInterface, [
@@ -4115,6 +4707,7 @@ def Stream_TimepointBarrierOp : Stream_PureOp<"timepoint.barrier", [
     Value getOperandSize(unsigned idx) { return getResourceSize(); }
     Value getResultSize(unsigned idx) { return getResourceSize(); }
     SmallVector<Value> getAwaitTimepoints() { return {}; }
+    void setAwaitTimepoint(Value timepoint) {}
   }];
 
   let hasVerifier = 1;
@@ -4124,7 +4717,12 @@ def Stream_TimepointBarrierOp : Stream_PureOp<"timepoint.barrier", [
 
 def Stream_TimepointAwaitOp : Stream_PureOp<"timepoint.await", [
   AttrSizedOperandSegments,
-  Stream_TimelineOp,
+  Stream_TiedResourcePassthrough,
+  DeclareOpInterfaceMethods<Stream_TimelineOp, [
+    "getAwaitTimepoints",
+    "setAwaitTimepoint",
+    "getResultTimepoint",
+  ]>,
   Util_SizeAwareOp,
   DeclareOpInterfaceMethods<Util_TiedOpInterface, [
     "getTiedResultOperandIndex",
@@ -4181,10 +4779,6 @@ def Stream_TimepointAwaitOp : Stream_PureOp<"timepoint.await", [
     Value getResultSize(unsigned idx) {
       return getResourceOperandSizes()[idx];
     }
-    SmallVector<Value> getAwaitTimepoints() {
-      if (getAwaitTimepoint()) return {getAwaitTimepoint()}; else return {};
-    }
-    Value getResultTimepoint() { return {}; }
   }];
 
   let hasVerifier = 1;
@@ -4663,5 +5257,193 @@ def Stream_YieldOp : Stream_Op<"yield", [
 }
 
 } // OpGroupMiscellaneousOps
+
+//===----------------------------------------------------------------------===//
+// Test ops
+//===----------------------------------------------------------------------===//
+
+def OpGroupTestOps : OpDocGroup {
+  let summary = "Test-only ops for Stream dialect testing";
+  let description = "Ops used only in unit tests.";
+}
+
+let opDocGroup = OpGroupTestOps in {
+
+def Stream_TestTimelineOp : Stream_PureOp<"test.timeline_op", [
+  AttrSizedOperandSegments,
+  Stream_TimelineOp,
+  Util_SizeAwareOp,
+]> {
+  let summary = [{Test op implementing TimelineOpInterface.}];
+  let description = [{
+    Test-only operation that implements TimelineOpInterface directly,
+    allowing Stream dialect tests to verify timeline behavior without
+    requiring execution regions or specific op semantics.
+
+    This op takes zero or more resource operands with their sizes, zero or more
+    await timepoints, and produces zero or more resource results with a result
+    timepoint. It has no side effects and no execution region - it purely exists
+    to test timepoint propagation, coverage analysis, and timeline scheduling.
+
+    The `await_limit` attribute (default -1) controls how many await timepoints
+    this op can accept before forcing join creation:
+    - await_limit = -1: Unlimited awaits (default, no joins created)
+    - await_limit = 0: No awaits allowed (all timepoints must be joined)
+    - await_limit = 1: Max 1 await (mimics stream.async.execute behavior)
+    - await_limit = N: Max N awaits
+
+    Use this op when testing passes that operate on TimelineOpInterface methods.
+    It's simpler than stream.async.execute (no execution region) but can still
+    model resource-timepoint flows. For example:
+    - ElideTimepointsPass coverage analysis (elide_timepoints_coverage.mlir)
+    - PropagateTimepointsPass scheduling (propagate_timepoints.mlir)
+    - SCF region handling with resources (elide_timepoints_scf.mlir)
+
+    Examples:
+      // Simple timeline op with no dependencies or resources.
+      %tp0 = stream.test.timeline_op with() : () -> () => !stream.timepoint
+
+      // Timeline op awaiting other timepoints.
+      %tp1 = stream.test.timeline_op await(%tp0) => with() : () -> () => !stream.timepoint
+
+      // Timeline op with resource operands and results.
+      %r, %tp = stream.test.timeline_op
+        with(%arg) : (!stream.resource<external>{%size}) -> !stream.resource<external>{%size}
+        => !stream.timepoint
+
+      // Timeline op with await_limit to test join creation.
+      %r, %tp = stream.test.timeline_op await_limit(1) await(%tp0) =>
+        with(%arg) : (!stream.resource<external>{%size}) -> !stream.resource<external>{%size}
+        => !stream.timepoint
+  }];
+
+  let arguments = (ins
+    Variadic<AnyTypeOf<[
+      Stream_AnyStreamResource,
+      Stream_StagingResource,
+    ]>>:$resource_operands,
+    Variadic<Stream_Size>:$resource_operand_sizes,
+    Variadic<Stream_Size>:$result_sizes,
+    Variadic<Stream_Timepoint>:$await_operands,
+    OptionalAttr<Util_TiedOpStorageAttr>:$tied_operands,
+    OptionalAttr<I64Attr>:$await_limit
+  );
+  let results = (outs
+    Variadic<AnyTypeOf<[
+      Stream_AnyStreamResource,
+      Stream_StagingResource,
+    ]>>:$results,
+    Stream_Timepoint:$result_timepoint
+  );
+
+  let assemblyFormat = [{
+    (`await_limit` `(` $await_limit^ `)`)?
+    (`await` `(` $await_operands^ `)` `=` `` `>`)?
+    `with` `(` $resource_operands `)` attr-dict `:`
+    custom<ShapedFunctionType>(ref($resource_operands),
+                               type($resource_operands), $resource_operand_sizes,
+                               type($results), $result_sizes,
+                               $tied_operands)
+    `=` `` `>` type($result_timepoint)
+  }];
+
+  let extraClassDeclaration = [{
+    // TimelineOpInterface methods.
+    SmallVector<Value> getAwaitTimepoints() {
+      SmallVector<Value> timepoints;
+      for (auto &tp : getAwaitOperandsMutable()) {
+        timepoints.push_back(tp.get());
+      }
+      return timepoints;
+    }
+
+    void setAwaitTimepoint(Value timepoint) {
+      if (timepoint) {
+        getAwaitOperandsMutable().assign(timepoint);
+      } else {
+        getAwaitOperandsMutable().clear();
+      }
+    }
+
+    void setAwaitTimepoints(ValueRange timepoints, OpBuilder &builder) {
+      // Check await_limit attribute to determine behavior.
+      // If attribute is missing, treat as unlimited (-1).
+      auto limitAttr = getAwaitLimitAttr();
+      int64_t limit = limitAttr ? limitAttr.getInt() : -1;
+      if (limit >= 0 && static_cast<int64_t>(timepoints.size()) > limit) {
+        // Exceed limit - create join and set single timepoint.
+        setAwaitTimepoint(
+            IREE::Stream::joinTimepoints(getLoc(), timepoints, builder));
+      } else {
+        // Within limit or unlimited - assign directly.
+        getAwaitOperandsMutable().assign(timepoints);
+      }
+    }
+
+    // Util_SizeAwareOp methods.
+    Value getOperandSize(unsigned index) {
+      return getResourceOperandSizes()[index];
+    }
+    Value getResultSize(unsigned index) {
+      return getResultSizes()[index];
+    }
+
+    // getResultTimepoint() is auto-generated from the result_timepoint result.
+    // getAwaitOperandsMutable() is auto-generated from the await_operands operand.
+  }];
+
+  let hasCanonicalizer = 1;
+}
+
+def Stream_TestTimelineAwareOp : Stream_PureOp<"test.timeline_aware", [
+  AttrSizedOperandSegments,
+  DeclareOpInterfaceMethods<Stream_TimelineAwareOp, [
+    "buildAwaitTimepoints",
+    "buildResultTimepoint",
+  ]>,
+]> {
+  let summary = [{Test op implementing TimelineAwareOpInterface.}];
+  let description = [{
+    Test-only operation that implements TimelineAwareOpInterface directly,
+    allowing Stream dialect tests to verify timeline-aware behavior without
+    requiring HAL/etc dialect dependencies.
+
+    Mimics util.call with the HAL coarse-fences model:
+    - Takes wait fences that must complete before execution.
+    - Takes a signal fence to signal when complete.
+    - Returns an arbitrary result.
+  }];
+
+  let arguments = (ins
+    Variadic<AnyType>:$args,
+    Variadic<Stream_TestFence>:$wait_fence_likes,
+    Stream_TestFence:$signal_fence_like
+  );
+  let results = (outs
+    Variadic<AnyType>:$results
+  );
+
+  let assemblyFormat = [{
+    `(` $args `)` `waits` `(` $wait_fence_likes `)` `signals` `(` $signal_fence_like `)`
+    attr-dict `:` functional-type($args, $results)
+  }];
+
+  let extraClassDeclaration = [{
+    bool participatesInTimeline() { return true; }
+
+    SmallVector<Value> getAwaitFences() {
+      // Return all wait fences (excluding signal fence).
+      SmallVector<Value> fences;
+      for (auto fence : getWaitFenceLikes()) {
+        fences.push_back(fence);
+      }
+      return fences;
+    }
+
+    Value getSignalFence() { return getSignalFenceLike(); }
+  }];
+}
+
+}  // OpGroupTestOps
 
 #endif  // IREE_DIALECT_STREAM_OPS

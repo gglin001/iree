@@ -65,7 +65,7 @@ struct VMDialect::VMOpAsmInterface
 namespace {
 
 // Used to control inlining behavior.
-struct VMInlinerInterface : public DialectInlinerInterface {
+struct VMInlinerInterface : DialectInlinerInterface {
   using DialectInlinerInterface::DialectInlinerInterface;
 
   bool isLegalToInline(Operation *call, Operation *callable,
@@ -74,8 +74,9 @@ struct VMInlinerInterface : public DialectInlinerInterface {
     if (auto inliningPolicy =
             callable->getAttrOfType<IREE::Util::InliningPolicyAttrInterface>(
                 "inlining_policy")) {
-      if (!inliningPolicy.isLegalToInline(call, callable))
+      if (!inliningPolicy.isLegalToInline(call, callable)) {
         return false;
+      }
     }
     // Sure!
     return true;
@@ -127,7 +128,7 @@ struct VMInlinerInterface : public DialectInlinerInterface {
   }
 };
 
-struct VMFolderInterface : public DialectFoldInterface {
+struct VMFolderInterface : DialectFoldInterface {
   using DialectFoldInterface::DialectFoldInterface;
 
   bool shouldMaterializeInto(Region *region) const override {
@@ -259,8 +260,9 @@ void VMDialect::printType(Type type, DialectAsmPrinter &os) const {
 Operation *VMDialect::materializeConstant(OpBuilder &builder, Attribute value,
                                           Type type, Location loc) {
   auto typedValue = dyn_cast<TypedAttr>(value);
-  if (!typedValue)
+  if (!typedValue) {
     return nullptr;
+  }
 
   if (ConstI32Op::isBuildableWith(typedValue, type)) {
     auto convertedValue = ConstI32Op::convertConstValue(typedValue);
@@ -289,7 +291,7 @@ Operation *VMDialect::materializeConstant(OpBuilder &builder, Attribute value,
   } else if (isa<IREE::VM::RefType>(type)) {
     // The only constant type we support for refs is null so we can just
     // emit that here.
-    // TODO(benvanik): relace unit attr with a proper null ref attr.
+    // TODO(benvanik): replace unit attr with a proper null ref attr.
     return VM::ConstRefZeroOp::create(builder, loc, type);
   }
   // TODO(benvanik): handle other constant value types.

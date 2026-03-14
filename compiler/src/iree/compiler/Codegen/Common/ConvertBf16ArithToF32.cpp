@@ -46,8 +46,9 @@ Value convertRankedFloat(OpBuilder &builder, Type type, ValueRange inputs,
                          Location loc) {
   Type eTy = getElementTypeOrSelf(type);
   Type inputETy = getElementTypeOrSelf(inputs[0].getType());
-  if (!isa<FloatType>(getElementTypeOrSelf(type)))
+  if (!isa<FloatType>(getElementTypeOrSelf(type))) {
     return nullptr;
+  }
 
   if (inputETy.getIntOrFloatBitWidth() > eTy.getIntOrFloatBitWidth()) {
     return arith::TruncFOp::create(builder, loc, type, inputs[0]);
@@ -62,12 +63,13 @@ Value convertRankedFloat(OpBuilder &builder, Type type, ValueRange inputs,
 
 // Converts from |SourceType| to |TargetType|.
 template <typename SourceType, typename TargetType>
-struct PrimitiveTypeConverter : public TypeConverter {
+struct PrimitiveTypeConverter : TypeConverter {
   explicit PrimitiveTypeConverter() {
     addConversion([](Type type) { return type; });
     addConversion([&](SourceType type) -> Type {
-      if (!isSourceType(type))
+      if (!isSourceType(type)) {
         return type;
+      }
       return getTargetType(type);
     });
     addConversion([&](ComplexType type) {
@@ -100,8 +102,7 @@ struct PrimitiveTypeConverter : public TypeConverter {
 };
 
 template <typename SourceType, typename TargetType>
-struct FloatTypeConverter
-    : public PrimitiveTypeConverter<SourceType, TargetType> {
+struct FloatTypeConverter : PrimitiveTypeConverter<SourceType, TargetType> {
   explicit FloatTypeConverter() {
     this->addSourceMaterialization(convertRankedFloat);
     this->addTargetMaterialization(convertRankedFloat);
@@ -110,7 +111,7 @@ struct FloatTypeConverter
 
 // Tries to completely convert a generic Operation.
 // This will process attributes, result types, and nested regions.
-struct GenericTypeConversionPattern : public ConversionPattern {
+struct GenericTypeConversionPattern : ConversionPattern {
   GenericTypeConversionPattern(MLIRContext *context,
                                TypeConverter &typeConverter)
       : ConversionPattern(typeConverter, MatchAnyOpTypeTag(), 0, context) {}
@@ -161,7 +162,7 @@ struct GenericTypeConversionPattern : public ConversionPattern {
 // unsigned integer values.
 template <typename OpTy, typename TypeTy,
           typename OperandToResultWidthLegalityRelation>
-struct ConvertTypeSensitiveArithCastOp : public OpConversionPattern<OpTy> {
+struct ConvertTypeSensitiveArithCastOp : OpConversionPattern<OpTy> {
   using OpConversionPattern<OpTy>::OpConversionPattern;
   LogicalResult
   matchAndRewrite(OpTy op, typename OpTy::Adaptor adaptor,
@@ -229,7 +230,7 @@ public:
 
 // Converts BF16s to F32s.
 struct PromoteBF16ToF32Converter
-    : public FloatTypeConverter<BFloat16Type, Float32Type> {
+    : FloatTypeConverter<BFloat16Type, Float32Type> {
   Type getTargetType(BFloat16Type type) override {
     return Float32Type::get(type.getContext());
   }
@@ -262,16 +263,19 @@ struct ConvertBf16ArithToF32Pass final
 
     auto checkOp = [&](Operation *op) {
       for (Type type : op->getResultTypes()) {
-        if (!typeConverter.isLegal(type))
+        if (!typeConverter.isLegal(type)) {
           return false;
+        }
       }
       for (Type type : op->getOperandTypes()) {
-        if (!typeConverter.isLegal(type))
+        if (!typeConverter.isLegal(type)) {
           return false;
+        }
       }
       for (auto &region : op->getRegions()) {
-        if (!typeConverter.isLegal(&region))
+        if (!typeConverter.isLegal(&region)) {
           return false;
+        }
       }
       return true;
     };

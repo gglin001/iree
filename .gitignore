@@ -35,8 +35,8 @@ Testing/
 
 # Bazel artifacts
 **/bazel-*
-MODULE.bazel
 MODULE.bazel.lock
+.iree-bazel-try/
 
 # Executables
 *.exe
@@ -61,6 +61,7 @@ imgui.ini
 
 # Source indexing files
 compile_commands.json
+tablegen_compile_commands.yml
 .cache/clangd
 
 # Language server configuration files

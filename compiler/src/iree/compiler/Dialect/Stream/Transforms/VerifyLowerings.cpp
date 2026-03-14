@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamDialect.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamOps.h"
@@ -122,15 +123,17 @@ public:
 
       // Check types for operands/results.
       for (auto operandType : llvm::enumerate(op->getOperandTypes())) {
-        if (isTypeLegal(operandType.value()))
+        if (isTypeLegal(operandType.value())) {
           continue;
+        }
         emitIllegalTypeError(op, "operand", operandType.index(),
                              operandType.value());
         foundAnyIllegal = true;
       }
       for (auto resultType : llvm::enumerate(op->getResultTypes())) {
-        if (isTypeLegal(resultType.value()))
+        if (isTypeLegal(resultType.value())) {
           continue;
+        }
         emitIllegalTypeError(op, "result", resultType.index(),
                              resultType.value());
         foundAnyIllegal = true;
@@ -244,7 +247,7 @@ static void markStreamAsyncOpsIllegal(Verifier &verifier) {
 //===----------------------------------------------------------------------===//
 
 struct VerifyInputPass
-    : public IREE::Stream::impl::VerifyInputPassBase<VerifyInputPass> {
+    : IREE::Stream::impl::VerifyInputPassBase<VerifyInputPass> {
   void runOnOperation() override {
     Verifier verifier;
     setupDefaultOpLegality(verifier);
@@ -253,6 +256,28 @@ struct VerifyInputPass
     verifier.addIllegalOp<IREE::Util::GlobalAddressOp>();
     verifier.addIllegalOp<IREE::Util::GlobalLoadIndirectOp>();
     verifier.addIllegalOp<IREE::Util::GlobalStoreIndirectOp>();
+
+    verifier.addOpVerifier<IREE::Flow::ExecutableOp>(
+        [](IREE::Flow::ExecutableOp exeOp)
+            -> std::optional<Verifier::Legality> {
+          ModuleOp innerModule = exeOp.getInnerModule();
+          if (!innerModule) {
+            return std::nullopt;
+          }
+          // Verify that none of the dispatch functions return a result.
+          for (auto funcOp : innerModule.getOps<mlir::FunctionOpInterface>()) {
+            if (!funcOp.isPublic()) {
+              continue;
+            }
+            if (funcOp.getNumResults() != 0) {
+              exeOp->emitOpError()
+                  << "cannot be converted to stream because it contains public "
+                  << "functions with a result";
+              return Verifier::Legality::ILLEGAL;
+            }
+          }
+          return std::nullopt;
+        });
 
     if (failed(verifier.run(getOperation()))) {
       return signalPassFailure();
@@ -283,7 +308,7 @@ static void markTensorInputsIllegal(Verifier &verifier) {
 }
 
 struct VerifyLoweringToTensorsPass
-    : public IREE::Stream::impl::VerifyLoweringToTensorsPassBase<
+    : IREE::Stream::impl::VerifyLoweringToTensorsPassBase<
           VerifyLoweringToTensorsPass> {
   void runOnOperation() override {
     // We cannot have stream.cmd.* ops mixed with stream.tensor/async.* ops
@@ -306,7 +331,7 @@ struct VerifyLoweringToTensorsPass
 //===----------------------------------------------------------------------===//
 
 struct VerifyLoweringToAsyncResourcesPass
-    : public IREE::Stream::impl::VerifyLoweringToAsyncResourcesPassBase<
+    : IREE::Stream::impl::VerifyLoweringToAsyncResourcesPassBase<
           VerifyLoweringToAsyncResourcesPass> {
   void runOnOperation() override {
     // We cannot have stream.cmd.* ops mixed with stream.tensor/async.* ops
@@ -330,7 +355,7 @@ struct VerifyLoweringToAsyncResourcesPass
 //===----------------------------------------------------------------------===//
 
 struct VerifyLoweringToAsyncPass
-    : public IREE::Stream::impl::VerifyLoweringToAsyncPassBase<
+    : IREE::Stream::impl::VerifyLoweringToAsyncPassBase<
           VerifyLoweringToAsyncPass> {
   void runOnOperation() override {
     // We cannot have stream.cmd.* ops mixed with stream.tensor/async.* ops
@@ -358,8 +383,9 @@ struct VerifyLoweringToAsyncPass
           }
 
           // Allow metadata ops outside of execution regions.
-          if (op.isMetadata())
+          if (op.isMetadata()) {
             return Verifier::Legality::LEGAL;
+          }
 
           // TODO(benvanik): execution region interface to make this generic.
           if (!op->template getParentOfType<IREE::Stream::AsyncExecuteOp>()) {
@@ -384,8 +410,7 @@ struct VerifyLoweringToAsyncPass
 //===----------------------------------------------------------------------===//
 
 struct VerifyLoweringToCmdPass
-    : public IREE::Stream::impl::VerifyLoweringToCmdPassBase<
-          VerifyLoweringToCmdPass> {
+    : IREE::Stream::impl::VerifyLoweringToCmdPassBase<VerifyLoweringToCmdPass> {
   void runOnOperation() override {
     Verifier verifier;
     setupDefaultOpLegality(verifier);

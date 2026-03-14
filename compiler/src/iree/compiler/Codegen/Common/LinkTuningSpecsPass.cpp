@@ -161,8 +161,9 @@ static void updateNamedSequenceOp(
   seenNames.insert(newSeqName);
 
   // Skip updating ForeachMatchOp if the NamedSequenceOp is not used in it.
-  if (!namedSequenceToUser.contains(op))
+  if (!namedSequenceToUser.contains(op)) {
     return;
+  }
 
   ForeachMatchOp foreachMatchOp = namedSequenceToUser[op];
 
@@ -200,7 +201,8 @@ static LogicalResult resolveAndMoveNamedSequenceOps(
   llvm::DenseSet<StringRef> seenNames;
   SmallVector<NamedSequenceOp> nameConflictOps;
 
-  // Detect name conflicts across named sequence ops from differnt tuning specs.
+  // Detect name conflicts across named sequence ops from different tuning
+  // specs.
   for (NamedSequenceOp op : namedSequenceOpsToMove) {
     StringRef name = op.getName();
     if (!seenNames.insert(name).second) {
@@ -331,7 +333,7 @@ emitLinkedTuningSpec(ModuleOp module, ArrayRef<NamedSequenceOp> specsToLink) {
     auto symbol = SymbolRefAttr::get(
         parentSymbol, FlatSymbolRefAttr::get(spec.getSymNameAttr()));
 
-    // Surpress silenceable errors so that failures to match in child tuning
+    // Suppress silenceable errors so that failures to match in child tuning
     // specs can be ignored.
     operand = transform::IncludeOp::create(
                   builder, loc, anyOpType, symbol,
@@ -401,19 +403,15 @@ static FailureOr<NamedSequenceOp> emitLinkedDefaultTuningSpec(ModuleOp module) {
   module->setAttr(kTuningSpecDefaultEntrypointAttrName, builder.getUnitAttr());
 
   // Step 2-c: Create a new block inside the NamedSequenceOp and merge the
-  // ForeachMatchOp from each inner module into one ForachMatchOp.
+  // ForeachMatchOp from each inner module into one ForeachMatchOp.
   Type anyOpType = builder.getType<transform::AnyOpType>();
   SmallVector<Type, 4> resultTypes = {anyOpType};
   SmallVector<Attribute> mergedMatchers;
   SmallVector<Attribute> mergedActions;
 
   for (ForeachMatchOp foreachMatchOp : foreachMatchOps) {
-    ArrayAttr matchers = foreachMatchOp.getMatchers();
-    ArrayAttr actions = foreachMatchOp.getActions();
-    for (auto [matcher, action] : llvm::zip_equal(matchers, actions)) {
-      mergedMatchers.push_back(cast<SymbolRefAttr>(matcher));
-      mergedActions.push_back(cast<SymbolRefAttr>(action));
-    }
+    llvm::append_range(mergedMatchers, foreachMatchOp.getMatchers());
+    llvm::append_range(mergedActions, foreachMatchOp.getActions());
   }
 
   Region &region = newEntryPoint.getRegion();
@@ -422,8 +420,8 @@ static FailureOr<NamedSequenceOp> emitLinkedDefaultTuningSpec(ModuleOp module) {
   builder.setInsertionPointToStart(body);
   auto mergedForeachMatch = ForeachMatchOp::create(
       builder, loc, resultTypes, newEntryPoint.getArgument(0),
-      /* forwarded_inputs = */ ValueRange(),
-      /* restrictRoot = */ nullptr, /* flattenResults = */ nullptr,
+      /*forwarded_inputs=*/ValueRange(),
+      /*restrict_root=*/false, /*flatten_results=*/false,
       builder.getArrayAttr(mergedMatchers),
       builder.getArrayAttr(mergedActions));
   transform::YieldOp::create(builder, loc, mergedForeachMatch->getResult(0));

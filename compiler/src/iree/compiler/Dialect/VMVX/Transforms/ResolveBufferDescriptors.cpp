@@ -225,13 +225,14 @@ replaceOffsetSizesAndStridesWith(RewriterBase &rewriter,
 
 namespace {
 
-struct FromMemRefSubView : public OpRewritePattern<GetBufferDescriptorOp> {
+struct FromMemRefSubView : OpRewritePattern<GetBufferDescriptorOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(GetBufferDescriptorOp op,
                                 PatternRewriter &rewriter) const override {
     auto subview = op.getSource().template getDefiningOp<memref::SubViewOp>();
-    if (!subview)
+    if (!subview) {
       return failure();
+    }
     auto loc = op.getLoc();
     IndexSet indexSet(loc, rewriter);
 
@@ -266,8 +267,9 @@ struct FromMemRefSubView : public OpRewritePattern<GetBufferDescriptorOp> {
     llvm::SmallBitVector droppedDims = subview.getDroppedDims();
     int targetIndex = 0;
     for (int i = 0; i < sourceRank; ++i) {
-      if (droppedDims.test(i))
+      if (droppedDims.test(i)) {
         continue;
+      }
       rewriter.replaceAllUsesWith(
           op.getSizes()[targetIndex],
           getValueOrCreateConstantIndexOp(rewriter, loc,
@@ -290,15 +292,16 @@ struct FromMemRefSubView : public OpRewritePattern<GetBufferDescriptorOp> {
 };
 
 struct FromHalInterfaceBindingSubspan
-    : public OpRewritePattern<GetBufferDescriptorOp> {
+    : OpRewritePattern<GetBufferDescriptorOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(GetBufferDescriptorOp op,
                                 PatternRewriter &rewriter) const override {
     auto binding =
         op.getSource()
             .template getDefiningOp<IREE::HAL::InterfaceBindingSubspanOp>();
-    if (!binding)
+    if (!binding) {
       return failure();
+    }
 
     auto loc = op.getLoc();
     FailureOr<DescriptorInfo> resultDescriptor =
@@ -333,8 +336,7 @@ getBaseBufferReplacementForDescriptor(GetBufferDescriptorOp descriptorOp,
       .getResult(0);
 }
 
-struct FromMemRefAssumeAlignment
-    : public OpRewritePattern<GetBufferDescriptorOp> {
+struct FromMemRefAssumeAlignment : OpRewritePattern<GetBufferDescriptorOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(GetBufferDescriptorOp op,
                                 PatternRewriter &rewriter) const override {
@@ -374,13 +376,14 @@ struct FromMemRefAssumeAlignment
 
 // Allocations always return a non-offset memref and are matched by this
 // pattern.
-struct FromAllocation : public OpRewritePattern<GetBufferDescriptorOp> {
+struct FromAllocation : OpRewritePattern<GetBufferDescriptorOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(GetBufferDescriptorOp op,
                                 PatternRewriter &rewriter) const override {
     auto alloca = op.getSource().template getDefiningOp<memref::AllocaOp>();
-    if (!alloca)
+    if (!alloca) {
       return failure();
+    }
     auto memRefType = cast<MemRefType>(alloca.getResult().getType());
     if (!memRefType.getLayout().isIdentity()) {
       return rewriter.notifyMatchFailure(op, "not identity allocation");
@@ -408,13 +411,14 @@ struct FromAllocation : public OpRewritePattern<GetBufferDescriptorOp> {
 
 // MemRef globals are always static shaped and reference a non-offset
 // buffer.
-struct FromGlobal : public OpRewritePattern<GetBufferDescriptorOp> {
+struct FromGlobal : OpRewritePattern<GetBufferDescriptorOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(GetBufferDescriptorOp op,
                                 PatternRewriter &rewriter) const override {
     auto global = op.getSource().template getDefiningOp<memref::GetGlobalOp>();
-    if (!global)
+    if (!global) {
       return failure();
+    }
     auto memRefType = cast<MemRefType>(global.getResult().getType());
     if (!memRefType.getLayout().isIdentity()) {
       return rewriter.notifyMatchFailure(op, "not identity allocation");
@@ -441,7 +445,7 @@ struct FromGlobal : public OpRewritePattern<GetBufferDescriptorOp> {
 };
 
 //===---------------------------------------------------------------------===//
-// Pass To resovle descriptors.
+// Pass To resolve descriptors.
 //===---------------------------------------------------------------------===//
 
 class ResolveBufferDescriptorsPass final

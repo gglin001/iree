@@ -853,10 +853,11 @@ private:
     // the constraints string. Not confusing at all!
     inputs.append(lhs.begin(), lhs.end());
     for (const auto &v : rhs) {
-      if (cast<VectorType>(v.getType()).getNumElements() == 1)
+      if (cast<VectorType>(v.getType()).getNumElements() == 1) {
         inputs.push_back(extract(rewriter, loc, v, 0));
-      else
+      } else {
         inputs.push_back(v);
+      }
     }
     inputs.append(acc.begin(), acc.end());
     // Create the inline asm op.
@@ -1016,7 +1017,7 @@ public:
 /// dot-product instructions (sdot).
 /// It matches the same patterns as MMT_8x4x8_i8i8i32_Aarch64Dotprod_InlineAsm
 struct MMT_8x4x8_i8i8i32_Aarch64Dotprod_Intrinsics
-    : public OpRewritePattern<vector::ContractionOp> {
+    : OpRewritePattern<vector::ContractionOp> {
 public:
   using Base::Base;
 
@@ -1039,8 +1040,9 @@ public:
     Value inLhs = getUnpromotedInput(I8Type, I32Type, lhs);
     Value inRhs = getUnpromotedInput(I8Type, I32Type, rhs);
 
-    if (!inLhs || !inRhs)
+    if (!inLhs || !inRhs) {
       return failure();
+    }
 
     auto loc = contractionOp.getLoc();
 

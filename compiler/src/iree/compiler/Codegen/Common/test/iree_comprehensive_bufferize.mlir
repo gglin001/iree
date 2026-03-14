@@ -208,7 +208,7 @@ func.func @elementwise() {
 }
 //      CHECK: func.func @elementwise()
 //  CHECK-DAG:   %[[CST_TENSOR:.+]] = arith.constant dense_resource<__elided__> : tensor<1x10xf32>
-//  CHECK-DAG:   %[[CST_BUF:.+]] = bufferization.to_buffer %[[CST_TENSOR]]
+//  CHECK-DAG:   %[[CST_BUF:.+]] = bufferization.to_buffer %[[CST_TENSOR]] read_only
 //  CHECK-DAG:   %[[IN_BUF:.+]] = hal.interface.binding.subspan layout({{.+}})  binding(0) {{.+}} : memref<1x10xf32, strided<[10, 1], offset: ?>, #hal.descriptor_type<storage_buffer>>
 //  CHECK-DAG:   %[[OUT_BUF:.+]] = hal.interface.binding.subspan layout({{.+}})  binding(1) {{.+}} : memref<1x10xf32, strided<[10, 1], offset: ?>, #hal.descriptor_type<storage_buffer>>
 //      CHECK:   scf.for
@@ -276,9 +276,8 @@ func.func @early_bufferized_copy_cst_ops() {
   %cst = arith.constant dense<0> : tensor<2x3xi32>
   %0 = bufferization.to_buffer %cst : tensor<2x3xi32> to memref<2x3xi32, affine_map<(d0, d1)[s0, s1, s2] -> (d0 * s1 + s0 + d1 * s2)>>
   %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : memref<2x5xi32>
-  %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<readwrite:tensor<2x5xi32>>
-  %3 = memref.subview %1[%c0, %c2] [2, 3] [%c1, %c1] : memref<2x5xi32> to memref<2x3xi32, affine_map<(d0, d1)[s0, s1, s2] -> (d0 * s1 + s0 + d1 * s2)>>
-  linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%0 : memref<2x3xi32, affine_map<(d0, d1)[s0, s1, s2] -> (d0 * s1 + s0 + d1 * s2)>>) outs(%3 : memref<2x3xi32, affine_map<(d0, d1)[s0, s1, s2] -> (d0 * s1 + s0 + d1 * s2)>>) {
+  %2 = memref.subview %1[%c0, %c2] [2, 3] [%c1, %c1] : memref<2x5xi32> to memref<2x3xi32, affine_map<(d0, d1)[s0, s1, s2] -> (d0 * s1 + s0 + d1 * s2)>>
+  linalg.generic {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d0, d1)>], iterator_types = ["parallel", "parallel"]} ins(%0 : memref<2x3xi32, affine_map<(d0, d1)[s0, s1, s2] -> (d0 * s1 + s0 + d1 * s2)>>) outs(%2 : memref<2x3xi32, affine_map<(d0, d1)[s0, s1, s2] -> (d0 * s1 + s0 + d1 * s2)>>) {
   ^bb0(%arg0: i32, %arg1: i32):
     linalg.yield %arg0 : i32
   }
@@ -286,7 +285,7 @@ func.func @early_bufferized_copy_cst_ops() {
 }
 // CHECK: func.func @early_bufferized_copy_cst_ops
 // CHECK:   %[[CST:.+]] = arith.constant dense<0> : tensor<2x3xi32>
-// CHECK:   %{{.+}} = bufferization.to_buffer %[[CST]]
+// CHECK:   %{{.+}} = bufferization.to_buffer %[[CST]] read_only
 
 // -----
 
@@ -1090,7 +1089,7 @@ func.func @rhs_non_splat_constant() {
 }
 // CHECK-LABEL: func.func @rhs_non_splat_constant
 //   CHECK-DAG:   %[[CONSTANT:.+]] = arith.constant {{.+}} : tensor<3x5xf32>
-//   CHECK-DAG:   %[[RHS:.+]] = bufferization.to_buffer %[[CONSTANT]]
+//   CHECK-DAG:   %[[RHS:.+]] = bufferization.to_buffer %[[CONSTANT]] read_only
 //   CHECK-DAG:   %[[LHS_INPUT:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(0) : memref<1x5x3x1xf32, #hal.descriptor_type<storage_buffer>>
 //   CHECK-DAG:   %[[RETURN:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(1) : memref<5x5xf32, #hal.descriptor_type<storage_buffer>>
 //       CHECK:   %[[LHS:.+]] = memref.collapse_shape %[[LHS_INPUT]]
@@ -1418,7 +1417,7 @@ func.func @bufferize_cst_output_tensor() {
   #hal.pipeline.binding<storage_buffer>
 ]>
 #map = affine_map<()[s0] -> (s0 * 32)>
-func.func @cast_follwed_by_store() {
+func.func @cast_followed_by_store() {
   %cst = arith.constant 0.000000e+00 : f32
   %c4 = arith.constant 4 : index
   %c64 = arith.constant 64 : index
@@ -1451,7 +1450,7 @@ func.func @cast_follwed_by_store() {
   }
   return
 }
-// CHECK-LABEL: func.func @cast_follwed_by_store()
+// CHECK-LABEL: func.func @cast_followed_by_store()
 //   CHECK-DAG: %[[ZERO:.+]] = arith.constant 0.000000e+00 : f32
 //   CHECK-DAG: %[[LHS:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(0) : memref<4x32x1024xf32, #hal.descriptor_type<storage_buffer>>
 //   CHECK-DAG: %[[RHS:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(1) : memref<4x1024x64xf32, #hal.descriptor_type<storage_buffer>>
@@ -2175,7 +2174,6 @@ func.func @operand_fusion() {
 #map5 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
 func.func @dot_general_nontrivial_batching_multiple_parallel_dimension() {
   %cst = arith.constant dense<0.000000e+00> : vector<1x4x2xf32>
-  %c1 = arith.constant 1 : index
   %c6 = arith.constant 6 : index
   %c2 = arith.constant 2 : index
   %cst_0 = arith.constant 0.000000e+00 : f32
@@ -2384,7 +2382,6 @@ func.func @scatter_update_scalar_1D() {
   #hal.pipeline.binding<storage_buffer>
 ]>
 func.func @topk() {
-  %c0 = arith.constant 0 : index
   %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<200x8xf32>>
   %input_values = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0], sizes = [200, 8], strides = [1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<200x8xf32>> -> tensor<200x8xf32>
   %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<200x8xi32>>
@@ -2409,146 +2406,6 @@ func.func @topk() {
 // CHECK:        iree_linalg_ext.topk
 // CHECK-SAME:     ins(%[[INPUT_VALUES]], %[[INPUT_INDICES]]
 // CHECK-SAME:     outs(%[[OUTPUT_VALUES]], %[[OUTPUT_INDICES]]
-
-// -----
-
-#pipeline_layout = #hal.pipeline.layout<bindings = [
-  #hal.pipeline.binding<storage_buffer>,
-  #hal.pipeline.binding<storage_buffer>
-]>
-func.func @iree_linalg_ext_pack() {
-  %c0 = arith.constant 0 : index
-  %c0_i32 = arith.constant 0 : i32
-  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<4x4xi32>>
-  %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x2x3x3xi32>>
-  %2 = iree_tensor_ext.dispatch.tensor.load %1, offsets = [0, 0, 0, 0], sizes = [2, 2, 3, 3], strides = [1, 1, 1, 1] : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x2x3x3xi32>> -> tensor<2x2x3x3xi32>
-  %3 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<4x4xi32>> -> tensor<4x4xi32>
-  %4 = iree_linalg_ext.pack %3 padding_value(%c0_i32 : i32) inner_dims_pos = [0, 1] inner_tiles = [3, 3] into %2 : (tensor<4x4xi32> tensor<2x2x3x3xi32>) -> tensor<2x2x3x3xi32>
-  iree_tensor_ext.dispatch.tensor.store %4, %1, offsets = [0, 0, 0, 0], sizes = [2, 2, 3, 3], strides = [1, 1, 1, 1] : tensor<2x2x3x3xi32> -> !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x2x3x3xi32>>
-  return
-}
-// CHECK: func.func @iree_linalg_ext_pack
-// CHECK-DAG:  %[[PAD:.+]] = arith.constant 0 : i32
-// CHECK-DAG:  %[[IN:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(0) alignment(64) offset(%c0) : memref<4x4xi32, #hal.descriptor_type<storage_buffer>>
-// CHECK-DAG:  %[[OUT:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(1) alignment(64) offset(%c0) : memref<2x2x3x3xi32, #hal.descriptor_type<storage_buffer>>
-// CHECK:      iree_linalg_ext.pack %[[IN]]
-// CHECK-SAME:   padding_value(%[[PAD]] : i32)
-// CHECK-SAME:   inner_dims_pos = [0, 1] inner_tiles = [3, 3] into %[[OUT]]
-
-// -----
-
-#pipeline_layout = #hal.pipeline.layout<bindings = [
-  #hal.pipeline.binding<storage_buffer>,
-  #hal.pipeline.binding<storage_buffer>
-]>
-func.func @iree_linalg_ext_unpack() {
-  %c0 = arith.constant 0 : index
-  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x2x2x2xi32>>
-  %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>>
-  %2 = iree_tensor_ext.dispatch.tensor.load %1, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>> -> tensor<4x4xi32>
-  %3 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0, 0, 0], sizes = [2, 2, 2, 2], strides = [1, 1, 1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x2x2x2xi32>> -> tensor<2x2x2x2xi32>
-  %4 = iree_linalg_ext.unpack %3 inner_dims_pos = [0, 1] inner_tiles = [2, 2] into %2 : (tensor<2x2x2x2xi32> tensor<4x4xi32>) -> tensor<4x4xi32>
-  iree_tensor_ext.dispatch.tensor.store %4, %1, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : tensor<4x4xi32> -> !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>>
-  return
-}
-// CHECK: func.func @iree_linalg_ext_unpack
-// CHECK-DAG:  %[[IN:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(0) alignment(64) offset(%c0) : memref<2x2x2x2xi32, #hal.descriptor_type<storage_buffer>>
-// CHECK-DAG:  %[[OUT:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(1) alignment(64) offset(%c0) : memref<4x4xi32, #hal.descriptor_type<storage_buffer>>
-// CHECK:      iree_linalg_ext.unpack %[[IN]]
-// CHECK-SAME:   inner_dims_pos = [0, 1] inner_tiles = [2, 2] into %[[OUT]]
-
-// -----
-
-#pipeline_layout = #hal.pipeline.layout<bindings = [
-  #hal.pipeline.binding<storage_buffer>,
-  #hal.pipeline.binding<storage_buffer>
-]>
-func.func @iree_linalg_ext_unpack_fully_dynamic() {
-  %c0 = arith.constant 0 : index
-  %inner_d0 = util.unfoldable_constant 2 : index
-  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x2x2x2xi32>>
-  %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>>
-  %2 = iree_tensor_ext.dispatch.tensor.load %1, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>> -> tensor<4x4xi32>
-  %3 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0, 0, 0], sizes = [2, 2, %inner_d0, %inner_d0], strides = [1, 1, 1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x2x2x2xi32>> -> tensor<2x2x?x?xi32>
-  %4 = iree_linalg_ext.unpack %3 inner_dims_pos = [0, 1] inner_tiles = [%inner_d0, %inner_d0] into %2 : (tensor<2x2x?x?xi32> tensor<4x4xi32>) -> tensor<4x4xi32>
-  iree_tensor_ext.dispatch.tensor.store %4, %1, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : tensor<4x4xi32> -> !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>>
-  return
-}
-
-// CHECK:      func.func @iree_linalg_ext_unpack_fully_dynamic
-// CHECK-DAG:  %[[D:.+]] = util.optimization_barrier %c2 : index
-// CHECK:      iree_linalg_ext.unpack
-// CHECK-SAME:   inner_dims_pos = [0, 1] inner_tiles = [%[[D]], %[[D]]]
-
-// -----
-
-#pipeline_layout = #hal.pipeline.layout<bindings = [
-  #hal.pipeline.binding<storage_buffer>,
-  #hal.pipeline.binding<storage_buffer>
-]>
-func.func @tensor_pack() {
-  %c0 = arith.constant 0 : index
-  %c0_i32 = arith.constant 0 : i32
-  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<4x4xi32>>
-  %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x2x3x3xi32>>
-  %2 = iree_tensor_ext.dispatch.tensor.load %1, offsets = [0, 0, 0, 0], sizes = [2, 2, 3, 3], strides = [1, 1, 1, 1] : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x2x3x3xi32>> -> tensor<2x2x3x3xi32>
-  %3 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<4x4xi32>> -> tensor<4x4xi32>
-  %4 = linalg.pack %3 padding_value(%c0_i32 : i32) inner_dims_pos = [0, 1] inner_tiles = [3, 3] into %2 : tensor<4x4xi32> -> tensor<2x2x3x3xi32>
-  iree_tensor_ext.dispatch.tensor.store %4, %1, offsets = [0, 0, 0, 0], sizes = [2, 2, 3, 3], strides = [1, 1, 1, 1] : tensor<2x2x3x3xi32> -> !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x2x3x3xi32>>
-  return
-}
-// CHECK: func.func @tensor_pack
-// CHECK-DAG:  %[[PAD:.+]] = arith.constant 0 : i32
-// CHECK-DAG:  %[[IN:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(0) alignment(64) offset(%c0) : memref<4x4xi32, #hal.descriptor_type<storage_buffer>>
-// CHECK-DAG:  %[[OUT:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(1) alignment(64) offset(%c0) : memref<2x2x3x3xi32, #hal.descriptor_type<storage_buffer>>
-// CHECK:      iree_linalg_ext.pack %[[IN]]
-// CHECK-SAME:   padding_value(%[[PAD]] : i32)
-// CHECK-SAME:   inner_dims_pos = [0, 1] inner_tiles = [3, 3] into %[[OUT]]
-
-// -----
-
-#pipeline_layout = #hal.pipeline.layout<bindings = [
-  #hal.pipeline.binding<storage_buffer>,
-  #hal.pipeline.binding<storage_buffer>
-]>
-func.func @tensor_unpack() {
-  %c0 = arith.constant 0 : index
-  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x2x2x2xi32>>
-  %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>>
-  %2 = iree_tensor_ext.dispatch.tensor.load %1, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>> -> tensor<4x4xi32>
-  %3 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0, 0, 0], sizes = [2, 2, 2, 2], strides = [1, 1, 1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x2x2x2xi32>> -> tensor<2x2x2x2xi32>
-  %4 = linalg.unpack %3 inner_dims_pos = [0, 1] inner_tiles = [2, 2] into %2 : tensor<2x2x2x2xi32> -> tensor<4x4xi32>
-  iree_tensor_ext.dispatch.tensor.store %4, %1, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : tensor<4x4xi32> -> !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>>
-  return
-}
-// CHECK: func.func @tensor_unpack
-// CHECK-DAG:  %[[IN:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(0) alignment(64) offset(%c0) : memref<2x2x2x2xi32, #hal.descriptor_type<storage_buffer>>
-// CHECK-DAG:  %[[OUT:.+]] = hal.interface.binding.subspan layout({{.+}}) binding(1) alignment(64) offset(%c0) : memref<4x4xi32, #hal.descriptor_type<storage_buffer>>
-// CHECK:      iree_linalg_ext.unpack %[[IN]]
-// CHECK-SAME:   inner_dims_pos = [0, 1] inner_tiles = [2, 2] into %[[OUT]]
-
-// -----
-
-#pipeline_layout = #hal.pipeline.layout<bindings = [
-  #hal.pipeline.binding<storage_buffer>,
-  #hal.pipeline.binding<storage_buffer>
-]>
-func.func @tensor_unpack_fully_dynamic() {
-  %c0 = arith.constant 0 : index
-  %inner_d0 = util.unfoldable_constant 2 : index
-  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x2x2x2xi32>>
-  %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>>
-  %2 = iree_tensor_ext.dispatch.tensor.load %1, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>> -> tensor<4x4xi32>
-  %3 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0, 0, 0], sizes = [2, 2, %inner_d0, %inner_d0], strides = [1, 1, 1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x2x2x2xi32>> -> tensor<2x2x?x?xi32>
-  %4 = linalg.unpack %3 inner_dims_pos = [0, 1] inner_tiles = [%inner_d0, %inner_d0] into %2 : tensor<2x2x?x?xi32> -> tensor<4x4xi32>
-  iree_tensor_ext.dispatch.tensor.store %4, %1, offsets = [0, 0], sizes = [4, 4], strides = [1, 1] : tensor<4x4xi32> -> !iree_tensor_ext.dispatch.tensor<writeonly:tensor<4x4xi32>>
-  return
-}
-
-// CHECK:      func.func @tensor_unpack_fully_dynamic
-// CHECK-DAG:  %[[D:.+]] = util.optimization_barrier %c2 : index
-// CHECK:      iree_linalg_ext.unpack
-// CHECK-SAME:   inner_dims_pos = [0, 1] inner_tiles = [%[[D]], %[[D]]]
 
 // -----
 
@@ -2752,7 +2609,7 @@ func.func @tensor_barrier() -> vector<2xf32> {
 // CHECK-LABEL: func @tensor_barrier()
 //       CHECK:   %[[ALLOC:.+]] = memref.alloc() : memref<2xf32>
 //       CHECK:   vector.transfer_write %{{.*}}, %[[ALLOC]]
-//  CHECK-NEXT:   gpu.barrier
+//  CHECK-NEXT:   gpu.barrier{{$}}
 //  CHECK-NEXT:   vector.transfer_read %[[ALLOC]]
 
 // -----
@@ -2776,7 +2633,7 @@ func.func @tensor_barrier_in_loop() -> vector<2xf32> {
 //       CHECK:   %[[ALLOC:.+]] = memref.alloc() : memref<2xf32>
 //       CHECK:   scf.for
 //  CHECK-NEXT:     vector.transfer_write %{{.*}}, %[[ALLOC]]
-//  CHECK-NEXT:     gpu.barrier
+//  CHECK-NEXT:     gpu.barrier{{$}}
 //  CHECK-NEXT:   }
 //       CHECK:   vector.transfer_read %[[ALLOC]]
 
@@ -2820,7 +2677,7 @@ func.func @multi_tensor_barrier() -> vector<2xf32> {
 //       CHECK:   %[[ALLOC1:.+]] = memref.alloc() : memref<2xf32>
 //       CHECK:   vector.transfer_write %{{.*}}, %[[ALLOC1]]
 //       CHECK:   vector.transfer_write %{{.*}}, %[[ALLOC0]]
-//  CHECK-NEXT:   gpu.barrier
+//  CHECK-NEXT:   gpu.barrier{{$}}
 //       CHECK:   vector.transfer_write %{{.*}}, %[[ALLOC0]]
 //  CHECK-NEXT:   vector.transfer_read %[[ALLOC1]]
 
@@ -2841,10 +2698,10 @@ func.func @barrier_region(%x: index, %y: index) -> vector<3x2xf32> {
 
 // CHECK-LABEL: func @barrier_region
 //       CHECK:   %[[ALLOC:.+]] = memref.alloc()
-//       CHECK:   gpu.barrier
+//       CHECK:   gpu.barrier{{$}}
 //       CHECK:   %[[SUBVIEW:.+]] = memref.subview %[[ALLOC]]
 //       CHECK:   %[[READ:.+]] = vector.transfer_read %[[SUBVIEW]]
-//       CHECK:   gpu.barrier
+//       CHECK:   gpu.barrier{{$}}
 //       CHECK:   return %[[READ]]
 
 // -----
@@ -3112,8 +2969,10 @@ func.func @cache_swizzle_resource_cast(%stride: index) {
 func.func @transfer_gather(%source : tensor<?x64xf16>, %indices: vector<8xindex>) -> vector<8x64xf16> {
   %c0 = arith.constant 0 : index
   %cst = arith.constant 0.0 : f16
-  %out = iree_vector_ext.transfer_gather %source[%c0, %c0][%indices: vector<8xindex>, None], %cst {
-    indexed_maps = [affine_map<(d0, d1) -> (d0)>]
+  %out = iree_vector_ext.transfer_gather %source[%c0, %c0]
+  [%indices : vector<8xindex>], %cst {
+    indexing_maps = [affine_map<(d0, d1)[s0] -> (s0, d1)>,
+                     affine_map<(d0, d1)[s0] -> (d0)>]
   } : tensor<?x64xf16>, vector<8x64xf16>
   return %out : vector<8x64xf16>
 }
@@ -3122,7 +2981,23 @@ func.func @transfer_gather(%source : tensor<?x64xf16>, %indices: vector<8xindex>
 // CHECK-SAME: %[[SOURCE:.+]]: tensor<?x64xf16>, %[[INDICES:.+]]: vector<8xindex>
 // CHECK: %[[C0:.+]] = arith.constant 0 : index
 // CHECK: %[[BUFFER:.+]] = bufferization.to_buffer %[[SOURCE]]
-// CHECK: iree_vector_ext.transfer_gather %[[BUFFER]][%[[C0]], %[[C0]]][%[[INDICES]]: vector<8xindex>, None]
+// CHECK: iree_vector_ext.transfer_gather %[[BUFFER]][%[[C0]], %[[C0]]] [%[[INDICES]] : vector<8xindex>]
+
+// -----
+
+func.func @transfer_scatter(%dest : tensor<?x64xf16>, %vector: vector<8x64xf16>, %indices: vector<8xindex>) -> tensor<?x64xf16> {
+  %c0 = arith.constant 0 : index
+  %out = iree_vector_ext.transfer_scatter %vector into %dest[%c0, %c0]
+  [%indices : vector<8xindex>] {
+    indexing_maps = [affine_map<(d0, d1)[s0] -> (s0, d1)>,
+                     affine_map<(d0, d1)[s0] -> (d0)>]
+  } : vector<8x64xf16>, tensor<?x64xf16> -> tensor<?x64xf16>
+  return %out : tensor<?x64xf16>
+}
+
+// CHECK-LABEL: func.func @transfer_scatter
+// CHECK-SAME: %[[DEST:.+]]: tensor<?x64xf16>, %[[VECTOR:.+]]: vector<8x64xf16>, %[[INDICES:.+]]: vector<8xindex>
+// CHECK: iree_vector_ext.transfer_scatter %[[VECTOR]] into %{{.+}}[%{{.+}}, %{{.+}}] [%[[INDICES]] : vector<8xindex>]
 
 // -----
 
@@ -3210,3 +3085,37 @@ func.func @retry_constant_bufferize() {
 // CHECK:         %[[CST:.+]] = arith.constant dense<0> : tensor<6xi32>
 // CHECK:         %[[MEMREF:.+]] = bufferization.to_buffer %[[CST]] read_only
 // CHECK:         memref.copy %[[MEMREF]]
+
+// -----
+
+func.func @drop_fusion_barrier() -> memref<6xf32> {
+  %alloc = bufferization.alloc_tensor() : tensor<6xf32>
+  %0 = iree_codegen.fusion_barrier %alloc : tensor<6xf32>
+  %memref = bufferization.to_buffer %0 : tensor<6xf32> to memref<6xf32>
+  return %memref : memref<6xf32>
+}
+
+// CHECK-LABEL: func.func @drop_fusion_barrier
+// CHECK:         %[[ALLOC:.+]] = memref.alloc() : memref<6xf32>
+// CHECK:         return %[[ALLOC]]
+
+// -----
+
+// Test bufferization of map_store with mixed tensor-buffer semantics.
+// The tensor input should be bufferized while the memref output stays as-is.
+func.func @map_store_mixed_semantics(%input: tensor<16xf32>, %output: memref<16xf32>) {
+  iree_linalg_ext.map_store %input into %output {
+    ^bb0(%idx0: index):
+      %mask = arith.constant true
+      iree_linalg_ext.yield %idx0, %mask : index, i1
+  } : tensor<16xf32> into memref<16xf32>
+  return
+}
+
+// CHECK-LABEL: func.func @map_store_mixed_semantics
+//  CHECK-SAME:   %[[INPUT:[a-zA-Z0-9_]+]]: tensor<16xf32>
+//  CHECK-SAME:   %[[OUTPUT:[a-zA-Z0-9_]+]]: memref<16xf32>
+//       CHECK:   %[[INPUT_BUF:.+]] = bufferization.to_buffer %[[INPUT]]
+//       CHECK:   iree_linalg_ext.map_store %[[INPUT_BUF]] into %[[OUTPUT]]
+//       CHECK:   } : memref<16xf32> into memref<16xf32>
+//       CHECK:   return

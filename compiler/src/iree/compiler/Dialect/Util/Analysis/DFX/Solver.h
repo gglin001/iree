@@ -193,8 +193,9 @@ public:
     // Lookup the abstract element of type ElementT and if found return it after
     // registering a dependence of queryingElement on the one returned element.
     auto *elementPtr = elementMap.lookup({&ElementT::ID, pos});
-    if (!elementPtr)
+    if (!elementPtr) {
       return nullptr;
+    }
     auto *element = static_cast<ElementT *>(elementPtr);
 
     // Do not register a dependence on an element with an invalid state.
@@ -295,7 +296,7 @@ protected:
     SEEDING,
     // Fixed point iteration is running.
     UPDATE,
-    // Iteration has completed; does not indicate whether it coverged.
+    // Iteration has completed; does not indicate whether it converged.
     DONE,
   } phase = Phase::SEEDING;
 

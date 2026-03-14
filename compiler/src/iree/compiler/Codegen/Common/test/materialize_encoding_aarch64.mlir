@@ -2,10 +2,10 @@
 // RUN: iree-opt --pass-pipeline="builtin.module(func.func(iree-codegen-materialize-device-encoding))" --iree-llvmcpu-enable-scalable-vectorization=true --split-input-file %s | FileCheck %s --check-prefixes=CHECK,WITH-SVE
 
 #encoding = #iree_encoding.encoding<operand_index = 0, op_type = matmul, element_types = [bf16, bf16, bf16], user_indexing_maps = [affine_map<(m, n, k) -> (m, k)>, affine_map<(m, n, k) -> (k, n)>, affine_map<(m, n, k) -> (m, n)>], iteration_sizes = [?, ?, ?]>
-func.func @matmul_LHS(%arg0: tensor<8x16xbf16>) -> tensor<8x16xbf16, #encoding> attributes {
+func.func @matmul_LHS(%arg0: tensor<8x16xbf16>, %m: index, %n: index, %k: index) -> tensor<8x16xbf16, #encoding> attributes {
   hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {target_triple="aarch64-xyz-xyz", cpu_features="+sve", iree.encoding.resolver = #iree_cpu.cpu_encoding_resolver<>}>
 } {
-  %0 = iree_encoding.set_encoding %arg0 : tensor<8x16xbf16> -> tensor<8x16xbf16, #encoding>
+  %0 = iree_encoding.set_encoding %arg0 encoding_dims{%m, %n, %k} : tensor<8x16xbf16> -> tensor<8x16xbf16, #encoding>
   return %0 : tensor<8x16xbf16, #encoding>
 }
 
@@ -22,13 +22,13 @@ func.func @matmul_LHS(%arg0: tensor<8x16xbf16>) -> tensor<8x16xbf16, #encoding> 
 // -----
 
 #encoding = #iree_encoding.encoding<operand_index = 1, op_type = matmul, element_types = [bf16, bf16, bf16], user_indexing_maps = [affine_map<(m, n, k) -> (m, k)>, affine_map<(m, n, k) -> (k, n)>, affine_map<(m, n, k) -> (m, n)>], iteration_sizes = [?, ?, ?]>
-func.func @matmul_RHS(%arg0: tensor<8x16xbf16>) -> tensor<8x16xbf16, #encoding> attributes {
+func.func @matmul_RHS(%arg0: tensor<8x16xbf16>, %m: index, %n: index, %k: index) -> tensor<8x16xbf16, #encoding> attributes {
   hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {target_triple="aarch64-xyz-xyz", cpu_features="+sve", iree.encoding.resolver = #iree_cpu.cpu_encoding_resolver<>}>
 } {
-  %0 = iree_encoding.set_encoding %arg0 : tensor<8x16xbf16> -> tensor<8x16xbf16, #encoding>
+  %0 = iree_encoding.set_encoding %arg0 encoding_dims{%m, %n, %k} : tensor<8x16xbf16> -> tensor<8x16xbf16, #encoding>
   return %0 : tensor<8x16xbf16, #encoding>
 }
-/// NOTE: For RHS, the inner tile correspondong to the "N" dimension is
+/// NOTE: For RHS, the inner tile corresponding to the "N" dimension is
 /// scalable, hence NO-SVE and WITH-SVE differ!
 
 // WITH-SVE: #[[$MAP:.+]] = affine_map<()[s0] -> (16 ceildiv s0)>
@@ -69,14 +69,14 @@ func.func @matmul_RHS(%arg0: tensor<8x16xbf16>) -> tensor<8x16xbf16, #encoding> 
 #map1 = affine_map<(b, m, n, k) -> (b, k, n)>
 #map2 = affine_map<(b, m, n, k) -> (b, m, n)>
 #encoding = #iree_encoding.encoding<operand_index = 1, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [#map, #map1, #map2], iteration_sizes = [128, 32, 320, ?]>
-func.func @batch_matmul_RHS(%arg0: tensor<128x32x320xf32>) -> tensor<128x32x320xf32, #encoding> attributes {
+func.func @batch_matmul_RHS(%arg0: tensor<128x32x320xf32>, %k: index) -> tensor<128x32x320xf32, #encoding> attributes {
   hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {target_triple="aarch64-xyz-xyz", cpu_features="+sve", iree.encoding.resolver = #iree_cpu.cpu_encoding_resolver<>}>
 } {
-  %0 = iree_encoding.set_encoding %arg0 : tensor<128x32x320xf32> -> tensor<128x32x320xf32, #encoding>
+  %0 = iree_encoding.set_encoding %arg0 encoding_dims{%k} : tensor<128x32x320xf32> -> tensor<128x32x320xf32, #encoding>
   return %0 : tensor<128x32x320xf32, #encoding>
 }
 
-/// NOTE: For RHS, the inner tile correspondong to the "N" dimension is
+/// NOTE: For RHS, the inner tile corresponding to the "N" dimension is
 /// scalable, hence NO-SVE and WITH-SVE differ!
 
 // WITH-SVE: #[[$MAP:.+]] = affine_map<()[s0] -> (320 ceildiv s0)>
@@ -115,14 +115,14 @@ func.func @batch_matmul_RHS(%arg0: tensor<128x32x320xf32>) -> tensor<128x32x320x
 #map1 = affine_map<(b, m, n, k) -> (b, k, n)>
 #map2 = affine_map<(b, m, n, k) -> (b, m, n)>
 #encoding = #iree_encoding.encoding<operand_index = 2, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [#map, #map1, #map2], iteration_sizes = [128, 80, 320, ?]>
-func.func @batch_matmul_RETURN_unset(%arg0: tensor<128x80x320xf32, #encoding>) -> tensor<128x80x320xf32> attributes {
+func.func @batch_matmul_RETURN_unset(%arg0: tensor<128x80x320xf32, #encoding>, %k: index) -> tensor<128x80x320xf32> attributes {
   hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {target_triple="aarch64-xyz-xyz", cpu_features="+sve", iree.encoding.resolver = #iree_cpu.cpu_encoding_resolver<>}>
 } {
-  %0 = iree_encoding.unset_encoding %arg0 : tensor<128x80x320xf32, #encoding> -> tensor<128x80x320xf32>
+  %0 = iree_encoding.unset_encoding %arg0 encoding_dims{%k} : tensor<128x80x320xf32, #encoding> -> tensor<128x80x320xf32>
   return %0 : tensor<128x80x320xf32>
 }
 
-/// NOTE: For RETURN, the inner tile correspondong to the "N" dimension is
+/// NOTE: For RETURN, the inner tile corresponding to the "N" dimension is
 /// scalable, hence NO-SVE and WITH-SVE differ!
 
 // CHECK-LABEL: func.func @batch_matmul_RETURN_unset
@@ -145,9 +145,6 @@ func.func @batch_matmul_RETURN_unset(%arg0: tensor<128x80x320xf32, #encoding>) -
 
 // -----
 
-#map = affine_map<(d0, d1, d2) -> (d0, d2)>
-#map1 = affine_map<(d0, d1, d2) -> (d2, d1)>
-#map2 = affine_map<(d0, d1, d2) -> (d0, d1)>
 #encoding_lhs = #iree_encoding.encoding<operand_index = 0, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>, affine_map<(d0, d1, d2) -> (d2, d1)>, affine_map<(d0, d1, d2) -> (d0, d1)>], iteration_sizes = [16, 1, 16]>
 #encoding_rhs = #iree_encoding.encoding<operand_index = 1, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>, affine_map<(d0, d1, d2) -> (d2, d1)>, affine_map<(d0, d1, d2) -> (d0, d1)>], iteration_sizes = [16, 1, 16]>
 #encoding_result = #iree_encoding.encoding<operand_index = 2, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2)>, affine_map<(d0, d1, d2) -> (d2, d1)>, affine_map<(d0, d1, d2) -> (d0, d1)>], iteration_sizes = [16, 1, 16]>
@@ -225,7 +222,6 @@ func.func @matmul_lowering_f32f32f32_aarch64() attributes {
 //     CHECK-DAG: #[[$MAP0:.+]] = affine_map<()[s0] -> (s0 ceildiv 8)>
 //  WITH-SVE-DAG: #[[$MAP1:.+]] = affine_map<()[s0, s1] -> (s0 ceildiv s1)>
 //   CHECK-LABEL: func @matmul_lowering_f32f32f32_aarch64()
-//     CHECK-DAG:   %[[C0:.+]] = arith.constant 0 : index
 //  WITH-SVE-DAG:   %[[C8:.+]] = arith.constant 8 : index
 //     CHECK-DAG:   %[[M:.+]] = hal.interface.constant.load layout({{.+}}) ordinal(0)
 //     CHECK-DAG:   %[[N:.+]] = hal.interface.constant.load layout({{.+}}) ordinal(1)
@@ -265,9 +261,6 @@ func.func @matmul_lowering_f32f32f32_aarch64() attributes {
 
 // -----
 
-#map = affine_map<(d0, d1, d2) -> (d0, d2)>
-#map1 = affine_map<(d0, d1, d2) -> (d2, d1)>
-#map2 = affine_map<(d0, d1, d2) -> (d0, d1)>
 #encoding_lhs = #iree_encoding.encoding<operand_index = 0, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d1)>, affine_map<(d0, d1) -> (d0)>], iteration_sizes = [16, 16]>
 #encoding_rhs = #iree_encoding.encoding<operand_index = 1, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d1)>, affine_map<(d0, d1) -> (d0)>], iteration_sizes= [16, 16]>
 #encoding_result = #iree_encoding.encoding<operand_index = 2, op_type = matmul, element_types = [f32, f32, f32], user_indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>, affine_map<(d0, d1) -> (d1)>, affine_map<(d0, d1) -> (d0)>], iteration_sizes = [16, 16]>

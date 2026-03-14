@@ -82,6 +82,15 @@ tryReuseExistingAllocation(IREE::Stream::ResourceAllocaOp allocaOp) {
           }
         }
       }
+    } else if (auto scatterOp =
+                   dyn_cast<IREE::Stream::AsyncParameterScatterOp>(workOp)) {
+      if (auto timepoint = scatterOp.getAwaitTimepoint()) {
+        if (auto *definingOp = timepoint.getDefiningOp()) {
+          if (definingOp->getBlock() == allocaOp->getBlock()) {
+            worklist.push_back(definingOp);
+          }
+        }
+      }
     }
   }
   if (!chosenDeallocaOp) {
@@ -108,8 +117,7 @@ tryReuseExistingAllocation(IREE::Stream::ResourceAllocaOp allocaOp) {
 }
 
 struct ReuseAllocationsPass
-    : public IREE::Stream::impl::ReuseAllocationsPassBase<
-          ReuseAllocationsPass> {
+    : IREE::Stream::impl::ReuseAllocationsPassBase<ReuseAllocationsPass> {
   void runOnOperation() override {
     mlir::CallableOpInterface parentOp = getOperation();
     if (!parentOp.getCallableRegion() ||

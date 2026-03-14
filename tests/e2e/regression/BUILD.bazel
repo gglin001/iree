@@ -35,6 +35,7 @@ iree_lit_test_suite(
         "libm_linking.mlir",
         "scalar.mlir",
         "trace_dispatch_tensors.mlir",
+        "transients_test.mlir",
         "unused_args.mlir",
     ],
     cfg = "//tests:lit.cfg.py",
@@ -43,6 +44,7 @@ iree_lit_test_suite(
         "hostonly",
     ],
     tools = [
+        "//tools:iree-compile",
         "//tools:iree-opt",
         "//tools:iree-run-mlir",
         "@llvm-project//lld",
@@ -139,6 +141,8 @@ iree_check_single_backend_test_suite(
 
 iree_check_single_backend_test_suite(
     name = "check_regression_hip",
+    # TODO(kuhar): Drop the timeout after we switch to testing on the actual gfx1250 chip.
+    timeout = "moderate",
     srcs = [
         "dynamic_gather_attention.mlir",
         "linalg_ops_dynamic.mlir",

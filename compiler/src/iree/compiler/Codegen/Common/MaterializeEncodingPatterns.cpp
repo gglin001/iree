@@ -145,7 +145,7 @@ namespace {
 /// Pattern to materialize the encoding for `hal.interface.binding.subspan`
 /// operations.
 struct MaterializeInterfaceBindingEncoding
-    : public OpConversionPattern<IREE::HAL::InterfaceBindingSubspanOp> {
+    : OpConversionPattern<IREE::HAL::InterfaceBindingSubspanOp> {
   using OpConversionPattern<
       IREE::HAL::InterfaceBindingSubspanOp>::OpConversionPattern;
 
@@ -214,7 +214,7 @@ struct MaterializeInterfaceBindingEncoding
 /// Pattern to convert `iree_tensor_ext.dispatch.tensor.load` operation when
 /// materializing the encoding.
 struct MaterializeTensorExtDispatchTensorLoadOp
-    : public OpConversionPattern<IREE::TensorExt::DispatchTensorLoadOp> {
+    : OpConversionPattern<IREE::TensorExt::DispatchTensorLoadOp> {
   using OpConversionPattern<
       IREE::TensorExt::DispatchTensorLoadOp>::OpConversionPattern;
 
@@ -249,7 +249,7 @@ struct MaterializeTensorExtDispatchTensorLoadOp
 /// Pattern to convert `iree_tensor_ext.dispatch.tensor.store` operation when
 /// materializing the encoding.
 struct MaterializeTensorExtDispatchTensorStoreOp
-    : public OpConversionPattern<IREE::TensorExt::DispatchTensorStoreOp> {
+    : OpConversionPattern<IREE::TensorExt::DispatchTensorStoreOp> {
   using OpConversionPattern<
       IREE::TensorExt::DispatchTensorStoreOp>::OpConversionPattern;
 
@@ -283,7 +283,7 @@ struct MaterializeTensorExtDispatchTensorStoreOp
 };
 
 //===---------------------------------------------------------------------===//
-// Patterns for layout transfers. They decompse load/store ops into
+// Patterns for layout transfers. They decompose load/store ops into
 // set_encoding/unset_encoding + load/store, if the converted types mismatch.
 //===---------------------------------------------------------------------===//
 
@@ -299,11 +299,13 @@ static Value generateEncodingTransferOps(RewriterBase &rewriter, Value src,
   Value value = src;
   if (srcType.getEncoding()) {
     value = IREE::Encoding::UnsetEncodingOp::create(
-        rewriter, src.getLoc(), srcType.dropEncoding(), value, dynamicDims);
+        rewriter, src.getLoc(), srcType.dropEncoding(), value, dynamicDims,
+        /*encoding_dims=*/ValueRange{});
   }
   if (destType.getEncoding()) {
-    value = IREE::Encoding::SetEncodingOp::create(rewriter, src.getLoc(),
-                                                  destType, value);
+    value = IREE::Encoding::SetEncodingOp::create(
+        rewriter, src.getLoc(), destType, value,
+        /*encoding_dims=*/ValueRange{});
   }
   return value;
 }
@@ -311,7 +313,7 @@ static Value generateEncodingTransferOps(RewriterBase &rewriter, Value src,
 /// Pattern to convert `iree_tensor_ext.dispatch.tensor.load` operation when
 /// materializing the encoding.
 struct DecomposeMismatchEncodingTensorLoadOp
-    : public OpRewritePattern<IREE::TensorExt::DispatchTensorLoadOp> {
+    : OpRewritePattern<IREE::TensorExt::DispatchTensorLoadOp> {
   using OpRewritePattern<
       IREE::TensorExt::DispatchTensorLoadOp>::OpRewritePattern;
 
@@ -378,7 +380,7 @@ private:
 /// Pattern to convert `iree_tensor_ext.dispatch.tensor.store` operation when
 /// materializing the encoding.
 struct DecomposeMismatchEncodingTensorStoreOp
-    : public OpRewritePattern<IREE::TensorExt::DispatchTensorStoreOp> {
+    : OpRewritePattern<IREE::TensorExt::DispatchTensorStoreOp> {
   using OpRewritePattern<
       IREE::TensorExt::DispatchTensorStoreOp>::OpRewritePattern;
 
@@ -450,7 +452,7 @@ private:
 
 /// Generic pattern to convert an operation.
 template <typename OpTy>
-struct MaterializeOperation : public OpConversionPattern<OpTy> {
+struct MaterializeOperation : OpConversionPattern<OpTy> {
   using OpConversionPattern<OpTy>::OpConversionPattern;
 
   LogicalResult
@@ -460,8 +462,9 @@ struct MaterializeOperation : public OpConversionPattern<OpTy> {
         this->template getTypeConverter<MaterializeEncodingTypeConverter>();
     FailureOr<Operation *> convertedOp =
         lowerOpWithEncoding(rewriter, op, adaptor.getOperands(), *converter);
-    if (failed(convertedOp))
+    if (failed(convertedOp)) {
       return failure();
+    }
 
     rewriter.replaceOp(op, convertedOp.value());
     return success();
@@ -469,7 +472,7 @@ struct MaterializeOperation : public OpConversionPattern<OpTy> {
 };
 
 struct MaterializeOptimizationBarrierOp
-    : public OpConversionPattern<IREE::Util::OptimizationBarrierOp> {
+    : OpConversionPattern<IREE::Util::OptimizationBarrierOp> {
   using OpConversionPattern<
       IREE::Util::OptimizationBarrierOp>::OpConversionPattern;
 
@@ -509,7 +512,7 @@ getReassociationIndices(int outerDims,
 /// Convert iree_linalg_ext.set_encoding op to pack + tile swizzling ops. We use
 /// expand_shape + linalg.transpose to represent a tile swizzling op.
 struct SetEncodingOpLoweringConversion
-    : public OpConversionPattern<IREE::Encoding::SetEncodingOp> {
+    : OpConversionPattern<IREE::Encoding::SetEncodingOp> {
   using Base::Base;
 
   LogicalResult
@@ -543,18 +546,18 @@ struct SetEncodingOpLoweringConversion
             .getShape()
             .take_front(origRank));
     expandShapeShape.append(
-        getExpandedTileShape(encodingInfo.swizzle->expandShape));
+        getExpandedTileShape(encodingInfo.swizzle->expandShape()));
     RankedTensorType expandShapeType =
         encodingOp.getSourceType().clone(expandShapeShape);
 
     SmallVector<ReassociationIndices> reassociation =
-        getReassociationIndices(origRank, encodingInfo.swizzle->expandShape);
+        getReassociationIndices(origRank, encodingInfo.swizzle->expandShape());
     auto expandShapeOp = tensor::ExpandShapeOp::create(
         rewriter, loc, expandShapeType, packedValue.value(), reassociation);
 
     SmallVector<int64_t> transposePerm =
         llvm::to_vector(llvm::seq<int64_t>(0, origRank));
-    for (auto perm : encodingInfo.swizzle->permutation) {
+    for (auto perm : encodingInfo.swizzle->permutation()) {
       transposePerm.push_back(origRank + perm);
     }
     SmallVector<OpFoldResult> transposeResultDims =
@@ -573,7 +576,7 @@ struct SetEncodingOpLoweringConversion
 };
 
 struct UnsetEncodingOpLoweringConversion
-    : public OpConversionPattern<IREE::Encoding::UnsetEncodingOp> {
+    : OpConversionPattern<IREE::Encoding::UnsetEncodingOp> {
   using OpConversionPattern<
       IREE::Encoding::UnsetEncodingOp>::OpConversionPattern;
 
@@ -598,7 +601,7 @@ struct UnsetEncodingOpLoweringConversion
       SmallVector<OpFoldResult> emptyShape =
           tensor::getMixedSizes(rewriter, loc, adaptor.getSource());
       emptyShape.resize(targetRank);
-      for (auto i : getExpandedTileShape(encodingInfo.swizzle->expandShape)) {
+      for (auto i : getExpandedTileShape(encodingInfo.swizzle->expandShape())) {
         emptyShape.push_back(rewriter.getIndexAttr(i));
       }
       auto emptyTensor = tensor::EmptyOp::create(
@@ -607,7 +610,7 @@ struct UnsetEncodingOpLoweringConversion
 
       SmallVector<int64_t> transposePerm =
           llvm::to_vector(llvm::seq<int64_t>(0, targetRank));
-      for (auto perm : encodingInfo.swizzle->permutation) {
+      for (auto perm : encodingInfo.swizzle->permutation()) {
         transposePerm.push_back(targetRank + perm);
       }
       auto invertedTransposePerm = invertPermutationVector(transposePerm);
@@ -616,7 +619,7 @@ struct UnsetEncodingOpLoweringConversion
                                       emptyTensor, invertedTransposePerm);
 
       SmallVector<ReassociationIndices> reassociation = getReassociationIndices(
-          targetRank, encodingInfo.swizzle->expandShape);
+          targetRank, encodingInfo.swizzle->expandShape());
       SmallVector<int64_t> unpackSrcShape(
           srcConvertedType.getShape().take_front(targetRank));
       unpackSrcShape.append(encodingInfo.innerTileSizes.begin(),
@@ -674,8 +677,7 @@ static bool isRankedTensorTypeWithEncoding(Type type) {
   return rankedTensorType.getEncoding() ? true : false;
 }
 
-struct MaterializeFuncReturnOp final
-    : public OpConversionPattern<func::ReturnOp> {
+struct MaterializeFuncReturnOp final : OpConversionPattern<func::ReturnOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(func::ReturnOp op, OpAdaptor adaptor,
@@ -704,8 +706,9 @@ void populateMaterializeEncodingPatterns(
         auto resultType = dyn_cast<IREE::TensorExt::DispatchTensorType>(
             subspanOp.getResult().getType());
         // For types that are not `TensorExt::DispatchTensorType` mark as legal.
-        if (!resultType)
+        if (!resultType) {
           return true;
+        }
         return resultType == typeConverter.convertType(resultType);
       });
   target.addIllegalOp<IREE::Encoding::SetEncodingOp,
@@ -715,8 +718,9 @@ void populateMaterializeEncodingPatterns(
         auto resultType = dyn_cast<IREE::TensorExt::DispatchTensorType>(
             storeOp.getTargetType());
         // For types that are not `TensorExt::DispatchTensorType` mark as legal.
-        if (!resultType)
+        if (!resultType) {
           return true;
+        }
         return resultType == typeConverter.convertType(resultType);
       });
   target.addDynamicallyLegalOp<IREE::TensorExt::DispatchTensorLoadOp>(
@@ -724,12 +728,13 @@ void populateMaterializeEncodingPatterns(
         auto resultType = dyn_cast<IREE::TensorExt::DispatchTensorType>(
             loadOp.getSourceType());
         // For types that are not `TensorExt::DispatchTensorType` mark as legal.
-        if (!resultType)
+        if (!resultType) {
           return true;
+        }
         return resultType == typeConverter.convertType(resultType);
       });
   target.addDynamicallyLegalOp<func::ReturnOp>([](func::ReturnOp returnOp) {
-    return !llvm::any_of(returnOp.getOperandTypes(),
+    return llvm::none_of(returnOp.getOperandTypes(),
                          isRankedTensorTypeWithEncoding);
   });
 

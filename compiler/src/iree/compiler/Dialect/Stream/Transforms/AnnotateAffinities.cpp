@@ -126,8 +126,7 @@ static void annotateFuncOp(FunctionOpInterface funcOp,
 }
 
 struct AnnotateAffinitiesPass
-    : public IREE::Stream::impl::AnnotateAffinitiesPassBase<
-          AnnotateAffinitiesPass> {
+    : IREE::Stream::impl::AnnotateAffinitiesPassBase<AnnotateAffinitiesPass> {
   void runOnOperation() override {
     // Run affinity analysis on the whole module.
     AffinityAnalysis affinityAnalysis(getOperation());
@@ -137,8 +136,9 @@ struct AnnotateAffinitiesPass
 
     // Annotate all ops with derived affinities.
     for (auto &op : getOperation().getOps()) {
-      if (op.hasTrait<OpTrait::IREE::Util::ObjectLike>())
+      if (op.hasTrait<OpTrait::IREE::Util::ObjectLike>()) {
         continue;
+      }
       if (auto globalOp = dyn_cast<IREE::Util::GlobalOpInterface>(op)) {
         annotateGlobalOp(globalOp, affinityAnalysis);
       } else if (auto funcOp = dyn_cast<FunctionOpInterface>(op)) {

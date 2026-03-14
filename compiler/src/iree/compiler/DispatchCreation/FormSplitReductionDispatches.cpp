@@ -6,9 +6,11 @@
 
 #include "iree/compiler/DispatchCreation/Passes.h"
 
+#include "iree/compiler/Codegen/Common/Transforms.h"
 #include "iree/compiler/Dialect/Flow/IR/FlowOps.h"
 #include "iree/compiler/Dialect/Flow/Transforms/RegionOpUtils.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
+#include "iree/compiler/Dialect/LinalgExt/Utils/Utils.h"
 #include "iree/compiler/Dialect/TensorExt/IR/TensorExtOps.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -28,7 +30,7 @@ namespace mlir::iree_compiler::DispatchCreation {
 namespace {
 
 struct FormSplitReductionDispatchesPass final
-    : public impl::FormSplitReductionDispatchesPassBase<
+    : impl::FormSplitReductionDispatchesPassBase<
           FormSplitReductionDispatchesPass> {
   using Base::Base;
   void runOnOperation() override;
@@ -86,9 +88,13 @@ tileOpAndWrapInDispatch(RewriterBase &rewriter, TilingInterface op,
   scf::SCFTileAndFuseOptions tileAndFuseOptions;
   // Only fuse along the dest operand.
   scf::SCFTileAndFuseOptions::ControlFnTy fusionControlFn =
-      [](tensor::ExtractSliceOp, OpResult result, bool isDestArg)
+      [](tensor::ExtractSliceOp extractOp, OpResult result, bool isDestArg)
       -> std::optional<scf::SCFTileAndFuseOptions::ControlFnResult> {
     if (isDestArg) {
+      return scf::SCFTileAndFuseOptions::ControlFnResult{false};
+    }
+    Operation *extractSource = extractOp.getSource().getDefiningOp();
+    if (extractSource && IREE::LinalgExt::isBitExtendOp(extractSource)) {
       return scf::SCFTileAndFuseOptions::ControlFnResult{false};
     }
     return std::nullopt;
@@ -96,16 +102,17 @@ tileOpAndWrapInDispatch(RewriterBase &rewriter, TilingInterface op,
   tileAndFuseOptions.setFusionControlFn(fusionControlFn);
   tileAndFuseOptions.setTilingOptions(std::move(options));
 
+  MLIRContext *context = rewriter.getContext();
+  RewritePatternSet cleanupPatterns(context);
+  populateFoldExtractSliceOfBroadcastPattern(cleanupPatterns);
   if (fusePad) {
-    MLIRContext *context = rewriter.getContext();
-    RewritePatternSet cleanupPatterns(context);
     // When fusing pads we do not want to generate zeroSliceGuards.
     cleanupPatterns.insert<linalg::ExtractSliceOfPadTensorSwapPattern>(
         context,
         [](tensor::ExtractSliceOp) { return /*zeroSliceGuard=*/false; });
-    tileAndFuseOptions.cleanupPatterns =
-        FrozenRewritePatternSet(std::move(cleanupPatterns));
   }
+  tileAndFuseOptions.cleanupPatterns =
+      FrozenRewritePatternSet(std::move(cleanupPatterns));
 
   FailureOr<scf::SCFTileAndFuseResult> result =
       scf::tileConsumerAndFuseProducersUsingSCF(rewriter, op,

@@ -25,7 +25,7 @@ using mlir::bufferization::replaceOpWithNewBufferizedOp;
 namespace {
 
 struct TransferGatherOpInterface
-    : public BufferizableOpInterface::ExternalModel<
+    : BufferizableOpInterface::ExternalModel<
           TransferGatherOpInterface, IREE::VectorExt::TransferGatherOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
@@ -51,17 +51,64 @@ struct TransferGatherOpInterface
                           const BufferizationOptions &options,
                           BufferizationState &state) const {
     auto gatherOp = cast<IREE::VectorExt::TransferGatherOp>(op);
-    assert(isa<TensorType>(gatherOp.getShapedType()) &&
+    assert(isa<TensorType>(gatherOp.getBase().getType()) &&
            "only tensor types expected");
     FailureOr<Value> buffer =
         getBuffer(rewriter, gatherOp.getBase(), options, state);
-    if (failed(buffer))
+    if (failed(buffer)) {
       return failure();
+    }
     replaceOpWithNewBufferizedOp<IREE::VectorExt::TransferGatherOp>(
-        rewriter, gatherOp, gatherOp.getVectorType(), *buffer,
-        gatherOp.getIndices(), gatherOp.getIndexVecs(), gatherOp.getIndexed(),
-        gatherOp.getIndexedMaps(), gatherOp.getPermutationMap(),
-        gatherOp.getPadding(), gatherOp.getMask(), gatherOp.getInBoundsAttr());
+        rewriter, gatherOp, cast<VectorType>(gatherOp.getVector().getType()),
+        *buffer, gatherOp.getOffsets(), gatherOp.getIndexVecs(),
+        gatherOp.getIndexingMapsAttr(), gatherOp.getPadding(),
+        gatherOp.getMask());
+    return success();
+  }
+};
+
+struct TransferScatterOpInterface
+    : BufferizableOpInterface::ExternalModel<
+          TransferScatterOpInterface, IREE::VectorExt::TransferScatterOp> {
+  bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
+                              const AnalysisState &state) const {
+    auto scatterOp = cast<IREE::VectorExt::TransferScatterOp>(op);
+    return &opOperand == &scatterOp.getBaseMutable();
+  }
+
+  bool bufferizesToMemoryWrite(Operation *op, OpOperand &opOperand,
+                               const AnalysisState &state) const {
+    auto scatterOp = cast<IREE::VectorExt::TransferScatterOp>(op);
+    return &opOperand == &scatterOp.getBaseMutable();
+  }
+
+  bufferization::AliasingValueList
+  getAliasingValues(Operation *op, OpOperand &opOperand,
+                    const AnalysisState &state) const {
+    auto scatterOp = cast<IREE::VectorExt::TransferScatterOp>(op);
+    if (&opOperand == &scatterOp.getBaseMutable() && scatterOp.getResult()) {
+      return {{scatterOp.getResult(), BufferRelation::Equivalent}};
+    }
+    return {};
+  }
+
+  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
+                          const BufferizationOptions &options,
+                          BufferizationState &state) const {
+    auto scatterOp = cast<IREE::VectorExt::TransferScatterOp>(op);
+    assert(isa<TensorType>(scatterOp.getBase().getType()) &&
+           "only tensor types expected");
+    FailureOr<Value> buffer =
+        getBuffer(rewriter, scatterOp.getBase(), options, state);
+    if (failed(buffer)) {
+      return failure();
+    }
+    // Create a new scatter op with memref base (no result).
+    IREE::VectorExt::TransferScatterOp::create(
+        rewriter, scatterOp.getLoc(), /*resultTypes=*/TypeRange{}, *buffer,
+        scatterOp.getVector(), scatterOp.getOffsets(), scatterOp.getIndexVecs(),
+        scatterOp.getIndexingMapsAttr(), scatterOp.getMask());
+    bufferization::replaceOpWithBufferizedValues(rewriter, op, *buffer);
     return success();
   }
 };
@@ -69,10 +116,11 @@ struct TransferGatherOpInterface
 } // namespace
 
 void registerIREEVectorExtBufferizationInterfaces(DialectRegistry &registry) {
-  registry.addExtension(
-      +[](MLIRContext *context, IREEVectorExtDialect *dialect) {
-        TransferGatherOp::attachInterface<TransferGatherOpInterface>(*context);
-      });
+  registry.addExtension(+[](MLIRContext *context,
+                            IREEVectorExtDialect *dialect) {
+    TransferGatherOp::attachInterface<TransferGatherOpInterface>(*context);
+    TransferScatterOp::attachInterface<TransferScatterOpInterface>(*context);
+  });
 }
 
 } // namespace mlir::iree_compiler::IREE::VectorExt

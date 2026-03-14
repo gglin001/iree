@@ -118,6 +118,16 @@ declare_mlir_dialect_python_bindings(
   DIALECT_NAME iree_gpu
 )
 
+declare_mlir_dialect_python_bindings(
+  ADD_TO_PARENT IREEPythonSources.Dialects
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/iree/compiler"
+  TD_FILE dialects/TensorExtBinding.td
+  GEN_ENUM_BINDINGS
+  SOURCES dialects/iree_tensor_ext.py
+  DIALECT_NAME iree_tensor_ext
+)
+
+
 declare_mlir_dialect_extension_python_bindings(
   ADD_TO_PARENT IREEPythonSources.Dialects
   ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/iree/compiler"
@@ -156,6 +166,7 @@ declare_mlir_python_sources(IREECompilerAPIPythonTools
     tools/import_onnx/importer_externalization_overrides.py
     tools/ir_tool/__main__.py
     tools/scripts/iree_compile/__main__.py
+    tools/scripts/iree_link/__main__.py
     tools/scripts/iree_opt/__main__.py
 )
 
@@ -203,6 +214,8 @@ declare_mlir_python_extension(IREECompilerPythonExtensions.CompilerDialects
     iree_compiler_API_SharedImpl
   PRIVATE_LINK_LIBS
     LLVMSupport
+    MLIRIR
+    MLIRSupport
 )
 
 ################################################################################
@@ -228,6 +241,7 @@ set(_SOURCE_COMPONENTS
   MLIRPythonSources.Dialects.gpu
   MLIRPythonSources.Dialects.linalg
   MLIRPythonSources.Dialects.llvm
+  MLIRPythonSources.Dialects.loop_transform
   MLIRPythonSources.Dialects.math
   MLIRPythonSources.Dialects.memref
   MLIRPythonSources.Dialects.nvvm
@@ -235,6 +249,7 @@ set(_SOURCE_COMPONENTS
   MLIRPythonSources.Dialects.rocdl
   MLIRPythonSources.Dialects.scf
   MLIRPythonSources.Dialects.shape
+  MLIRPythonSources.Dialects.smt
   MLIRPythonSources.Dialects.structured_transform
   MLIRPythonSources.Dialects.tensor
   MLIRPythonSources.Dialects.tosa
@@ -243,11 +258,10 @@ set(_SOURCE_COMPONENTS
   MLIRPythonSources.Dialects.transform.interpreter
   MLIRPythonSources.Dialects.vector
   MLIRPythonSources.Dialects.vector_transform
-  MLIRPythonSources.Dialects.loop_transform
 
   # iree-dialects project.
-  IREEDialectsPythonSources
   IREEDialectsPythonExtensions
+  IREEDialectsPythonSources
 )
 
 add_mlir_python_modules(IREECompilerPythonModules

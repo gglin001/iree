@@ -17,8 +17,11 @@ ALL_SRCS = enforce_glob(
     [
         "arg_compare.mlir",
         "attention.mlir",
+        "attention_i1_mask.mlir",
+        "dynamic_attention.mlir",
         "gather.mlir",
-        "map_scatter.mlir",
+        "map_load.mlir",
+        "map_store.mlir",
         "scan.mlir",
         "scatter.mlir",
         "sort.mlir",
@@ -27,9 +30,6 @@ ALL_SRCS = enforce_glob(
         "winograd_output.mlir",
     ],
     include = ["*.mlir"],
-    exclude = [
-        "attention_i1_mask.mlir",
-    ],
 )
 
 iree_check_single_backend_test_suite(
@@ -45,30 +45,15 @@ iree_check_single_backend_test_suite(
     target_backend = "llvm-cpu",
 )
 
-iree_check_single_backend_test_suite(
-    name = "check_llvm-cpu_local-task_i1",
-    srcs = [
-        "attention_i1_mask.mlir",
-    ],
-    compiler_flags = [
-        "--iree-llvmcpu-target-cpu=generic",
-        "--iree-experimental-packed-i1-storage",
-    ],
-    driver = "local-task",
-    tags = [
-        # attention fails with a wasm target, just disable the tests there for now
-        #   error: Yield operand #2 is not equivalent to the corresponding iter bbArg
-        "nowasm",
-    ],
-    target_backend = "llvm-cpu",
-)
-
 VMVX_SRCS = enforce_glob(
     # keep sorted
     [
         "arg_compare.mlir",
+        "attention.mlir",
+        "dynamic_attention.mlir",
         "gather.mlir",
-        "map_scatter.mlir",
+        "map_load.mlir",
+        "map_store.mlir",
         "scan.mlir",
         "scatter.mlir",
         "sort.mlir",
@@ -78,7 +63,6 @@ VMVX_SRCS = enforce_glob(
     ],
     include = ["*.mlir"],
     exclude = [
-        "attention.mlir",
         "attention_i1_mask.mlir",
     ],
 )
@@ -106,7 +90,9 @@ LLVM_GPU_SRCS = enforce_glob(
     exclude = [
         "attention.mlir",
         "attention_i1_mask.mlir",
-        "map_scatter.mlir",
+        "dynamic_attention.mlir",
+        "map_load.mlir",
+        "map_store.mlir",
     ],
 )
 
@@ -130,8 +116,10 @@ ROCM_HIP_SRCS = enforce_glob(
     # keep sorted
     [
         "arg_compare.mlir",
+        "attention.mlir",
         "gather.mlir",
-        "map_scatter.mlir",
+        "map_load.mlir",
+        "map_store.mlir",
         "scan.mlir",
         "scatter.mlir",
         "sort.mlir",
@@ -141,8 +129,8 @@ ROCM_HIP_SRCS = enforce_glob(
     include = ["*.mlir"],
     exclude = [
         "top-k.mlir",
-        "attention.mlir",
         "attention_i1_mask.mlir",
+        "dynamic_attention.mlir",
     ],
 )
 
@@ -170,7 +158,9 @@ iree_check_single_backend_test_suite(
         exclude = [
             "attention.mlir",
             "attention_i1_mask.mlir",
-            "map_scatter.mlir",
+            "dynamic_attention.mlir",
+            "map_load.mlir",
+            "map_store.mlir",
             "top-k.mlir",
         ],
     ),
@@ -185,9 +175,12 @@ iree_check_single_backend_test_suite(
         [
             "arg_compare.mlir",
             "gather.mlir",
+            "map_load.mlir",
+            "map_store.mlir",
             "scan.mlir",
             "scatter.mlir",
             "sort.mlir",
+            "top-k.mlir",
             "winograd_input.mlir",
             "winograd_output.mlir",
         ],
@@ -195,8 +188,7 @@ iree_check_single_backend_test_suite(
         exclude = [
             "attention.mlir",
             "attention_i1_mask.mlir",
-            "map_scatter.mlir",
-            "top-k.mlir",
+            "dynamic_attention.mlir",
         ],
     ),
     driver = "vulkan",

@@ -371,7 +371,7 @@ VmModule VmModule::WrapBuffer(VmInstance* instance, py::object buffer_obj,
   iree_allocator_t deallocator{/*self=*/state, /*ctl=*/ctl_fn};
 
   auto status = iree_vm_bytecode_module_create(
-      instance->raw_ptr(),
+      instance->raw_ptr(), IREE_VM_BYTECODE_MODULE_FLAG_NONE,
       {static_cast<const uint8_t*>(buffer_info.view().buf),
        static_cast<iree_host_size_t>(buffer_info.view().len)},
       deallocator, iree_allocator_system(), &module);
@@ -823,11 +823,11 @@ void SetupVmBindings(nanobind::module_ m) {
       .value("EXPORT_OPTIONAL", IREE_VM_FUNCTION_LINKAGE_EXPORT_OPTIONAL)
       .export_values();
 
-  auto vm_buffer = py::class_<VmBuffer>(m, "VmBuffer");
+  auto vm_buffer =
+      py::class_<VmBuffer>(m, "VmBuffer", buffer_protocol_slots<VmBuffer>());
   VmRef::BindRefProtocol(vm_buffer, iree_vm_buffer_type,
                          iree_vm_buffer_retain_ref, iree_vm_buffer_deref,
                          iree_vm_buffer_isa);
-  BindBufferProtocol<VmBuffer>(vm_buffer);
   vm_buffer
       .def(
           "__init__",

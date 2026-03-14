@@ -172,13 +172,15 @@ static ParseResult parseShapedOperandList(
     valueTypes.emplace_back();
     if (failed(parser.parseOperand(values.back())) ||
         failed(parser.parseColon()) ||
-        failed(parser.parseType(valueTypes.back())))
+        failed(parser.parseType(valueTypes.back()))) {
       return failure();
+    }
     if (int64_t dynamicDimCount =
             cast<ShapedType>(valueTypes.back()).getNumDynamicDims()) {
       if (failed(parser.parseOperandList(valueDims, dynamicDimCount,
-                                         AsmParser::Delimiter::Braces)))
+                                         AsmParser::Delimiter::Braces))) {
         return failure();
+      }
     }
   } while (succeeded(parser.parseOptionalComma()));
   return success();
@@ -200,6 +202,41 @@ static void printShapedOperandList(OpAsmPrinter &p, Operation *op,
       p << "}";
     }
   });
+}
+
+//===----------------------------------------------------------------------===//
+// custom<ParameterReference>($scope, $key)
+//===----------------------------------------------------------------------===//
+// Parses/prints a parameter reference using SSA value operands:
+//   %scope::%key   (with scope)
+//   %key           (without scope)
+
+static ParseResult
+parseParameterReference(OpAsmParser &parser,
+                        std::optional<OpAsmParser::UnresolvedOperand> &scope,
+                        OpAsmParser::UnresolvedOperand &key) {
+  OpAsmParser::UnresolvedOperand firstOperand;
+  if (failed(parser.parseOperand(firstOperand))) {
+    return failure();
+  }
+  if (succeeded(parser.parseOptionalColon())) {
+    scope = firstOperand;
+    if (failed(parser.parseColon()) || failed(parser.parseOperand(key))) {
+      return failure();
+    }
+  } else {
+    key = firstOperand;
+  }
+  return success();
+}
+
+static void printParameterReference(OpAsmPrinter &p, Operation *op, Value scope,
+                                    Value key) {
+  if (scope) {
+    p.printOperand(scope);
+    p << "::";
+  }
+  p.printOperand(key);
 }
 
 //===----------------------------------------------------------------------===//
@@ -248,13 +285,15 @@ static ParseResult parseWorkgroupCountRegionWithoutKeyword(OpAsmParser &parser,
 static void printWorkgroupCountRegionWithoutKeyword(OpAsmPrinter &p,
                                                     Operation *op,
                                                     Region &body) {
-  if (body.empty())
+  if (body.empty()) {
     return;
+  }
   p << "(";
   auto args = body.getArguments();
   for (unsigned i = 0; i < args.size(); ++i) {
-    if (i > 0)
+    if (i > 0) {
       p << ", ";
+    }
     p.printRegionArgument(args[i]);
   }
   p << ")";
@@ -277,8 +316,9 @@ static ParseResult parseWorkgroupCountRegion(OpAsmParser &parser,
 
 static void printWorkgroupCountRegion(OpAsmPrinter &p, Operation *op,
                                       Region &body) {
-  if (body.empty())
+  if (body.empty()) {
     return;
+  }
   p << "workgroups";
   printWorkgroupCountRegionWithoutKeyword(p, op, body);
 }
@@ -293,8 +333,9 @@ static ParseResult parseDispatchWorkgroupsCountRegion(OpAsmParser &parser,
 
 static void printDispatchWorkgroupsCountRegion(OpAsmPrinter &p, Operation *op,
                                                Region &body) {
-  if (body.empty())
+  if (body.empty()) {
     return;
+  }
   p << " count";
   printWorkgroupCountRegionWithoutKeyword(p, op, body);
 }
@@ -309,16 +350,19 @@ static ParseResult parseDispatchEntryPoints(OpAsmParser &parser,
   if (succeeded(parser.parseOptionalLBrace())) {
     do {
       SymbolRefAttr entryPointAttr;
-      if (failed(parser.parseAttribute(entryPointAttr)))
+      if (failed(parser.parseAttribute(entryPointAttr))) {
         return failure();
+      }
       entryPointAttrs.push_back(entryPointAttr);
     } while (succeeded(parser.parseOptionalComma()));
-    if (failed(parser.parseRBrace()))
+    if (failed(parser.parseRBrace())) {
       return failure();
+    }
   } else {
     SymbolRefAttr entryPointAttr;
-    if (failed(parser.parseAttribute(entryPointAttr)))
+    if (failed(parser.parseAttribute(entryPointAttr))) {
       return failure();
+    }
     entryPointAttrs.push_back(entryPointAttr);
   }
   entryPointAttrsArray = parser.getBuilder().getArrayAttr(entryPointAttrs);
@@ -388,11 +432,12 @@ LogicalResult DispatchRegionOp::verify() {
              << returnOp.getNumOperands() << ")";
     }
     for (const auto [resultType, returnType] :
-         llvm::zip_equal(getResultTypes(), returnOp->getOperandTypes()))
+         llvm::zip_equal(getResultTypes(), returnOp->getOperandTypes())) {
       if (resultType != returnType) {
         return returnOp->emitOpError()
                << "operand types do not match with parent results";
       }
+    }
   }
 
   // Make sure that all returned values are ranked tensors.
@@ -423,36 +468,45 @@ ParseResult DispatchRegionOp::parse(OpAsmParser &parser,
   (void)workloadOperandsLoc;
   if (succeeded(parser.parseOptionalLSquare())) {
     workloadOperandsLoc = parser.getCurrentLocation();
-    if (parser.parseOperandList(workloadOperands))
+    if (parser.parseOperandList(workloadOperands)) {
       return failure();
-    if (parser.parseRSquare())
+    }
+    if (parser.parseRSquare()) {
       return failure();
+    }
   }
   if (succeeded(parser.parseOptionalArrow())) {
     ParseResult typeListResult =
         parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Paren, [&]() {
-          if (parser.parseType(resultTypes.emplace_back()))
+          if (parser.parseType(resultTypes.emplace_back())) {
             return failure();
+          }
           auto shapedType = dyn_cast<ShapedType>(resultTypes.back());
-          if (!shapedType)
+          if (!shapedType) {
             return success();
-          if (shapedType.hasStaticShape())
+          }
+          if (shapedType.hasStaticShape()) {
             return success();
+          }
           SmallVector<OpAsmParser::UnresolvedOperand> dynamicDims;
           if (parser.parseOperandList(dynamicDims,
                                       shapedType.getNumDynamicDims(),
-                                      OpAsmParser::Delimiter::Braces))
+                                      OpAsmParser::Delimiter::Braces)) {
             return failure();
+          }
           allOperands.append(dynamicDims.begin(), dynamicDims.end());
           return success();
         });
-    if (typeListResult)
+    if (typeListResult) {
       return failure();
+    }
   }
-  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes)) {
     return failure();
-  if (parser.parseRegion(*bodyRegion))
+  }
+  if (parser.parseRegion(*bodyRegion)) {
     return failure();
+  }
 
   if (parseDispatchWorkgroupsCountRegion(parser, *workloadCountRegion)) {
     return failure();
@@ -466,8 +520,9 @@ ParseResult DispatchRegionOp::parse(OpAsmParser &parser,
                            static_cast<int32_t>(workloadOperands.size())}));
 
   if (parser.resolveOperands(allOperands, parser.getBuilder().getIndexType(),
-                             result.operands))
+                             result.operands)) {
     return failure();
+  }
   if (parser.resolveOperands(workloadOperands,
                              parser.getBuilder().getIndexType(),
                              workloadOperandsLoc, result.operands)) {
@@ -498,8 +553,9 @@ void DispatchRegionOp::print(OpAsmPrinter &p) {
         resultDimCounter += shapedType.getNumDynamicDims();
       }
     }
-    if (it.index() < getNumResults() - 1)
+    if (it.index() < getNumResults() - 1) {
       p << ", ";
+    }
   }
   p << ")";
   p.printOptionalAttrDictWithKeyword((*this)->getAttrs(), elidedAttrs);
@@ -519,9 +575,11 @@ void DispatchRegionOp::print(OpAsmPrinter &p) {
 
 ValueRange DispatchRegionOp::getResultDynamicDims(unsigned idx) {
   unsigned counter = 0;
-  for (unsigned i = 0; i < idx; ++i)
-    if (auto shapedType = dyn_cast<ShapedType>(getResultTypes()[i]))
+  for (unsigned i = 0; i < idx; ++i) {
+    if (auto shapedType = dyn_cast<ShapedType>(getResultTypes()[i])) {
       counter += shapedType.getNumDynamicDims();
+    }
+  }
   auto shapedType = dyn_cast<ShapedType>(getResultTypes()[idx]);
   return getResultDims().slice(counter,
                                shapedType ? shapedType.getNumDynamicDims() : 0);
@@ -590,8 +648,9 @@ bool dropUnusedAndRedundantDispatchRegionResults(
          "expected that all dynamic dims were processed");
 
   // Nothing to do if all results are used.
-  if (droppedResultValues.empty())
+  if (droppedResultValues.empty()) {
     return false;
+  }
 
   // Create new region and move over the body.
   auto newRegionOp =
@@ -626,8 +685,7 @@ bool dropUnusedAndRedundantDispatchRegionResults(
   return true;
 }
 
-struct DispatchRegionDropUnusedResults
-    : public OpRewritePattern<DispatchRegionOp> {
+struct DispatchRegionDropUnusedResults : OpRewritePattern<DispatchRegionOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(DispatchRegionOp regionOp,
@@ -850,12 +908,14 @@ LogicalResult DispatchWorkgroupsOp::verify() {
     return success();
   };
   for (auto type : getOperandTypes()) {
-    if (failed(verifyIOType(type)))
+    if (failed(verifyIOType(type))) {
       return failure();
+    }
   }
   for (auto type : getResultTypes()) {
-    if (failed(verifyIOType(type)))
+    if (failed(verifyIOType(type))) {
       return failure();
+    }
   }
 
   // Workgroup count region is optional.
@@ -879,22 +939,26 @@ BlockArgument DispatchWorkgroupsOp::getOutputBlockArgument(unsigned idx) {
   // Some outputs are tied to inputs and share their block arguments.
   int64_t tiedOperand =
       cast<IntegerAttr>((*tiedOperands)[idx]).getValue().getSExtValue();
-  if (tiedOperand != IREE::Util::TiedOpInterface::kUntiedIndex)
+  if (tiedOperand != IREE::Util::TiedOpInterface::kUntiedIndex) {
     // This output is tied to an input.
     return getInputBlockArgument(tiedOperand);
+  }
 
   unsigned nextOutArgIdx = getArguments().size();
-  for (unsigned i = 0; i < idx; ++i)
+  for (unsigned i = 0; i < idx; ++i) {
     if (cast<IntegerAttr>((*tiedOperands)[i]).getValue().getSExtValue() ==
-        IREE::Util::TiedOpInterface::kUntiedIndex)
+        IREE::Util::TiedOpInterface::kUntiedIndex) {
       nextOutArgIdx++;
+    }
+  }
   return getWorkgroupBody().getArguments()[nextOutArgIdx];
 }
 
 SmallVector<BlockArgument> DispatchWorkgroupsOp::getOutputBlockArguments() {
   SmallVector<BlockArgument> result;
-  for (unsigned i = 0; i < getNumResults(); ++i)
+  for (unsigned i = 0; i < getNumResults(); ++i) {
     result.push_back(getOutputBlockArgument(i));
+  }
   return result;
 }
 
@@ -944,20 +1008,24 @@ refineTensorAccess(Value value, IREE::TensorExt::DispatchTensorType type) {
     bool hasWrites = false;
     for (OpOperand &uses : value.getUses()) {
       TypeSwitch<Operation *>(uses.getOwner())
-          .Case<IREE::TensorExt::DispatchTensorLoadOp>(
-              [&](auto loadOp) { hasReads = true; })
-          .Case<IREE::TensorExt::DispatchTensorStoreOp>(
-              [&](auto storeOp) { hasWrites = true; })
+          .Case([&](IREE::TensorExt::DispatchTensorLoadOp loadOp) {
+            hasReads = true;
+          })
+          .Case([&](IREE::TensorExt::DispatchTensorStoreOp storeOp) {
+            hasWrites = true;
+          })
           .Default([&](auto op) {
             // Treat unknown ops conservatively as read/write.
             hasReads = true;
             hasWrites = true;
           });
     }
-    if (hasReads && !hasWrites)
+    if (hasReads && !hasWrites) {
       tensorAccess = IREE::TensorExt::TensorAccess::ReadOnly;
-    if (!hasReads && hasWrites)
+    }
+    if (!hasReads && hasWrites) {
       tensorAccess = IREE::TensorExt::TensorAccess::WriteOnly;
+    }
   }
   return tensorAccess;
 }
@@ -1071,16 +1139,18 @@ DispatchWorkgroupsOp::cloneReplacementExcludingOperandsAndResults(
   auto erasedArguments = llvm::to_vector(excludedOperandIndices);
   for (unsigned i = baseResultIndex, e = newBody.getNumArguments(); i != e;
        ++i) {
-    if (!is_contained(excludedResultIndices, i - baseResultIndex))
+    if (!is_contained(excludedResultIndices, i - baseResultIndex)) {
       continue;
+    }
     auto arg = newBody.front().getArgument(i);
     eraseArgUseTree(arg, rewriter);
     erasedArguments.push_back(i);
   }
   auto &block = newBody.front();
   BitVector eraseIndices(block.getNumArguments());
-  for (auto i : erasedArguments)
+  for (auto i : erasedArguments) {
     eraseIndices.set(i);
+  }
   block.eraseArguments(eraseIndices);
 
   return newOp;
@@ -1093,8 +1163,9 @@ DispatchWorkgroupsOp::getTiedOperandsIndexAndLength() {
 
 SmallVector<int64_t> DispatchWorkgroupsOp::getTiedOperandsAsIntegerList() {
   ArrayAttr attr = getTiedOperandsAttr();
-  if (!attr)
+  if (!attr) {
     return {};
+  }
   return llvm::map_to_vector(attr, [](Attribute intAttr) {
     return cast<IntegerAttr>(intAttr).getInt();
   });
@@ -1164,7 +1235,7 @@ void ExecutableExportOp::build(OpBuilder &builder, OperationState &state,
         builder.getStringAttr(sym_name), function_ref);
 }
 
-LogicalResult ExecutableExportOp::verify() {
+LogicalResult ExecutableExportOp::verifyRegions() {
   // Workgroup count region is optional.
   if (!getWorkgroupCount().empty()) {
     // Verify the return ops all provide XYZ values.
@@ -1333,8 +1404,8 @@ void FuncOp::build(OpBuilder &builder, OperationState &state, StringRef name,
   }
   state.addRegion();
   if (!argAttrs.empty() || !resAttrs.empty()) {
-    assert(type.getNumInputs() == argAttrs.size());
-    assert(type.getNumResults() == resAttrs.size());
+    assert(argAttrs.empty() || (type.getNumInputs() == argAttrs.size()));
+    assert(resAttrs.empty() || (type.getNumResults() == resAttrs.size()));
     call_interface_impl::addArgAndResultAttrs(
         builder, state, argAttrs, resAttrs, builder.getStringAttr("arg_attrs"),
         builder.getStringAttr("res_attrs"));
@@ -1747,6 +1818,23 @@ ValueRange TensorTraceOp::getOperandDynamicDims(unsigned idx) {
 
 ValueRange TensorTraceOp::getResultDynamicDims(unsigned idx) {
   return ValueRange{};
+}
+
+//===----------------------------------------------------------------------===//
+// flow.parameter.write
+//===----------------------------------------------------------------------===//
+
+Value ParameterWriteOp::getTiedResult(unsigned resultIndex) {
+  return IREE::Util::TiedOpInterface::findTiedBaseValue(getSource());
+}
+
+::std::optional<unsigned>
+ParameterWriteOp::getTiedResultOperandIndex(unsigned resultIndex) {
+  return {0}; // result tied to source
+}
+
+SmallVector<int64_t> ParameterWriteOp::getTiedResultOperandIndices() {
+  return {0}; // result tied to source
 }
 
 //===----------------------------------------------------------------------===//

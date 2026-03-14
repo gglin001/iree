@@ -65,7 +65,7 @@ pdl.pattern @annotate_matmul_like_f8E4M3FNUZ_medium_expanded : benefit(1) {
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{
         workgroup = [1, 128, 256, 0],
-        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8,38>
+        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>
       }>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
@@ -74,7 +74,6 @@ pdl.pattern @annotate_matmul_like_f8E4M3FNUZ_medium_expanded : benefit(1) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -157,7 +156,7 @@ pdl.pattern @annotate_matmul_like_f8E4M3FNUZ_large_expanded : benefit(2) {
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{
         workgroup = [1, 256, 256, 0],
-        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8,38>
+        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>
       }>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
@@ -166,7 +165,6 @@ pdl.pattern @annotate_matmul_like_f8E4M3FNUZ_large_expanded : benefit(2) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -243,7 +241,7 @@ pdl.pattern @annotate_matmul_like_f16_large : benefit(1) {
     %config_name = pdl.attribute = "compilation_info"
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{workgroup = [256, 256, 0],
-                                                   workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8,38>}>,
+                                                   workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>}>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
         // This strategy manually prefetches and eliminates bank conflicts on LDS
@@ -251,7 +249,6 @@ pdl.pattern @annotate_matmul_like_f16_large : benefit(1) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -331,7 +328,7 @@ pdl.pattern @annotate_matmul_like_f16_medium_expanded : benefit(1) {
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{
         workgroup = [1, 128, 256, 0],
-        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8,38>
+        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>
         }>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
@@ -340,7 +337,6 @@ pdl.pattern @annotate_matmul_like_f16_medium_expanded : benefit(1) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -421,7 +417,7 @@ pdl.pattern @annotate_matmul_like_f16_large_expanded : benefit(2) {
     %config_name = pdl.attribute = "compilation_info"
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{workgroup = [1, 256, 256, 0],
-                                                   workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8,38>}>,
+                                                   workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>}>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
         // This strategy manually prefetches and eliminates bank conflicts on LDS
@@ -429,7 +425,6 @@ pdl.pattern @annotate_matmul_like_f16_large_expanded : benefit(2) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -506,7 +501,7 @@ pdl.pattern @annotate_matmul_like_bf16_large : benefit(1) {
     %config_name = pdl.attribute = "compilation_info"
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{workgroup = [256, 256, 0],
-                                                   workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8,38>}>,
+                                                   workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>}>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
         // This strategy manually prefetches and eliminates bank conflicts on LDS
@@ -514,7 +509,6 @@ pdl.pattern @annotate_matmul_like_bf16_large : benefit(1) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -598,7 +592,7 @@ pdl.pattern @annotate_matmul_like_bf16_medium_expanded : benefit(1) {
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{
         workgroup = [1, 128, 256, 0],
-        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8,38>
+        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>
         }>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
@@ -607,7 +601,6 @@ pdl.pattern @annotate_matmul_like_bf16_medium_expanded : benefit(1) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -682,7 +675,7 @@ pdl.pattern @annotate_matmul_like_bf16_large_expanded : benefit(2) {
     %config_name = pdl.attribute = "compilation_info"
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{workgroup = [1, 256, 256, 0],
-                                                   workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8,38>}>,
+                                                   workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>}>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
         // This strategy manually prefetches and eliminates bank conflicts on LDS
@@ -690,7 +683,6 @@ pdl.pattern @annotate_matmul_like_bf16_large_expanded : benefit(2) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -738,7 +730,8 @@ pdl.pattern @annotate_inner_tiled_f8E4M3FNUZ_medium : benefit(1) {
     %config_name = pdl.attribute = "compilation_info"
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{
-        workgroup = [1, 1, 0]
+        workgroup = [1, 1, 0],
+        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>
       }>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
@@ -747,7 +740,6 @@ pdl.pattern @annotate_inner_tiled_f8E4M3FNUZ_medium : benefit(1) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -795,7 +787,8 @@ pdl.pattern @annotate_inner_tiled_f8E4M3FNUZ_large : benefit(2) {
     %config_name = pdl.attribute = "compilation_info"
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{
-        workgroup = [1, 1, 0]
+        workgroup = [1, 1, 0],
+        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>
       }>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
@@ -804,7 +797,6 @@ pdl.pattern @annotate_inner_tiled_f8E4M3FNUZ_large : benefit(2) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>
@@ -852,7 +844,8 @@ pdl.pattern @annotate_inner_tiled_f16_large : benefit(1) {
     %config_name = pdl.attribute = "compilation_info"
     %config = pdl.attribute = #iree_codegen.compilation_info<
       lowering_config = #iree_gpu.lowering_config<{
-        workgroup = [1, 1, 0]
+        workgroup = [1, 1, 0],
+        workgroup_reordering_strategy = #iree_gpu.conditional_transpose<8, 38>
       }>,
       translation_info = #iree_codegen.translation_info<pipeline = LLVMGPUTileAndFuse
         workgroup_size = [512, 1, 1] subgroup_size = 64,
@@ -861,7 +854,6 @@ pdl.pattern @annotate_inner_tiled_f16_large : benefit(1) {
         // and enable no_reduce_shared_memory_bank_conflicts.
         {gpu_pipeline_options =
           #iree_gpu.pipeline_options<
-            prefetch_shared_memory = false,
             no_reduce_shared_memory_bank_conflicts = true>,
         // This strategy requires 2 waves per SIMD.
           llvm_func_attrs = {"amdgpu-waves-per-eu" = "2"}}>

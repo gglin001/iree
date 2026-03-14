@@ -14,8 +14,9 @@
 #include <string.h>
 
 #include "iree/base/api.h"
-#include "iree/base/internal/synchronization.h"
 #include "iree/base/internal/wait_handle.h"
+#include "iree/base/threading/call_once.h"
+#include "iree/base/threading/notification.h"
 
 // This implementation uses iree_notification_t - backed by a futex in most
 // cases - to simulate system wait handles. When using a single handle such as
@@ -69,11 +70,18 @@ void iree_wait_handle_close(iree_wait_handle_t* handle) {
 // Multi-wait emulation
 //===----------------------------------------------------------------------===//
 
+static iree_notification_t iree_wait_multi_notification_storage;
+
+static void iree_wait_multi_notification_initialize(void) {
+  iree_notification_initialize(&iree_wait_multi_notification_storage);
+}
+
 // Returns a notification that is shared with all waiters in the process.
 // Waiting on the notification will cause a wake whenever any event is set.
 static iree_notification_t* iree_wait_multi_notification(void) {
-  static iree_notification_t shared_notification = IREE_NOTIFICATION_INIT;
-  return &shared_notification;
+  static iree_once_flag init_flag = IREE_ONCE_FLAG_INIT;
+  iree_call_once(&init_flag, iree_wait_multi_notification_initialize);
+  return &iree_wait_multi_notification_storage;
 }
 
 //===----------------------------------------------------------------------===//
@@ -121,10 +129,16 @@ iree_status_t iree_wait_set_allocate(iree_host_size_t capacity,
   IREE_TRACE_ZONE_APPEND_VALUE_I64(z0, (int64_t)capacity);
   *out_set = NULL;
 
+  // Calculate allocation size with overflow checking. handles is a FAM
+  // accessed via set->handles[].
+  iree_host_size_t total_size = 0;
+  IREE_RETURN_AND_END_ZONE_IF_ERROR(
+      z0,
+      IREE_STRUCT_LAYOUT(sizeof(iree_wait_set_t), &total_size,
+                         IREE_STRUCT_FIELD_FAM(capacity, iree_wait_handle_t)));
   iree_wait_set_t* set = NULL;
-  iree_status_t status = iree_allocator_malloc(
-      allocator, sizeof(*set) + capacity * sizeof(iree_wait_handle_t),
-      (void**)&set);
+  iree_status_t status =
+      iree_allocator_malloc(allocator, total_size, (void**)&set);
   if (iree_status_is_ok(status)) {
     set->allocator = allocator;
     set->capacity = capacity;
@@ -145,7 +159,7 @@ void iree_wait_set_free(iree_wait_set_t* set) {
 }
 
 bool iree_wait_set_is_empty(const iree_wait_set_t* set) {
-  return set->handle_count != 0;
+  return set->handle_count == 0;
 }
 
 iree_status_t iree_wait_set_insert(iree_wait_set_t* set,
@@ -191,16 +205,22 @@ void iree_wait_set_erase(iree_wait_set_t* set, iree_wait_handle_t handle) {
   // find the matching user handle or - if valid - we can use the native index
   // set after an iree_wait_any wake to do a quick lookup.
   iree_host_size_t index = handle.set_internal.index;
-  if (IREE_UNLIKELY(index >= set->handle_count) ||
-      IREE_UNLIKELY(!iree_wait_primitive_compare_identical(&set->handles[index],
-                                                           &handle))) {
+  bool found =
+      index < set->handle_count &&
+      iree_wait_primitive_compare_identical(&set->handles[index], &handle);
+  if (!found) {
     // Fallback to a linear scan of (hopefully) a small list.
     for (iree_host_size_t i = 0; i < set->handle_count; ++i) {
       if (iree_wait_primitive_compare_identical(&set->handles[i], &handle)) {
         index = i;
+        found = true;
         break;
       }
     }
+  }
+  if (!found) {
+    // Handle not in set - nothing to erase.
+    return;
   }
 
   // Decrement reference count.
@@ -251,6 +271,10 @@ static bool iree_wait_set_check(const iree_wait_set_check_params_t* params) {
   return ready_count == params->set->handle_count;
 }
 
+static bool iree_wait_set_check_thunk(void* arg) {
+  return iree_wait_set_check((const iree_wait_set_check_params_t*)arg);
+}
+
 static iree_status_t iree_wait_multi(iree_wait_set_t* set,
                                      iree_time_t deadline_ns,
                                      iree_wait_handle_t* out_wake_handle) {
@@ -267,8 +291,8 @@ static iree_status_t iree_wait_multi(iree_wait_set_t* set,
       .wake_handle = out_wake_handle,
   };
   if (!iree_notification_await(iree_wait_multi_notification(),
-                               (iree_condition_fn_t)iree_wait_set_check,
-                               &params, iree_make_deadline(deadline_ns))) {
+                               iree_wait_set_check_thunk, &params,
+                               iree_make_deadline(deadline_ns))) {
     return iree_status_from_code(IREE_STATUS_DEADLINE_EXCEEDED);
   }
   return iree_ok_status();
@@ -295,6 +319,10 @@ static bool iree_futex_handle_check(iree_futex_handle_t* futex) {
   return iree_atomic_load(&futex->value, iree_memory_order_acquire) != 0;
 }
 
+static bool iree_futex_handle_check_thunk(void* arg) {
+  return iree_futex_handle_check((iree_futex_handle_t*)arg);
+}
+
 iree_status_t iree_wait_one(iree_wait_handle_t* handle,
                             iree_time_t deadline_ns) {
   if (handle->type == IREE_WAIT_PRIMITIVE_TYPE_NONE) {
@@ -307,8 +335,8 @@ iree_status_t iree_wait_one(iree_wait_handle_t* handle,
     iree_futex_handle_t* futex =
         (iree_futex_handle_t*)handle->value.local_futex;
     if (!iree_notification_await(&futex->notification,
-                                 (iree_condition_fn_t)iree_futex_handle_check,
-                                 futex, iree_make_deadline(deadline_ns))) {
+                                 iree_futex_handle_check_thunk, futex,
+                                 iree_make_deadline(deadline_ns))) {
       status = iree_status_from_code(IREE_STATUS_DEADLINE_EXCEEDED);
     }
   } else {

@@ -62,8 +62,9 @@ static bool getUsesIfAllTransferOp(Value value,
       }
       continue;
     }
-    if (isa<memref::DeallocOp>(userOp))
+    if (isa<memref::DeallocOp>(userOp)) {
       continue;
+    }
 
     if (!isa<gpu::SubgroupMmaLoadMatrixOp, gpu::SubgroupMmaStoreMatrixOp,
              vector::TransferReadOp, vector::TransferWriteOp>(userOp)) {
@@ -109,15 +110,18 @@ calculateMemRefVectorNumBits(SmallVectorImpl<Operation *> &uses) {
       continue;
     }
     auto transferOp = dyn_cast<VectorTransferOpInterface>(op);
-    if (!transferOp)
+    if (!transferOp) {
       return 0;
+    }
     // Masked transfers must be scalarized.
-    if (transferOp.getMask())
+    if (transferOp.getMask()) {
       return 0;
+    }
     std::optional<unsigned> transferSize =
         getBitWidth(transferOp.getVectorType());
-    if (!transferSize)
+    if (!transferSize) {
       return 0;
+    }
     minBits = std::min(minBits, *transferSize);
   }
 
@@ -131,22 +135,25 @@ calculateMemRefVectorNumBits(SmallVectorImpl<Operation *> &uses) {
       memrefVal = storeOp.getDstMemref();
       stride = storeOp.getLeadDimension().getSExtValue();
     }
-    if (!memrefVal)
+    if (!memrefVal) {
       continue;
+    }
 
     // GPU subgroup MMA ops do not care about the memref element type. But we
     // still need to make sure we can load/store with good strides.
-    // The `leadingDimension` attributes specifies the stride (numer of
+    // The `leadingDimension` attributes specifies the stride (number of
     // *elements*) over the memref for the leading dimension.
     auto memrefType = cast<MemRefType>(memrefVal.getType());
     std::optional<unsigned> elementBits =
         getBitWidth(memrefType.getElementType());
-    if (!elementBits)
+    if (!elementBits) {
       return 0;
+    }
     int64_t strideBits = stride * *elementBits;
     // Make sure the stride is aligned with the planned vector bitwidth.
-    if (strideBits % minBits != 0)
+    if (strideBits % minBits != 0) {
       return 0;
+    }
   }
 
   return minBits;
@@ -197,8 +204,9 @@ static unsigned isMemRefVectorizable(Value value,
   if (getUsesIfAllTransferOp(value, uses)) {
     unsigned vectorBits = calculateMemRefVectorNumBits(uses);
     LLVM_DEBUG(llvm::dbgs() << "vectorBits=" << vectorBits << "\n");
-    if (!vectorBits)
+    if (!vectorBits) {
       return 0;
+    }
 
     // TODO: Fix sub-byte type support in vector.bitcast lowering.
     if (vectorBits % 32 != 0) {
@@ -265,7 +273,7 @@ private:
 MemRefUsageAnalysis::MemRefUsageAnalysis(mlir::Operation *op) {
   op->walk([&](Operation *op) {
     TypeSwitch<Operation *>(op)
-        .Case<mlir::FunctionOpInterface>([this](auto funcOp) {
+        .Case([this](mlir::FunctionOpInterface funcOp) {
           for (Value arg : funcOp.getArguments()) {
             analyzeMemRefValue(arg);
           }
@@ -377,8 +385,9 @@ public:
     FailureOr<SmallVector<Value>> indices =
         adjustIndices(scalarMemrefType, vectorMemrefType, adaptor.getIndices(),
                       rewriter, loc);
-    if (failed(indices))
+    if (failed(indices)) {
       return rewriter.notifyMatchFailure(read, "failed to adjust indices");
+    }
 
     // If the transfer_read can be replaced by a load after vectorization use
     // LoadOp and cast back to the original type.
@@ -480,8 +489,9 @@ public:
     FailureOr<SmallVector<Value>> indices =
         adjustIndices(scalarMemrefType, vectorMemrefType, adaptor.getIndices(),
                       rewriter, loc);
-    if (failed(indices))
+    if (failed(indices)) {
       return rewriter.notifyMatchFailure(write, "failed to adjust indices");
+    }
 
     // If the transfer_write can be replaced by a store after vectorization cast
     // the original value and use StoreOp.
@@ -572,8 +582,9 @@ MemRefConversionPattern<OpTy>::getVectorizedMemRefType(
   Type vectorType = VectorType::get(vectorNumElements, scalarType);
   auto newShape = llvm::to_vector<2>(type.getShape());
   unsigned ratio = vectorNumBits / type.getElementTypeBitWidth();
-  if (newShape.back() % ratio != 0)
+  if (newShape.back() % ratio != 0) {
     return {};
+  }
   newShape.back() = newShape.back() / ratio;
 
   MemRefLayoutAttrInterface layout = {};
@@ -605,8 +616,9 @@ FailureOr<SmallVector<Value>> MemRefConversionPattern<OpTy>::adjustIndices(
       getBitWidth(vectorMemrefType.getElementType());
   std::optional<unsigned> scalarMemrefElemSize =
       getBitWidth(scalarMemrefType.getElementType());
-  if (!vectorMemrefElemSize || !scalarMemrefElemSize)
+  if (!vectorMemrefElemSize || !scalarMemrefElemSize) {
     return failure();
+  }
 
   MLIRContext *context = rewriter.getContext();
   AffineExpr sym0, sym1;
@@ -629,8 +641,9 @@ public:
   matchAndRewrite(memref::AllocOp alloc, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto memrefType = getVectorizedMemRefType(rewriter, alloc.getResult());
-    if (!memrefType)
+    if (!memrefType) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<memref::AllocOp>(alloc, *memrefType,
                                                  alloc.getDynamicSizes());
     return success();
@@ -647,8 +660,9 @@ public:
                   OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto memrefType = dyn_cast<MemRefType>(subspanOp.getType());
-    if (!memrefType)
+    if (!memrefType) {
       return failure();
+    }
 
     // This should be guaranteed by the analysis step. But just double check.
     assert(memrefType.getRank() > 0 &&
@@ -682,7 +696,7 @@ public:
 };
 
 struct ProcessSubgroupMMALoad final
-    : public MemRefConversionPattern<gpu::SubgroupMmaLoadMatrixOp> {
+    : MemRefConversionPattern<gpu::SubgroupMmaLoadMatrixOp> {
   using MemRefConversionPattern::MemRefConversionPattern;
 
   LogicalResult
@@ -696,8 +710,9 @@ struct ProcessSubgroupMMALoad final
     Location loc = loadOp.getLoc();
     auto indices = adjustIndices(scalarMemrefType, vectorMemrefType,
                                  adaptor.getIndices(), rewriter, loc);
-    if (failed(indices))
+    if (failed(indices)) {
       return failure();
+    }
 
     // Compute how many bits the mma op stride corresponds to for the scalar
     // memref, and rescale it to vector memref.
@@ -716,7 +731,7 @@ struct ProcessSubgroupMMALoad final
 };
 
 struct ProcessSubgroupMMAStore final
-    : public MemRefConversionPattern<gpu::SubgroupMmaStoreMatrixOp> {
+    : MemRefConversionPattern<gpu::SubgroupMmaStoreMatrixOp> {
   using MemRefConversionPattern::MemRefConversionPattern;
 
   LogicalResult
@@ -730,8 +745,9 @@ struct ProcessSubgroupMMAStore final
     Location loc = storeOp.getLoc();
     auto indices = adjustIndices(scalarMemrefType, vectorMemrefType,
                                  adaptor.getIndices(), rewriter, loc);
-    if (failed(indices))
+    if (failed(indices)) {
       return failure();
+    }
 
     // Compute how many bits the mma op stride corresponds to for the scalar
     // memref, and rescale it to vector memref.
@@ -797,15 +813,16 @@ static Value predicateMaybeMaskedScalarTransfer(
 /// This is very specific to SPIR-V as pointer cannot be casted to vector type
 /// if any of the memory access is not vector.
 struct ScalarizeVectorTransferRead final
-    : public OpRewritePattern<vector::TransferReadOp> {
+    : OpRewritePattern<vector::TransferReadOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(vector::TransferReadOp readOp,
                                 PatternRewriter &rewriter) const override {
     VectorType vectorType = readOp.getType();
     auto map = readOp.getPermutationMap();
-    if (vectorType.getRank() > 1 || !map.isProjectedPermutation())
+    if (vectorType.getRank() > 1 || !map.isProjectedPermutation()) {
       return failure();
+    }
 
     Location loc = readOp.getLoc();
     Value maybeMask = readOp.getMask();
@@ -877,14 +894,15 @@ struct ScalarizeVectorTransferRead final
   }
 };
 
-struct ScalarizeVectorLoad final : public OpRewritePattern<vector::LoadOp> {
+struct ScalarizeVectorLoad final : OpRewritePattern<vector::LoadOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(vector::LoadOp loadOp,
                                 PatternRewriter &rewriter) const override {
     VectorType vectorType = loadOp.getType();
-    if (vectorType.getRank() > 1)
+    if (vectorType.getRank() > 1) {
       return failure();
+    }
 
     Location loc = loadOp.getLoc();
     if (vectorType.getRank() == 0) {
@@ -922,15 +940,16 @@ struct ScalarizeVectorLoad final : public OpRewritePattern<vector::LoadOp> {
 };
 
 struct ScalarizeVectorTransferWrite final
-    : public OpRewritePattern<vector::TransferWriteOp> {
+    : OpRewritePattern<vector::TransferWriteOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(vector::TransferWriteOp writeOp,
                                 PatternRewriter &rewriter) const override {
     VectorType vectorType = writeOp.getVectorType();
     auto map = writeOp.getPermutationMap();
-    if (vectorType.getRank() > 1 || !map.isProjectedPermutation())
+    if (vectorType.getRank() > 1 || !map.isProjectedPermutation()) {
       return failure();
+    }
 
     Location loc = writeOp.getLoc();
     Value maybeMask = writeOp.getMask();
@@ -1005,8 +1024,7 @@ struct ScalarizeVectorTransferWrite final
 /// We run this at the same time as scalarizing masked transfers to try to fold
 /// away any remaining mask creation ops as SPIR-V lacks support for masked
 /// operations.
-struct ReifyExtractOfCreateMask final
-    : public OpRewritePattern<vector::ExtractOp> {
+struct ReifyExtractOfCreateMask final : OpRewritePattern<vector::ExtractOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(vector::ExtractOp extractOp,

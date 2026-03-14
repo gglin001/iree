@@ -295,8 +295,9 @@ convertBindingUsage(mlir::FunctionOpInterface sourceFuncOp, BlockArgument arg,
                     IREE::HAL::PipelineLayoutAttr pipelineLayoutAttr,
                     int64_t bindingOrdinal,
                     IREE::HAL::PipelineBindingAttr bindingAttr) {
-  if (arg.use_empty())
+  if (arg.use_empty()) {
     return; // no-op
+  }
   for (auto &use : llvm::make_early_inc_range(arg.getUses())) {
     auto oldOp = dyn_cast<IREE::Stream::BindingSubspanOp>(use.getOwner());
     assert(oldOp && "bindings are only usable by stream.binding.subspan");
@@ -499,7 +500,7 @@ declareEntryPointOps(IREE::Stream::ExecutableOp sourceExecutableOp,
 
 namespace {
 
-struct ConvertReturnPattern : public OpRewritePattern<IREE::Stream::ReturnOp> {
+struct ConvertReturnPattern : OpRewritePattern<IREE::Stream::ReturnOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Stream::ReturnOp op,
                                 PatternRewriter &rewriter) const override {
@@ -509,8 +510,7 @@ struct ConvertReturnPattern : public OpRewritePattern<IREE::Stream::ReturnOp> {
 };
 
 template <typename SrcOp, typename DstOp>
-struct ConvertDispatchWorkgroupInfoPattern final
-    : public OpRewritePattern<SrcOp> {
+struct ConvertDispatchWorkgroupInfoPattern final : OpRewritePattern<SrcOp> {
   using OpRewritePattern<SrcOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(SrcOp op,
                                 PatternRewriter &rewriter) const override {
@@ -522,7 +522,7 @@ struct ConvertDispatchWorkgroupInfoPattern final
 };
 
 struct InlineConstantWorkgroupSizePattern
-    : public OpRewritePattern<IREE::HAL::InterfaceWorkgroupSizeOp> {
+    : OpRewritePattern<IREE::HAL::InterfaceWorkgroupSizeOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::HAL::InterfaceWorkgroupSizeOp sizeOp,
                                 PatternRewriter &rewriter) const override {
@@ -569,7 +569,7 @@ convertDispatchWorkgroupInfoOps(IREE::HAL::ExecutableOp executableOp) {
 //===----------------------------------------------------------------------===//
 
 struct MaterializeInterfacesPass
-    : public IREE::HAL::impl::MaterializeInterfacesPassBase<
+    : IREE::HAL::impl::MaterializeInterfacesPassBase<
           MaterializeInterfacesPass> {
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();

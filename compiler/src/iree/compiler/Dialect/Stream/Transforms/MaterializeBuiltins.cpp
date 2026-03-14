@@ -347,12 +347,12 @@ static LogicalResult processFillOp(IREE::Stream::AsyncFillOp fillOp,
 //===----------------------------------------------------------------------===//
 
 struct MaterializeBuiltinsPass
-    : public IREE::Stream::impl::MaterializeBuiltinsPassBase<
-          MaterializeBuiltinsPass> {
+    : IREE::Stream::impl::MaterializeBuiltinsPassBase<MaterializeBuiltinsPass> {
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
-    if (moduleOp.getBody()->empty())
+    if (moduleOp.getBody()->empty()) {
       return;
+    }
 
     // Find and replace (if needed) ops that we want to turn into builtins
     // across the entire program.
@@ -360,12 +360,12 @@ struct MaterializeBuiltinsPass
     auto walkResult = getOperation()->walk(
         [&](IREE::Stream::StreamableOpInterface streamableOp) {
           return TypeSwitch<Operation *, WalkResult>(streamableOp)
-              .Case<IREE::Stream::AsyncSplatOp>([&](auto splatOp) {
+              .Case([&](IREE::Stream::AsyncSplatOp splatOp) {
                 return succeeded(processSplatOp(splatOp, requiredModules))
                            ? WalkResult::advance()
                            : WalkResult::interrupt();
               })
-              .Case<IREE::Stream::AsyncFillOp>([&](auto fillOp) {
+              .Case([&](IREE::Stream::AsyncFillOp fillOp) {
                 return succeeded(processFillOp(fillOp, requiredModules))
                            ? WalkResult::advance()
                            : WalkResult::interrupt();

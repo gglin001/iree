@@ -1,9 +1,3 @@
-# TODO: (#17751) Add the arm_64 tests when the bug resolved. See:
-#   https://github.com/iree-org/iree/actions/runs/10468944505/job/28990909321#step:4:9815
-if(IREE_ARCH STREQUAL "arm_64")
-  return()
-endif()
-
 iree_generated_e2e_runner_test(
   NAME
     e2e_attention_cpu_f16_f16_f16_small
@@ -74,11 +68,11 @@ iree_generated_e2e_runner_test(
 )
 
 # To distinguish between CDNA(gfx9) and RDNA3(gfx11)
-if(IREE_HIP_TEST_TARGET_CHIP MATCHES "^gfx9")
+if(IREE_ROCM_TEST_TARGET_CHIP MATCHES "^gfx9")
 
 unset(IREE_HIP_TEST_COMPILER_FLAGS)
 list(APPEND IREE_HIP_TEST_COMPILER_FLAGS
-  "--iree-hip-target=${IREE_HIP_TEST_TARGET_CHIP}"
+  "--iree-rocm-target=${IREE_ROCM_TEST_TARGET_CHIP}"
 )
 
 iree_generated_e2e_runner_test(

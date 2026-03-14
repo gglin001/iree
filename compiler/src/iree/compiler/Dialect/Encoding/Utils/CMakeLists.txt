@@ -26,6 +26,7 @@ iree_cc_library(
     MLIRInferTypeOpInterface
     MLIRLinalgDialect
     MLIRLinalgUtils
+    MLIRTensorDialect
     iree::compiler::Dialect::Encoding::IR
     iree::compiler::Dialect::LinalgExt::Utils
     iree::compiler::Dialect::Util::IR

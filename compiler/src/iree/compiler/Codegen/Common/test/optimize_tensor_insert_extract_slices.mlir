@@ -52,14 +52,15 @@ func.func @fold_extract_slice_consumer_into_xfer_write_3(%arg0: vector<1x64x128x
 }
 
 // CHECK-LABEL: func.func @fold_extract_slice_consumer_into_xfer_write_3
-// CHECK-SAME:    %[[VEC2:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %[[VEC:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %[[SZ1:[a-zA-Z0-9]+]]
 // CHECK-SAME:    %[[SZ2:[a-zA-Z0-9]+]]
 // CHECK-DAG:     %[[C0:.+]] = arith.constant 0 : index
-// CHECK:         %[[INIT2:.+]] = tensor.empty(%arg1, %arg2) : tensor<1x?x?xf16>
-// CHECK:         %[[WRITE2:.+]] = vector.transfer_write %[[VEC2]], %[[INIT2]]
+// CHECK:         %[[INIT:.+]] = tensor.empty(%[[SZ1]], %[[SZ2]]) : tensor<1x?x?xf16>
+// CHECK:         %[[WRITE:.+]] = vector.transfer_write %[[VEC]], %[[INIT]]
 // CHECK-SAME:      [%[[C0]], %[[C0]], %[[C0]]] {in_bounds = [true, false, false]}
 // CHECK-SAME:      : vector<1x64x128xf16>, tensor<1x?x?xf16>
-// CHECK:         return %[[WRITE2]]
+// CHECK:         return %[[WRITE]]
 
 // -----
 
@@ -71,7 +72,7 @@ func.func @fold_insert_slice_into_transfer_write_static(%v: vector<4x5xf32>, %t1
 }
 // CHECK-LABEL: func.func @fold_insert_slice_into_transfer_write_static
 // CHECK-SAME:    %[[VEC:[a-zA-Z0-9]+]]
-// CHECK-SAME:    %[[T1:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %{{[a-zA-Z0-9]+}}
 // CHECK-SAME:    %[[T2:[a-zA-Z0-9]+]]
 // CHECK-SAME:    %[[A:[a-zA-Z0-9]+]]
 // CHECK-SAME:    %[[B:[a-zA-Z0-9]+]]
@@ -96,7 +97,7 @@ func.func @fold_insert_slice_into_transfer_write_scalable(%v: vector<4x[4]xf32>,
 }
 // CHECK-LABEL: func.func @fold_insert_slice_into_transfer_write_scalable
 // CHECK-SAME:    %[[VEC:[a-zA-Z0-9]+]]
-// CHECK-SAME:    %[[T1:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %{{[a-zA-Z0-9]+}}
 // CHECK-SAME:    %[[T2:[a-zA-Z0-9]+]]
 // CHECK-SAME:    %[[A:[a-zA-Z0-9]+]]
 // CHECK-SAME:    %[[B:[a-zA-Z0-9]+]]
@@ -116,10 +117,11 @@ func.func @fold_insert_slice_into_transfer_write_dynamic(%v: vector<4x8xf32>, %t
 }
 // CHECK-LABEL: func.func @fold_insert_slice_into_transfer_write_dynamic
 // CHECK-SAME:    %[[VEC:[a-zA-Z0-9]+]]
-// CHECK-SAME:    %[[T1:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %{{[a-zA-Z0-9]+}}
 // CHECK-SAME:    %[[T2:[a-zA-Z0-9]+]]
 // CHECK-SAME:    %[[A:[a-zA-Z0-9]+]]
 // CHECK-SAME:    %[[B:[a-zA-Z0-9]+]]
+// CHECK-SAME:    %{{[a-zA-Z0-9]+}}
 // CHECK-NEXT:    %[[WRITE:.+]] = vector.transfer_write %[[VEC]], %[[T2]][%[[A]], %[[B]]] {in_bounds = [true, true]} : vector<4x8xf32>, tensor<?x?xf32>
 // CHECK-NEXT:    return %[[WRITE]]
 
@@ -224,39 +226,6 @@ func.func @batch_matmul_with_padding_strategy(%arg0: tensor<1x?x1280xf16>, %arg1
 // CHECK-SAME:      [%[[C0]], %[[C0]], %[[C0]]] {in_bounds = [true, false, true]}
 // CHECK-SAME:      : vector<1x64x128xf16>, tensor<1x?x128xf16>
 // CHECK:         iree_tensor_ext.dispatch.tensor.store %[[WRITE]]
-
-// -----
-
-#pipeline_layout = #hal.pipeline.layout<bindings = [
-  #hal.pipeline.binding<storage_buffer>,
-  #hal.pipeline.binding<storage_buffer>
-]>
-func.func @_batch_matmul_narrow_n_2_dispatch_4_unpack_i32() attributes {translation_info = #iree_codegen.translation_info<pipeline = CPUDataTiling>} {
-  %c0_i32 = arith.constant 0 : i32
-  %c2 = arith.constant 2 : index
-  %c128 = arith.constant 128 : index
-  %c0 = arith.constant 0 : index
-  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c128) flags(ReadOnly) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x1x1x2x8xi32>>
-  %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x3x2xi32>>
-  %workgroup_id_x = hal.interface.workgroup.id[0] : index
-  %workgroup_count_x = hal.interface.workgroup.count[0] : index
-  scf.for %arg0 = %workgroup_id_x to %c2 step %workgroup_count_x {
-    %2 = iree_tensor_ext.dispatch.tensor.load %1, offsets = [%arg0, 0, 0], sizes = [1, 3, 2], strides = [1, 1, 1] : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x3x2xi32>> -> tensor<1x3x2xi32>
-    %3 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [%arg0, 0, 0, 0, 0], sizes = [1, 1, 1, 2, 8], strides = [1, 1, 1, 1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x1x1x2x8xi32>> -> tensor<1x1x1x2x8xi32>
-    %4 = vector.transfer_read %3[%c0, %c0, %c0, %c0, %c0], %c0_i32 {in_bounds = [true, true]} : tensor<1x1x1x2x8xi32>, vector<2x8xi32>
-    %5 = vector.transpose %4, [1, 0] : vector<2x8xi32> to vector<8x2xi32>
-    %6 = tensor.empty() : tensor<3x2xi32>
-    %7 = vector.transfer_write %5, %6[%c0, %c0] {in_bounds = [false, true]} : vector<8x2xi32>, tensor<3x2xi32>
-    %inserted_slice = tensor.insert_slice %7 into %2[0, 0, 0] [1, 3, 2] [1, 1, 1] : tensor<3x2xi32> into tensor<1x3x2xi32>
-    iree_tensor_ext.dispatch.tensor.store %inserted_slice, %1, offsets = [%arg0, 0, 0], sizes = [1, 3, 2], strides = [1, 1, 1] : tensor<1x3x2xi32> -> !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x3x2xi32>>
-  }
-  return
-}
-
-// CHECK-LABEL: func.func @_batch_matmul_narrow_n_2_dispatch_4_unpack_i32
-// CHECK: %[[EMPTY:[a-zA-Z0-9]+]] = tensor.empty() : tensor<3x2xi32>
-// CHECK: %[[TRANS:[a-zA-Z0-9]+]] = vector.transpose %5, [1, 0] : vector<2x8xi32> to vector<8x2xi32>
-// CHECK: vector.transfer_write %[[TRANS]], %[[EMPTY]][%c0, %c0] {in_bounds = [false, true]} : vector<8x2xi32>, tensor<3x2xi32>
 
 // -----
 
@@ -368,3 +337,30 @@ func.func @licm_generic(%source: tensor<32x32xf16>, %idx : index) -> tensor<32x3
 // CHECK: linalg.generic
 // CHECK-NOT: tensor.extract
 // CHECK: return
+
+// -----
+
+// Verify that loop invariant ops are not hoisted from regions that may not be
+// executed.
+func.func @no_hoist_from_possibly_unexecuted_region(%arg0: tensor<4x8xi32>) -> tensor<8x4xi32> {
+  %c0_i32 = arith.constant 0 : i32
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c100 = arith.constant 100 : index
+  %workgroup_id_x = hal.interface.workgroup.id[0] : index
+  %0 = tensor.empty() : tensor<8x4xi32>
+  %1 = scf.for %arg1 = %workgroup_id_x to %c1 step %c100 iter_args(%arg2 = %0) -> tensor<8x4xi32> {
+    %2 = vector.transfer_read %arg0[%c0, %c0], %c0_i32 {in_bounds = [true, true]} : tensor<4x8xi32>, vector<2x8xi32>
+    %3 = vector.transpose %2, [1, 0] : vector<2x8xi32> to vector<8x2xi32>
+    %4 = vector.transfer_write %3, %arg2[%c0, %c0] {in_bounds = [true, true]} : vector<8x2xi32>, tensor<8x4xi32>
+    scf.yield %4 : tensor<8x4xi32>
+  }
+  return %1 : tensor<8x4xi32>
+}
+
+// CHECK-LABEL: func.func @no_hoist_from_possibly_unexecuted_region
+// CHECK:       scf.for {{.*}} {
+// CHECK:         vector.transfer_read
+// CHECK:         vector.transpose
+// CHECK:         vector.transfer_write
+// CHECK:       }

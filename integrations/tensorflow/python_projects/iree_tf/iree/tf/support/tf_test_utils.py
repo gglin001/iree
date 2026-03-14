@@ -293,7 +293,7 @@ def _dictionary_product(dictionary: Dict[Any, Any]) -> List[Dict[Any, Any]]:
 
 
 def _named_kwargs_product(
-    kwargs_to_values: Dict[str, Sequence[Any]]
+    kwargs_to_values: Dict[str, Sequence[Any]],
 ) -> Dict[str, Dict[str, Any]]:
     """Splits kwargs_to_values into a Cartesian product of its elements."""
     # Validate 'kwargs_to_values'
@@ -543,7 +543,7 @@ def tf_function_unit_test(
                 signature = function.input_signature
 
             if input_generator is not None:
-                # Use the user-specificed input_generator.
+                # Use the user-specified input_generator.
                 get_trace_args = lambda: tf_utils.generate_inputs(
                     signature, input_generator
                 )

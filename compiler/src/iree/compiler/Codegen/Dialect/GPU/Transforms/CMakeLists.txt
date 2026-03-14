@@ -48,14 +48,12 @@ iree_cc_library(
     "Passes.h.inc"
     "Transforms.h"
   SRCS
-    "CombineBarrierRegions.cpp"
     "DistributeInnerTiledToLanes.cpp"
     "ExpandUndistributedInnerTiles.cpp"
     "LowerIREEGPUOps.cpp"
     "Passes.cpp"
     "Transforms.cpp"
     "UnrollToIntrinsics.cpp"
-    "VectorizeIREEGPUOps.cpp"
   DEPS
     ::PassesIncGen
     LLVMSupport

@@ -55,7 +55,7 @@ namespace {
 ///  does. TODO(#17673)
 ///
 struct FoldAttentionAndTranspose
-    : public OpRewritePattern<IREE::LinalgExt::AttentionOp> {
+    : OpRewritePattern<IREE::LinalgExt::AttentionOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(IREE::LinalgExt::AttentionOp attentionOp,
@@ -109,10 +109,11 @@ struct FoldAttentionAndTranspose
     // Check reassociation indexing map.
     SmallVector<ReassociationIndices> reassociation =
         expandShapeOp.getReassociationIndices();
-    SmallVector<ReassociationIndices> expectedReassocation = {{0, 1}, {2}, {3}};
-    if (reassociation != expectedReassocation) {
+    SmallVector<ReassociationIndices> expectedReassociation = {
+        {0, 1}, {2}, {3}};
+    if (reassociation != expectedReassociation) {
       return rewriter.notifyMatchFailure(expandShapeOp,
-                                         "unhandled reassocation");
+                                         "unhandled reassociation");
     }
 
     // Check the permutation maps for the transpose.
@@ -184,8 +185,7 @@ struct FoldAttentionAndTranspose
 //===----------------------------------------------------------------------===//
 
 struct FoldAttentionWithTransposePass
-    : public impl::FoldAttentionWithTransposePassBase<
-          FoldAttentionWithTransposePass> {
+    : impl::FoldAttentionWithTransposePassBase<FoldAttentionWithTransposePass> {
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);

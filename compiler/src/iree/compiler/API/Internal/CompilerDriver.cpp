@@ -43,6 +43,7 @@
 #include "iree/compiler/API/Internal/Diagnostics.h"
 #include "iree/compiler/ConstEval/Passes.h"
 #include "iree/compiler/Dialect/VM/Target/init_targets.h"
+#include "iree/compiler/Dialect/VM/Transforms/Passes.h"
 #include "iree/compiler/Pipelines/Pipelines.h"
 #include "iree/compiler/PluginAPI/PluginManager.h"
 #include "iree/compiler/Tools/init_dialects.h"
@@ -246,6 +247,7 @@ struct GlobalInit {
   InputDialectOptions *clInputOptions = nullptr;
   PreprocessingOptions *clPreprocessingOptions = nullptr;
   GlobalOptimizationOptions *clGlobalOptimizationOptions = nullptr;
+  ParameterOptions *clParameterOptions = nullptr;
   DispatchCreationOptions *clDispatchCreationOptions = nullptr;
   SchedulingOptions *clSchedulingOptions = nullptr;
   IREE::HAL::TargetOptions *clHalTargetOptions = nullptr;
@@ -292,6 +294,7 @@ void GlobalInit::registerCommandLineOptions() {
   clInputOptions = &InputDialectOptions::FromFlags::get();
   clPreprocessingOptions = &PreprocessingOptions::FromFlags::get();
   clGlobalOptimizationOptions = &GlobalOptimizationOptions::FromFlags::get();
+  clParameterOptions = &ParameterOptions::FromFlags::get();
   clDispatchCreationOptions = &DispatchCreationOptions::FromFlags::get();
   clSchedulingOptions = &SchedulingOptions::FromFlags::get();
   clHalTargetOptions = &IREE::HAL::TargetOptions::FromFlags::get();
@@ -349,21 +352,21 @@ struct Session {
   LogicalResult activatePluginsOnce() {
     if (!pluginsActivated) {
       pluginsActivated = true;
-      if (failed(pluginSession.initializePlugins())) {
+      if (failed(pluginSession->initializePlugins())) {
         pluginActivationStatus = failure();
       } else {
         DialectRegistry registry;
-        pluginSession.registerDialects(registry);
+        pluginSession->registerDialects(registry);
         context.appendDialectRegistry(registry);
-        pluginActivationStatus = pluginSession.activatePlugins(&context);
+        pluginActivationStatus = pluginSession->activatePlugins(&context);
 
         // Initialize target registry, bootstrapping with the static globals.
         targetRegistry.mergeFrom(IREE::HAL::TargetRegistry::getGlobal());
         IREE::HAL::TargetDeviceList pluginTargetDeviceList;
-        pluginSession.populateHALTargetDevices(pluginTargetDeviceList);
+        pluginSession->populateHALTargetDevices(pluginTargetDeviceList);
         targetRegistry.mergeFrom(pluginTargetDeviceList);
         IREE::HAL::TargetBackendList pluginTargetBackendList;
-        pluginSession.populateHALTargetBackends(pluginTargetBackendList);
+        pluginSession->populateHALTargetBackends(pluginTargetBackendList);
         targetRegistry.mergeFrom(pluginTargetBackendList);
       }
     }
@@ -387,7 +390,12 @@ struct Session {
   // PluginManagerOptions must initialize first because the session depends on
   // it.
   PluginManagerOptions pluginManagerOptions;
-  PluginManagerSession pluginSession;
+
+  // Plugin session is constructed after applyOptimizationDefaults() so that
+  // opt-level-dependent defaults are applied before options are copied. The
+  // `std::optional` is required because PluginManagerSession does not have
+  // default constructor. Using `std::optional` allows deferring construction.
+  std::optional<PluginManagerSession> pluginSession;
 
   // We initialize the TargetRegistry lazily with the plugins.
   IREE::HAL::TargetRegistry targetRegistry;
@@ -402,6 +410,7 @@ struct Session {
   BindingOptions bindingOptions;
   InputDialectOptions inputOptions;
   PreprocessingOptions preprocessingOptions;
+  ParameterOptions parameterOptions;
   GlobalOptimizationOptions highLevelOptimizationOptions;
   DispatchCreationOptions dispatchCreationOptions;
   SchedulingOptions schedulingOptions;
@@ -415,15 +424,16 @@ struct Session {
 
 Session::Session(GlobalInit &globalInit)
     : globalInit(globalInit), ownedContext(globalInit.createContext()),
-      context(*ownedContext), binder(OptionsBinder::local()),
-      pluginSession(globalInit.pluginManager, binder, pluginManagerOptions) {
+      context(*ownedContext), binder(OptionsBinder::local()) {
   context.allowUnregisteredDialects();
   context.appendDialectRegistry(globalInit.registry);
 
-  // Bootstrap session options from the cl environment, if enabled.
+  // Apply optimization defaults before creating plugin sessions, so that
+  // opt-level-dependent defaults are set correctly before options are copied to
+  // sessions.
   if (globalInit.usesCommandLine) {
-    auto binder = OptionsBinder::global();
-    binder.applyOptimizationDefaults();
+    auto globalBinder = OptionsBinder::global();
+    globalBinder.applyOptimizationDefaults();
     debugConfig = mlir::tracing::DebugConfig::createFromCLOptions();
     pipelineOptions = *globalInit.clGlobalPipelineOptions;
     pluginManagerOptions = *globalInit.clPluginManagerOptions;
@@ -431,6 +441,7 @@ Session::Session(GlobalInit &globalInit)
     inputOptions = *globalInit.clInputOptions;
     preprocessingOptions = *globalInit.clPreprocessingOptions;
     highLevelOptimizationOptions = *globalInit.clGlobalOptimizationOptions;
+    parameterOptions = *globalInit.clParameterOptions;
     dispatchCreationOptions = *globalInit.clDispatchCreationOptions;
     schedulingOptions = *globalInit.clSchedulingOptions;
     halTargetOptions = *globalInit.clHalTargetOptions;
@@ -441,6 +452,7 @@ Session::Session(GlobalInit &globalInit)
     cTargetOptions = IREE::VM::getCTargetOptionsFromFlags();
 #endif
   }
+  pluginSession.emplace(globalInit.pluginManager, binder, pluginManagerOptions);
 
   // Enable debug integration.
   debugHandlerInstall.emplace(context, debugConfig);
@@ -452,6 +464,7 @@ Session::Session(GlobalInit &globalInit)
   preprocessingOptions.bindOptions(binder);
   inputOptions.bindOptions(binder);
   highLevelOptimizationOptions.bindOptions(binder);
+  parameterOptions.bindOptions(binder);
   dispatchCreationOptions.bindOptions(binder);
   schedulingOptions.bindOptions(binder);
   halTargetOptions.bindOptions(binder);
@@ -527,8 +540,9 @@ Error *Source::split(void (*callback)(iree_compiler_source_t *source,
   SmallVector<StringRef, 8> rawSubBuffers;
   // Split dropping the last checkLen chars to enable flagging near misses.
   origMemBuffer->getBuffer().split(rawSubBuffers, splitMarker);
-  if (rawSubBuffers.empty())
+  if (rawSubBuffers.empty()) {
     return nullptr;
+  }
 
   for (StringRef subBuffer : rawSubBuffers) {
     auto splitLoc = SMLoc::getFromPointer(subBuffer.data());
@@ -690,8 +704,9 @@ Error *Output::openMembuffer() {
 }
 
 void Output::keep() {
-  if (outputFile)
+  if (outputFile) {
     outputFile->keep();
+  }
 }
 
 // Invocation corresponds to iree_compiler_invocation_t
@@ -766,7 +781,7 @@ Invocation::Invocation(Session &session) : session(session) {
 
   // The PluginSession implements PipelineExtensions and delegates it to
   // activated plugins.
-  pipelineHooks.pipelineExtensions = &session.pluginSession;
+  pipelineHooks.pipelineExtensions = &session.pluginSession.value();
 }
 
 Invocation::~Invocation() {
@@ -832,7 +847,7 @@ bool Invocation::initializeInvocation() {
   if (session.inputOptions.parseInputTypeMnemonic() ==
       InputDialectOptions::Type::plugin) {
     llvm::StringSet<> inputTypeMnemonics;
-    session.pluginSession.populateCustomInputConversionTypes(
+    session.pluginSession->populateCustomInputConversionTypes(
         inputTypeMnemonics);
     if (!inputTypeMnemonics.contains(session.inputOptions.inputTypeMnemonic)) {
       auto diag = emitError(UnknownLoc::get(&session.context))
@@ -909,8 +924,9 @@ bool Invocation::importModule(Operation *inputModule, bool steal) {
 }
 
 Operation *Invocation::exportModule() {
-  if (!parsedModuleIsOwned)
+  if (!parsedModuleIsOwned) {
     return nullptr;
+  }
   parsedModuleIsOwned = false;
   return parsedModule;
 }
@@ -954,14 +970,16 @@ bool Invocation::getCompilationPhase(IREEVMPipelinePhase &compileFrom,
 
 void Invocation::dumpCompilationPhase(IREEVMPipelinePhase phase,
                                       OpPassManager &passManager) {
-  if (!parsedModule || dumpCompilationPhasesTo.empty())
+  if (!parsedModule || dumpCompilationPhasesTo.empty()) {
     return;
+  }
 
   std::string phaseName;
   enumerateIREEVMPipelinePhases(
       [&](IREEVMPipelinePhase enumeratedPhase, StringRef name, StringRef desc) {
-        if (enumeratedPhase == phase)
+        if (enumeratedPhase == phase) {
           phaseName = name;
+        }
       });
 
   std::string fileName =
@@ -983,7 +1001,7 @@ bool Invocation::runPipeline(enum iree_compiler_pipeline_t pipeline) {
   if (!session.globalInit.usesCommandLine) {
     session.binder.applyOptimizationDefaults();
   }
-  auto resetDefaults = llvm::make_scope_exit([&]() {
+  auto resetDefaults = llvm::scope_exit([&]() {
     if (!session.globalInit.usesCommandLine) {
       session.binder.restoreOptimizationDefaults();
     }
@@ -1014,10 +1032,10 @@ bool Invocation::runPipeline(enum iree_compiler_pipeline_t pipeline) {
     buildIREEVMTransformPassPipeline(
         session.targetRegistry, session.pipelineOptions, session.bindingOptions,
         session.inputOptions, session.preprocessingOptions,
-        session.highLevelOptimizationOptions, session.dispatchCreationOptions,
-        session.schedulingOptions, session.halTargetOptions,
-        session.vmTargetOptions, pipelineHooks, *passManager, compileFrom,
-        compileTo);
+        session.parameterOptions, session.highLevelOptimizationOptions,
+        session.dispatchCreationOptions, session.schedulingOptions,
+        session.halTargetOptions, session.vmTargetOptions, pipelineHooks,
+        *passManager, compileFrom, compileTo);
     break;
   }
   case IREE_COMPILER_PIPELINE_HAL_EXECUTABLE: {
@@ -1048,9 +1066,15 @@ bool Invocation::runPipeline(enum iree_compiler_pipeline_t pipeline) {
     buildIREEPrecompileTransformPassPipeline(
         session.targetRegistry, session.pipelineOptions, session.bindingOptions,
         session.inputOptions, session.preprocessingOptions,
-        session.highLevelOptimizationOptions, session.dispatchCreationOptions,
-        session.schedulingOptions, session.halTargetOptions, pipelineHooks,
-        *passManager, compileFrom, compileTo);
+        session.parameterOptions, session.highLevelOptimizationOptions,
+        session.dispatchCreationOptions, session.schedulingOptions,
+        session.halTargetOptions, pipelineHooks, *passManager, compileFrom,
+        compileTo);
+    break;
+  }
+  case IREE_COMPILER_PIPELINE_VM: {
+    IREE::VM::buildVMTransformPassPipeline(*passManager,
+                                           session.vmTargetOptions);
     break;
   }
   default:
@@ -1069,8 +1093,9 @@ bool Invocation::runPipeline(enum iree_compiler_pipeline_t pipeline) {
 bool Invocation::runTextualPassPipeline(const char *textPassPipeline) {
   auto passManager = createPassManager();
   if (failed(mlir::parsePassPipeline(textPassPipeline, *passManager,
-                                     llvm::errs())))
+                                     llvm::errs()))) {
     return false;
+  }
   if (failed(passManager->run(parsedModule))) {
     return false;
   }
@@ -1084,8 +1109,9 @@ Error *Invocation::outputIR(Output &output) {
 
 Error *Invocation::outputIRBytecode(Output &output, int bytecodeVersion) {
   mlir::BytecodeWriterConfig config;
-  if (bytecodeVersion >= 0)
+  if (bytecodeVersion >= 0) {
     config.setDesiredBytecodeVersion(bytecodeVersion);
+  }
   if (failed(mlir::writeBytecodeToFile(parsedModule, *output.outputStream,
                                        config))) {
     return new Error("illegal bytecode version requested");
@@ -1190,8 +1216,9 @@ void llvmVersionPrinter(llvm::raw_ostream &os) {
 #endif
 #if LLVM_VERSION_PRINTER_SHOW_HOST_TARGET_INFO
   std::string CPU = std::string(llvm::sys::getHostCPUName());
-  if (CPU == "generic")
+  if (CPU == "generic") {
     CPU = "(unknown)";
+  }
   os << ".\n"
      << "  Default target: " << llvm::sys::getDefaultTargetTriple() << '\n'
      << "  Host CPU: " << CPU;
@@ -1329,8 +1356,8 @@ void ireeCompilerSetupGlobalCL(int argc, const char **argv, const char *banner,
   if (installSignalHandlers) {
     // A few other things from InitLLVM to setup default command-line signal
     // handlers. See InitLLVM::InitLLVM for the initialization sequence and
-    // commentary, should it ever be necessary to revist this (it hasn't changed
-    // in many years).
+    // commentary, should it ever be necessary to revisit this (it hasn't
+    // changed in many years).
     llvm::sys::SetOneShotPipeSignalFunction(
         llvm::sys::DefaultOneShotPipeSignalHandler);
     static llvm::PrettyStackTraceProgram stackPrinter(argc, argv);
@@ -1432,7 +1459,7 @@ void ireeCompilerInvocationSetCrashHandler(
     iree_compiler_error_t *(*onCrashCallback)(
         iree_compiler_output_t **outOutput, void *userData),
     void *userData) {
-  struct StreamImpl : public mlir::ReproducerStream {
+  struct StreamImpl : mlir::ReproducerStream {
     StreamImpl(iree_compiler_output_t *output) : output(output) {
       unwrap(output)->keep();
     }

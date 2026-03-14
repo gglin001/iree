@@ -45,7 +45,7 @@ namespace {
 
 /// A wrapper pattern that calls linalg::lowerPack on linalg::PackOp. It lowers
 /// a linalg.pack op to tensor.pad + tensor.expand_shape + linalg.transpose ops.
-struct LowerPackPattern : public OpRewritePattern<linalg::PackOp> {
+struct LowerPackPattern : OpRewritePattern<linalg::PackOp> {
   using Base::Base;
 
   explicit LowerPackPattern(MLIRContext *context,
@@ -75,10 +75,10 @@ private:
   std::optional<PackUnPackControlFn> controlFn;
 };
 
-/// A warpper pattern that calls linalg::lowerUnPack on linalg::UnPackOp. It
+/// A wrapper pattern that calls linalg::lowerUnPack on linalg::UnPackOp. It
 /// lowers a linalg.unpack op to tensor.empty + linalg.transpose +
 /// tensor.collapse_shape + tensor.extract_slice ops.
-struct LowerUnPackPattern : public OpRewritePattern<linalg::UnPackOp> {
+struct LowerUnPackPattern : OpRewritePattern<linalg::UnPackOp> {
   using Base::Base;
 
   explicit LowerUnPackPattern(MLIRContext *context,
@@ -169,8 +169,9 @@ static LogicalResult commonRunOnOperation(
             scf::tileConsumerAndFuseProducersUsingSCF(
                 rewriter, cast<TilingInterface>(op.getOperation()),
                 packOptions);
-        if (failed(tileAndFuseResult))
+        if (failed(tileAndFuseResult)) {
           return WalkResult::interrupt();
+        }
         rewriter.replaceOp(op, tileAndFuseResult->replacements[op.getResult()]);
         return WalkResult::advance();
       });
@@ -203,8 +204,9 @@ static LogicalResult commonRunOnOperation(
         FailureOr<scf::SCFTilingResult> tilingResult = scf::tileUsingSCF(
             rewriter, cast<TilingInterface>(op.getOperation()),
             unpackTilingOptions);
-        if (failed(tilingResult))
+        if (failed(tilingResult)) {
           return WalkResult::interrupt();
+        }
         rewriter.replaceOp(op, tilingResult->replacements);
         return WalkResult::advance();
       });
@@ -342,9 +344,8 @@ static LogicalResult isUnpaddedAndAtBoundary(Operation *op) {
   // If all consumers are dispatch tensor stores, then the `op` is decomposable
   // if it is an UnPackOp.
   if (isa<linalg::UnPackOp>(op) &&
-      llvm::all_of(op->getUsers(), [&](Operation *user) {
-        return isa<IREE::TensorExt::DispatchTensorStoreOp>(user);
-      })) {
+      llvm::all_of(op->getUsers(),
+                   llvm::IsaPred<IREE::TensorExt::DispatchTensorStoreOp>)) {
     return success();
   }
   return failure();

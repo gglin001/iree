@@ -30,25 +30,28 @@ namespace {
 /// For generic ops that are reduction, make the reduction the innermost
 /// dimension.
 struct MakeReductionInnermostPattern final
-    : public OpRewritePattern<linalg::GenericOp> {
+    : OpRewritePattern<linalg::GenericOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(linalg::GenericOp genericOp,
                                 PatternRewriter &rewriter) const override {
     SmallVector<unsigned> interchange;
     bool needInterchange = false;
     unsigned numParallelLoop = genericOp.getNumParallelLoops();
-    if (numParallelLoop == 0)
+    if (numParallelLoop == 0) {
       return failure();
+    }
     for (auto iter : llvm::enumerate(genericOp.getIteratorTypesArray())) {
       if (linalg::isParallelIterator(iter.value())) {
         interchange.push_back(iter.index());
-        if (iter.index() >= numParallelLoop)
+        if (iter.index() >= numParallelLoop) {
           needInterchange = true;
+        }
       }
     }
-    // If all the parallel loops are outter loops skip the pattern.
-    if (!needInterchange)
+    // If all the parallel loops are outer loops skip the pattern.
+    if (!needInterchange) {
       return failure();
+    }
     for (auto iter : llvm::enumerate(genericOp.getIteratorTypesArray())) {
       if (linalg::isReductionIterator(iter.value())) {
         interchange.push_back(iter.index());
@@ -62,8 +65,7 @@ struct MakeReductionInnermostPattern final
 /// ops), the dispatch region fusion logic requires the indexing maps to be
 /// identity (or projections that are not transposing as well). This pattern
 /// fixes up elementwise operations for which that is not the case.
-struct TransposeGenericOpPattern final
-    : public OpRewritePattern<linalg::GenericOp> {
+struct TransposeGenericOpPattern final : OpRewritePattern<linalg::GenericOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(linalg::GenericOp genericOp,
                                 PatternRewriter &rewriter) const override {
@@ -83,8 +85,9 @@ struct TransposeGenericOpPattern final
       // elementwise op) with a single use.
       auto producer = operand->get().getDefiningOp<linalg::LinalgOp>();
       if (!producer || !llvm::hasSingleElement(producer->getUsers()) ||
-          linalg::isElementwise(producer))
+          linalg::isElementwise(producer)) {
         continue;
+      }
 
       // check if the generic op has a non-identity map for the operand.
       auto indexingMap = genericOp.getMatchingIndexingMap(operand);
@@ -93,11 +96,13 @@ struct TransposeGenericOpPattern final
         return rewriter.notifyMatchFailure(genericOp, "already normalized");
       }
       // The map must be a permutation. If not, then look for other operand.
-      if (!indexingMap.isPermutation())
+      if (!indexingMap.isPermutation()) {
         continue;
+      }
 
-      if (!mapForInterchange)
+      if (!mapForInterchange) {
         mapForInterchange = indexingMap;
+      }
     }
 
     if (!mapForInterchange) {
@@ -113,12 +118,77 @@ struct TransposeGenericOpPattern final
   }
 };
 
+/// Normalize the order of reduction dimensions in generic ops to make them
+/// appear in ascending order in the indexing maps.
+struct NormalizeReductionDimsPattern final
+    : OpRewritePattern<linalg::GenericOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(linalg::GenericOp genericOp,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<unsigned> reductionDims;
+    for (auto [idx, iterType] :
+         llvm::enumerate(genericOp.getIteratorTypesArray())) {
+      if (linalg::isReductionIterator(iterType)) {
+        reductionDims.push_back(idx);
+      }
+    }
+    if (reductionDims.size() < 2) {
+      return rewriter.notifyMatchFailure(genericOp, "<2 reduction dims");
+    }
+
+    // Pre-compute dim positions within each indexing map.
+    SmallVector<DenseMap<unsigned, unsigned>> posMaps;
+    for (AffineMap map : genericOp.getIndexingMapsArray()) {
+      DenseMap<unsigned, unsigned> posMap;
+      for (auto [pos, expr] : llvm::enumerate(map.getResults())) {
+        if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
+          posMap[dimExpr.getPosition()] = pos;
+        }
+      }
+      posMaps.push_back(std::move(posMap));
+    }
+
+    // Sort reduction dims by their positions in the indexing maps. Only
+    // reorder a pair if ALL maps that contain both dims unanimously agree
+    // on the ordering; conflicting or unknown pairs keep their original
+    // relative order (guaranteed by stable_sort).
+    SmallVector<unsigned> sorted(reductionDims);
+    llvm::stable_sort(sorted, [&](unsigned dimA, unsigned dimB) {
+      bool anyInfo = false;
+      for (const auto &posMap : posMaps) {
+        auto itA = posMap.find(dimA);
+        auto itB = posMap.find(dimB);
+        if (itA == posMap.end() || itB == posMap.end()) {
+          continue;
+        }
+        anyInfo = true;
+        if (itA->second >= itB->second) {
+          return false;
+        }
+      }
+      return anyInfo;
+    });
+
+    if (sorted == reductionDims) {
+      return rewriter.notifyMatchFailure(genericOp, "already normalized");
+    }
+
+    // Build interchange: identity permutation with reduction dims reordered.
+    auto interchange =
+        llvm::to_vector(llvm::seq<unsigned>(0, genericOp.getNumLoops()));
+    for (size_t i = 0; i < reductionDims.size(); ++i) {
+      interchange[reductionDims[i]] = sorted[i];
+    }
+    return interchangeGenericOp(rewriter, genericOp, interchange);
+  }
+};
+
 struct TransposeGenericOpsPass final
-    : public impl::TransposeGenericOpsPassBase<TransposeGenericOpsPass> {
+    : impl::TransposeGenericOpsPassBase<TransposeGenericOpsPass> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<MakeReductionInnermostPattern, TransposeGenericOpPattern>(
-        &getContext());
+    patterns.add<MakeReductionInnermostPattern, TransposeGenericOpPattern,
+                 NormalizeReductionDimsPattern>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       return signalPassFailure();
     }

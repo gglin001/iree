@@ -66,7 +66,7 @@ iree_cc_library(
   DEPS
     iree::base
     iree::base::internal
-    iree::base::internal::synchronization
+    iree::base::threading
   PUBLIC
 )
 
@@ -129,6 +129,7 @@ iree_cc_library(
   HDRS
     "native_module_test.h"
   DEPS
+    ::cc
     ::impl
     iree::base
   PUBLIC

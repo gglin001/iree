@@ -253,9 +253,9 @@ hal.executable private @conv_2d {
 //         CHECK:         %[[INPUT_THREAD:.+]] = memref.subview %[[INPUT_BLOCK]]
 //         CHECK:         %[[FILTER_THREAD:.+]] = memref.subview %[[ARG0]]
 //         CHECK:         %[[OUTPUT:.+]] = memref.subview %[[OUTPUT_BLOCK]][0, %[[IV_Z]], %[[IV_Y]], %[[IV_X]]]
-//         CHECK:         scf.for %[[IV_FH:.+]] = %[[C0]] to %{{.+}} step %[[C1]]
-//         CHECK:           scf.for %[[IV_FW:.+]] = %[[C0]] to %{{.+}} step %[[C1]]
-//         CHECK:             scf.for %[[IV_IC:.+]] = %[[C0]] to %{{.+}} step %[[C4]]
+//         CHECK:         scf.for {{.+}} = %[[C0]] to %{{.+}} step %[[C1]]
+//         CHECK:           scf.for {{.+}} = %[[C0]] to %{{.+}} step %[[C1]]
+//         CHECK:             scf.for {{.+}} = %[[C0]] to %{{.+}} step %[[C4]]
 //         CHECK:               %[[INPUT:.+]] = memref.subview %[[INPUT_THREAD]]
 //         CHECK:               %[[FILTER:.+]] = memref.subview %[[FILTER_THREAD]]
 //         CHECK:               linalg.conv_2d_nhwc_hwcf
@@ -446,14 +446,14 @@ hal.executable @matvec {
 //       CHECK:     %[[UB:.+]] = affine.min
 //       CHECK:     %[[AVIEW:.+]] = memref.subview %[[A]]
 //       CHECK:     %[[CVIEW:.+]] = memref.subview %[[C]]
-//       CHECK:     %[[IDX:.+]] = gpu.thread_id  x
-//       CHECK:     %[[DIMX:.+]] = gpu.block_dim  x
+//       CHECK:     %[[IDX:.+]] = gpu.thread_id x
+//       CHECK:     %[[DIMX:.+]] = gpu.block_dim x
 //       CHECK:     scf.for %[[IV:.+]] = %[[IDX]] to %[[UB]] step %[[DIMX]]
 //       CHECK:       %[[OUTPUT:.+]] = memref.subview %[[CVIEW]][%[[IV]]] [1] [1]
 //       CHECK:       linalg.fill
 //  CHECK-SAME:         outs(%[[OUTPUT]] : memref<1xf32, strided<[1], offset: ?>>)
-//       CHECK:     %[[IDX:.+]] = gpu.thread_id  x
-//       CHECK:     %[[DIMX:.+]] = gpu.block_dim  x
+//       CHECK:     %[[IDX:.+]] = gpu.thread_id x
+//       CHECK:     %[[DIMX:.+]] = gpu.block_dim x
 //       CHECK:     scf.for %[[IV:.+]] = %[[IDX]] to %[[UB]] step %[[DIMX]]
 //       CHECK:       %[[INPUT:.+]] = memref.subview %[[AVIEW]][%[[IV]], 0] [1, 1024] [1, 1]
 //       CHECK:       %[[OUTPUT:.+]] = memref.subview %[[CVIEW]][%[[IV]]] [1] [1]

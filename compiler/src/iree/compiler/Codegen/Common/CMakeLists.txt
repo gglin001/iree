@@ -78,9 +78,9 @@ iree_cc_library(
     "ConfigTrackingCanonicalizer.cpp"
     "ConvertAccGEMMToGEMMPass.cpp"
     "ConvertBf16ArithToF32.cpp"
-    "ConvertBf16ToUInt16Buffers.cpp"
-    "ConvertToDestinationPassingStylePass.cpp"
     "ConvertUnsupportedFloatArithPass.cpp"
+    "ConvertUnsupportedFloatToIntBuffers.cpp"
+    "ConvertWorkgroupForallToPCF.cpp"
     "ConvolutionToIGEMM.cpp"
     "DecomposeAffineOpsPass.cpp"
     "DecomposeConvolutionToLowerDimOps.cpp"
@@ -97,6 +97,7 @@ iree_cc_library(
     "FissionTransferOpsInControlFlow.cpp"
     "FlattenMemRefSubspanPass.cpp"
     "FlattenMemRefs.cpp"
+    "FlattenSwizzleHintAllocs.cpp"
     "FoldAffineMinInDistributedLoops.cpp"
     "FoldSplitReductionAndWorkgroupMappingLoopsPass.cpp"
     "FoldTensorExtractOpPass.cpp"
@@ -107,11 +108,15 @@ iree_cc_library(
     "GenericVectorization.cpp"
     "HoistStaticallyBoundAllocations.cpp"
     "HoistUnrolledVectorExtractInsertSlice.cpp"
+    "IREECodegenAffineExpandIndexOps.cpp"
     "IREECodegenCanonicalizer.cpp"
+    "IREECodegenFoldMemRefAliasOps.cpp"
+    "IREECodegenLowerAffine.cpp"
     "IREEComprehensiveBufferizePass.cpp"
     "IREEExpandStridedMetadata.cpp"
     "IREEInjectAssumeAlignment.cpp"
     "IREELoopInvariantCodeMotion.cpp"
+    "InsertBatchDimForBatchlessConv.cpp"
     "InstrumentMemoryAccesses.cpp"
     "LinkTuningSpecsPass.cpp"
     "LowerExecutableUsingTransformDialect.cpp"
@@ -122,6 +127,7 @@ iree_cc_library(
     "MaterializeEncodingIntoNop.cpp"
     "MaterializeEncodingPatterns.cpp"
     "MaterializeTuningSpecsPass.cpp"
+    "MaterializeVectorMasking.cpp"
     "MathTransformPass.cpp"
     "MemrefCopyToLinalg.cpp"
     "NormalizeLoopBounds.cpp"
@@ -136,10 +142,12 @@ iree_cc_library(
     "PropagateReshapesByExpansion.cpp"
     "ReconcileTranslationInfo.cpp"
     "RematerializeParallelOps.cpp"
+    "RemoveIndexHints.cpp"
     "RemoveSingleIterationLoop.cpp"
     "ReplaceSlowMinMaxOps.cpp"
     "ReshapePatterns.cpp"
     "ResolveSwizzleHints.cpp"
+    "ResolveWorkgroupCountHints.cpp"
     "SpecializeExports.cpp"
     "SplitFullPartialTransferPass.cpp"
     "StripCompilationInfoPass.cpp"
@@ -147,7 +155,6 @@ iree_cc_library(
     "TensorToVectorVectorizePad.cpp"
     "TestExecutablePreprocessing.cpp"
     "TestPartitionableLoopsInterface.cpp"
-    "TileAndDistributeToWorkgroupsPass.cpp"
     "TileAndFuseUtils.cpp"
     "TileDispatchUsingForall.cpp"
     "TileDispatchUsingInterface.cpp"
@@ -171,6 +178,7 @@ iree_cc_library(
     MLIRAMDGPUUtils
     MLIRAffineAnalysis
     MLIRAffineDialect
+    MLIRAffineToStandard
     MLIRAffineTransforms
     MLIRAffineUtils
     MLIRAnalysis
@@ -189,6 +197,7 @@ iree_cc_library(
     MLIRLLVMCommonConversion
     MLIRLLVMDialect
     MLIRLinalgDialect
+    MLIRLinalgInterfacesIncGenLib
     MLIRLinalgTransforms
     MLIRLinalgUtils
     MLIRLoopLikeInterface
@@ -223,14 +232,18 @@ iree_cc_library(
     iree::compiler::Codegen::Common::FoldTensorExtractOpIncGen
     iree::compiler::Codegen::Dialect::CPU::IR::IREECPUDialect
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
+    iree::compiler::Codegen::Dialect::Codegen::Transforms::IREECodegenTransforms
     iree::compiler::Codegen::Dialect::Codegen::Utils
     iree::compiler::Codegen::Dialect::GPU::IR::IREEGPUDialect
     iree::compiler::Codegen::Dialect::GPU::TargetUtils::KnownTargets
+    iree::compiler::Codegen::Dialect::PCF::IR
+    iree::compiler::Codegen::Dialect::PCF::Transforms
     iree::compiler::Codegen::Dialect::VectorExt::IR::IREEVectorExtDialect
     iree::compiler::Codegen::Dialect::VectorExt::Transforms::VectorExtTransforms
     iree::compiler::Codegen::Interfaces::BufferizationInterfaces
     iree::compiler::Codegen::Interfaces::PartitionableLoopsInterface
     iree::compiler::Codegen::Interfaces::UKernelOpInterface
+    iree::compiler::Codegen::Interfaces::VectorizableOpInterface
     iree::compiler::Codegen::Transforms
     iree::compiler::Codegen::Utils
     iree::compiler::Dialect::Encoding::IR
@@ -310,6 +323,7 @@ iree_cc_library(
     iree::compiler::Codegen::Dialect::Codegen::IR::IREECodegenDialect
     iree::compiler::Codegen::Dialect::GPU::IR::IREEGPUDialect
     iree::compiler::Codegen::Dialect::GPU::TransformExtensions::IREEGPUExtensions
+    iree::compiler::Codegen::Dialect::PCF::IR
     iree::compiler::Codegen::Dialect::VectorExt::IR::IREEVectorExtDialect
     iree::compiler::Codegen::LLVMCPU::TransformExtensions::LLVMCPUExtensions
     iree::compiler::Codegen::LLVMGPU::TransformExtensions::LLVMGPUExtensions

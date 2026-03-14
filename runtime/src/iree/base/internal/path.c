@@ -12,9 +12,13 @@
 static iree_status_t iree_string_view_dup(iree_string_view_t value,
                                           iree_allocator_t allocator,
                                           char** out_buffer) {
+  iree_host_size_t alloc_size = 0;
+  if (!iree_host_size_checked_add(value.size, 1, &alloc_size)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "string length overflow");
+  }
   char* buffer = NULL;
   IREE_RETURN_IF_ERROR(
-      iree_allocator_malloc(allocator, value.size + 1, (void**)&buffer));
+      iree_allocator_malloc(allocator, alloc_size, (void**)&buffer));
   memcpy(buffer, value.data, value.size);
   buffer[value.size] = 0;  // NUL
   *out_buffer = buffer;
@@ -26,10 +30,15 @@ static iree_status_t iree_string_view_cat(iree_string_view_t lhs,
                                           iree_allocator_t allocator,
                                           char** out_buffer) {
   // Allocate storage buffer with NUL character.
-  iree_host_size_t total_length = lhs.size + rhs.size;
+  iree_host_size_t total_length = 0;
+  iree_host_size_t alloc_size = 0;
+  if (!iree_host_size_checked_add(lhs.size, rhs.size, &total_length) ||
+      !iree_host_size_checked_add(total_length, 1, &alloc_size)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "string length overflow");
+  }
   char* buffer = NULL;
   IREE_RETURN_IF_ERROR(
-      iree_allocator_malloc(allocator, total_length + 1, (void**)&buffer));
+      iree_allocator_malloc(allocator, alloc_size, (void**)&buffer));
 
   // Copy both parts.
   memcpy(buffer, lhs.data, lhs.size);
@@ -48,14 +57,30 @@ static iree_status_t iree_string_view_join(iree_host_size_t part_count,
   // Compute total output size in characters.
   iree_host_size_t total_length = 0;
   for (iree_host_size_t i = 0; i < part_count; ++i) {
-    total_length += parts[i].size;
+    if (!iree_host_size_checked_add(total_length, parts[i].size,
+                                    &total_length)) {
+      return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "join length overflow");
+    }
   }
-  total_length += part_count > 0 ? separator.size * (part_count - 1) : 0;
+  if (part_count > 0) {
+    iree_host_size_t separator_total = 0;
+    if (!iree_host_size_checked_mul(separator.size, part_count - 1,
+                                    &separator_total) ||
+        !iree_host_size_checked_add(total_length, separator_total,
+                                    &total_length)) {
+      return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "join length overflow");
+    }
+  }
 
   // Allocate storage buffer with NUL character.
+  iree_host_size_t alloc_size = 0;
+  if (!iree_host_size_checked_add(total_length, 1, &alloc_size)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "allocation size overflow");
+  }
   char* buffer = NULL;
   IREE_RETURN_IF_ERROR(
-      iree_allocator_malloc(allocator, total_length + 1, (void**)&buffer));
+      iree_allocator_malloc(allocator, alloc_size, (void**)&buffer));
 
   // Append each part and a separator between each.
   char* p = buffer;
@@ -73,28 +98,9 @@ static iree_status_t iree_string_view_join(iree_host_size_t part_count,
   return iree_ok_status();
 }
 
-static iree_host_size_t iree_file_path_canonicalize_unix(
-    char* path, iree_host_size_t path_length) {
-  char* p = path;
-  iree_host_size_t new_length = path_length;
-
-  // Replace `//` with `/`.
-  if (new_length > 1) {
-    for (iree_host_size_t i = 0; i < new_length - 1; ++i) {
-      if (p[i] == '/' && p[i + 1] == '/') {
-        memmove(&p[i + 1], &p[i + 2], new_length - i - 2);
-        --new_length;
-        --i;
-      }
-    }
-  }
-
-  path[new_length] = 0;  // NUL
-  return new_length;
-}
-
-static iree_host_size_t iree_file_path_canonicalize_win32(
-    char* path, iree_host_size_t path_length) {
+#if defined(IREE_PLATFORM_WINDOWS)
+iree_host_size_t iree_file_path_canonicalize(char* path,
+                                             iree_host_size_t path_length) {
   char* p = path;
   iree_host_size_t new_length = path_length;
 
@@ -117,15 +123,27 @@ static iree_host_size_t iree_file_path_canonicalize_win32(
   path[new_length] = 0;  // NUL
   return new_length;
 }
-
+#else
 iree_host_size_t iree_file_path_canonicalize(char* path,
                                              iree_host_size_t path_length) {
-#if defined(IREE_PLATFORM_WINDOWS)
-  return iree_file_path_canonicalize_win32(path, path_length);
-#else
-  return iree_file_path_canonicalize_unix(path, path_length);
-#endif  // IREE_PLATFORM_WINDOWS
+  char* p = path;
+  iree_host_size_t new_length = path_length;
+
+  // Replace `//` with `/`.
+  if (new_length > 1) {
+    for (iree_host_size_t i = 0; i < new_length - 1; ++i) {
+      if (p[i] == '/' && p[i + 1] == '/') {
+        memmove(&p[i + 1], &p[i + 2], new_length - i - 2);
+        --new_length;
+        --i;
+      }
+    }
+  }
+
+  path[new_length] = 0;  // NUL
+  return new_length;
 }
+#endif  // IREE_PLATFORM_WINDOWS
 
 iree_status_t iree_file_path_join(iree_string_view_t lhs,
                                   iree_string_view_t rhs,

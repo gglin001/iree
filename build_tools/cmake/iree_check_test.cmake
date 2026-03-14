@@ -7,9 +7,11 @@
 function(iree_is_bytecode_module_test_excluded_by_labels _DST_IS_EXCLUDED_VAR _SRC_LABELS)
   string(TOLOWER "${CMAKE_BUILD_TYPE}" _LOWERCASE_BUILD_TYPE)
   if(((IREE_ARCH MATCHES "^riscv_") AND ("noriscv" IN_LIST _SRC_LABELS)) OR
+     ((IREE_ARCH STREQUAL "arm_64") AND ("noaarch64" IN_LIST _SRC_LABELS)) OR
      (EMSCRIPTEN AND ("nowasm" IN_LIST _SRC_LABELS)) OR
      (IREE_ENABLE_ASAN AND ("noasan" IN_LIST _SRC_LABELS)) OR
      (IREE_ENABLE_TSAN AND ("notsan" IN_LIST _SRC_LABELS)) OR
+     (IREE_ENABLE_UBSAN AND ("noubsan" IN_LIST _SRC_LABELS)) OR
      (CMAKE_CROSSCOMPILING AND "hostonly" IN_LIST _RULE_LABELS) OR
      ((_LOWERCASE_BUILD_TYPE STREQUAL "debug") AND ( "optonly" IN_LIST _RULE_LABELS)))
     set("${_DST_IS_EXCLUDED_VAR}" TRUE PARENT_SCOPE)
@@ -27,7 +29,7 @@ endfunction()
 #   SRC: mlir source file to be compiled to an IREE module.
 #   TARGET_BACKEND: target backend to compile for.
 #   DRIVER: driver to run the module with. This can be omitted to test only
-#       compilation, but consider omiting the driver as a hacky abuse of the
+#       compilation, but consider omitting the driver as a hacky abuse of the
 #       rule since compilation on its own not use iree-check-module.
 #   COMPILER_FLAGS: additional flags to pass to the compiler. Bytecode output
 #       format and backend flags are passed automatically.
@@ -100,7 +102,7 @@ function(iree_check_test)
       set(_BYTECODE_MODULE_BUILD_ENABLED FALSE)
     endif()
     # rocm/hip require a target chip to be specified at compile time that matches the runtime device
-    if(_NORMALIZED_TARGET_BACKEND STREQUAL "ROCM" AND NOT IREE_HIP_TEST_TARGET_CHIP)
+    if(_NORMALIZED_TARGET_BACKEND STREQUAL "ROCM" AND NOT IREE_ROCM_TEST_TARGET_CHIP)
       set(_BYTECODE_MODULE_BUILD_ENABLED FALSE)
     endif()
   endif()
@@ -159,7 +161,7 @@ function(iree_check_test)
     list(APPEND _BASE_COMPILER_FLAGS "--iree-input-type=${_RULE_INPUT_TYPE}")
   endif()
   if(_NORMALIZED_TARGET_BACKEND STREQUAL "ROCM")
-    list(APPEND _BASE_COMPILER_FLAGS "--iree-hip-target=${IREE_HIP_TEST_TARGET_CHIP}")
+    list(APPEND _BASE_COMPILER_FLAGS "--iree-rocm-target=${IREE_ROCM_TEST_TARGET_CHIP}")
   endif()
 
   if(_BYTECODE_MODULE_BUILD_ENABLED)
@@ -226,7 +228,7 @@ endfunction()
 #   SRCS: source mlir files containing the module.
 #   TARGET_BACKEND: target backend to compile for.
 #   DRIVER: driver to run the module with. This can be omitted to test only
-#       compilation, but consider omiting the driver as a hacky abuse of the
+#       compilation, but consider omitting the driver as a hacky abuse of the
 #       rule since compilation on its own not use iree-check-module.
 #   COMPILER_FLAGS: additional flags to pass to the compiler. Bytecode output
 #       format and backend flags are passed automatically.

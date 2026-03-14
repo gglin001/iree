@@ -7,11 +7,15 @@
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenTypes.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/DerivedConfigUtils.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/GPUTileSwizzleUtils.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUEnums.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUOps.h"
 #include "iree/compiler/Dialect/LinalgExt/Utils/MatchUtils.h"
+#include "iree/compiler/Utils/EncodingUtils.h"
 #include "iree/compiler/Utils/Indexing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLForwardCompat.h"
@@ -23,6 +27,8 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/TileUsingInterface.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
@@ -73,6 +79,14 @@ static bool is_AMD(MMAIntrinsic intrinsic) {
   return is_AMD_MFMA(intrinsic) || is_AMD_WMMA(intrinsic);
 }
 
+bool isNvMmaSync(MMAIntrinsic intrinsic) {
+  return getArchID(intrinsic) == 0x2000;
+}
+
+static bool isNvWmma(MMAIntrinsic intrinsic) {
+  return getArchID(intrinsic) == 0x2100;
+}
+
 int64_t getIntrinsicSubgroupSize(ScaledMMAIntrinsic intrinsic) {
   switch (intrinsic) {
   case ScaledMMAIntrinsic::MFMA_SCALE_F32_16x16x128_B32:
@@ -114,13 +128,15 @@ static std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *context,
   case MMAIntrinsic::MFMA_F32_32x32x16_F16:
   case MMAIntrinsic::WMMAR3_F32_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F32_16x16x16_F16:
+  case MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16:
   case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
   case MMAIntrinsic::WMMA_F32_16x16x32_F16:
     return {f16, f16, f32};
   case MMAIntrinsic::WMMAR3_F16_16x16x16_F16:
   case MMAIntrinsic::WMMAR4_F16_16x16x16_F16:
-  case MMAIntrinsic::WMMA_F16_16x16x32_F16:
   case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
+  case MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16:
+  case MMAIntrinsic::WMMA_F16_16x16x32_F16:
     return {f16, f16, f16};
   case MMAIntrinsic::MFMA_F32_16x16x8_BF16:
   case MMAIntrinsic::MFMA_F32_32x32x4_BF16:
@@ -511,6 +527,21 @@ MMASingleSubgroupLayout getSingleSubgroupLayout(MMAIntrinsic intrinsic,
     case kMMAOperandAcc:
       return gfx12WmmaAcc16x16;
     }
+  case MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16:
+  case MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16:
+    switch (operandIndex) {
+    case kMMAOperandLhs:
+      return {/*outer=*/{2, 2}, /*thread=*/{8, 4}, /*strides=*/{4, 1},
+              /*element=*/{1, 2}};
+    case kMMAOperandRhs:
+      return {/*outer=*/{2, 1}, /*thread=*/{4, 8}, /*strides=*/{1, 4},
+              /*element=*/{2, 1}};
+    case kMMAOperandAcc:
+      return {/*outer=*/{2, 1}, /*thread=*/{8, 4}, /*strides=*/{4, 1},
+              /*element=*/{1, 2}};
+    default:
+      return {};
+    }
   case MMAIntrinsic::NV_WMMA_F32_16x16x16_F16:
   case MMAIntrinsic::NV_WMMA_F16_16x16x16_F16:
     return {};
@@ -561,14 +592,15 @@ struct OpaqueMmaLayout {
 
 static std::tuple<int64_t, int64_t, int64_t>
 getMNKShapeFromIntrinsic(MMAIntrinsic intrinsic) {
-  if (is_AMD(intrinsic)) {
-    auto lhs = getSingleSubgroupLayout(intrinsic, kMMAOperandLhs);
-    auto rhs = getSingleSubgroupLayout(intrinsic, kMMAOperandRhs);
-    return {lhs.outer[0] * lhs.thread[0] * lhs.element[0],
-            rhs.outer[1] * rhs.thread[1] * rhs.element[1],
-            lhs.outer[1] * lhs.thread[1] * lhs.element[1]};
+  if (intrinsic == MMAIntrinsic::NV_WMMA_F32_16x16x16_F16 ||
+      intrinsic == MMAIntrinsic::NV_WMMA_F16_16x16x16_F16) {
+    return getUnsupportedMNKShape(intrinsic);
   }
-  return getUnsupportedMNKShape(intrinsic);
+  auto lhs = getSingleSubgroupLayout(intrinsic, kMMAOperandLhs);
+  auto rhs = getSingleSubgroupLayout(intrinsic, kMMAOperandRhs);
+  return {lhs.outer[0] * lhs.thread[0] * lhs.element[0],
+          rhs.outer[1] * rhs.thread[1] * rhs.element[1],
+          lhs.outer[1] * lhs.thread[1] * lhs.element[1]};
 }
 
 int64_t getMSize(MMAIntrinsic intrinsic) {
@@ -603,6 +635,11 @@ getSingleSubgroupLayout(IREE::Codegen::InnerTileDescAttrInterface mmaKind,
     return IREE::GPU::getSingleSubgroupLayout(
         vmmaAttr.getIntrinsic(), operandIndex,
         operandIndex == kMMAOperandAcc && vmmaAttr.getColMajor());
+  }
+  if (auto smmaAttr = dyn_cast<ScaledMMAAttr>(mmaKind)) {
+    return IREE::GPU::getSingleSubgroupLayout(
+        smmaAttr.getIntrinsic(), operandIndex,
+        operandIndex == kScaledMMAOperandAcc && smmaAttr.getColMajor());
   }
   assert(false && "unhandled MMA Interface type.");
   return {};
@@ -652,6 +689,12 @@ static VectorType getThreadVectorType(MLIRContext *context,
   Type elemType = isIntrinsicLhs<MMAIntrinsicType>(operandIndex)   ? o.aType
                   : isIntrinsicRhs<MMAIntrinsicType>(operandIndex) ? o.bType
                                                                    : o.cType;
+  if constexpr (std::is_same_v<MMAIntrinsicType, MMAIntrinsic>) {
+    if (isNvMmaSync(intrinsic)) {
+      return VectorType::get(
+          {s.outer[0] * s.outer[1], s.element[0] * s.element[1]}, elemType);
+    }
+  }
   return VectorType::get(
       {s.element[0] * s.element[1] * s.outer[0] * s.outer[1]}, elemType);
 }
@@ -687,8 +730,15 @@ int64_t MMAAttr::getSubgroupSize() const {
   return getIntrinsicSubgroupSize(getIntrinsic());
 }
 
+SmallVector<SmallVector<utils::IteratorType>>
+MMAAttr::getOperandIteratorTypes() const {
+  return {{utils::IteratorType::parallel, utils::IteratorType::reduction},
+          {utils::IteratorType::reduction, utils::IteratorType::parallel},
+          {utils::IteratorType::parallel, utils::IteratorType::parallel}};
+}
+
 Attribute MMAAttr::getDistributionMappingKind() const {
-  // Explicit distribution currently unsupported for NV intrinsics.
+  // Explicit distribution currently unsupported for NV WMMA intrinsics.
   MMAIntrinsic intrinsic = getIntrinsic();
   if (intrinsic == MMAIntrinsic::NV_WMMA_F16_16x16x16_F16 ||
       intrinsic == MMAIntrinsic::NV_WMMA_F32_16x16x16_F16) {
@@ -699,8 +749,9 @@ Attribute MMAAttr::getDistributionMappingKind() const {
 
 OpFoldResult MMAAttr::getDistributionWorkerCount(OpBuilder &, Location,
                                                  Operation *) const {
-  if (!getDistributionMappingKind())
+  if (!getDistributionMappingKind()) {
     return OpFoldResult();
+  }
   return getAsIndexOpFoldResult(getContext(), getSubgroupSize());
 }
 
@@ -749,6 +800,26 @@ static Value createMmaOp(OpBuilder &builder, Location loc,
                                   layout.nSize, layout.kSize, lhs, rhs, acc)
         .getResult();
   }
+  if (isNvMmaSync(intrinsic)) {
+    // Transpose the two outer dimensions to model the column-major register
+    // ordering expected by mma.sync. The input shape differs between pipelines:
+    // VectorDistribute produces 2x2x1x2, TileAndFuse produces 2x1x2x2.
+    // Remove the unit dimension to simplify the transpose.
+    auto nonUnitVecType = VectorType::get({2, 2, 2}, builder.getF16Type());
+    auto reshaped =
+        vector::ShapeCastOp::create(builder, loc, nonUnitVecType, lhs);
+    auto permAttr = builder.getDenseI64ArrayAttr({1, 0, 2});
+    auto transposed = vector::TransposeOp::create(builder, loc, nonUnitVecType,
+                                                  reshaped, permAttr);
+    lhs = vector::ShapeCastOp::create(builder, loc, lhs.getType(), transposed);
+    Attribute mmaShape[] = {builder.getI64IntegerAttr(layout.mSize),
+                            builder.getI64IntegerAttr(layout.nSize),
+                            builder.getI64IntegerAttr(layout.kSize)};
+    ArrayAttr mmShapeAttr = builder.getArrayAttr(mmaShape);
+
+    return nvgpu::MmaSyncOp::create(builder, loc, lhs, rhs, acc, mmShapeAttr)
+        .getResult();
+  }
   return {};
 }
 
@@ -778,6 +849,59 @@ MMAAttr::buildUnderlyingOperations(OpBuilder &builder, Location loc,
     return success();
   }
   return failure();
+}
+
+/// Creates index_hint ops wrapping delinearized lane ID values.
+/// The `delinearizedLaneId` values come from delinearizing the lane ID using
+/// `basis`, with the innermost/fastest-varying dimension last.
+///
+/// Non-final indices get lane_constant hints (uniform across lane groups).
+/// The final index gets lane_increment hint (increments within lane group).
+/// The group size is derived from the innermost basis element.
+/// Indices with a unit basis are ignored, and given a lane_constant hint.
+static SmallVector<Value>
+createTransposeLoadIndexHint(OpBuilder &builder, Location loc,
+                             ValueRange delinearizedLaneId,
+                             ArrayRef<int64_t> basis) {
+  // Need at least 2 dimensions for transpose load pattern.
+  if (delinearizedLaneId.size() < 2) {
+    return SmallVector<Value>(delinearizedLaneId.begin(),
+                              delinearizedLaneId.end());
+  }
+
+  // Find the index of the innermost non-unit (> 1) basis element.
+  // This determines which result gets the lane-increment hint.
+  // Size-1 dimensions produce constant 0 outputs regardless of lane ID,
+  // so they don't contribute to the meaningful group structure.
+  int64_t groupSize = 1;
+  size_t incrementResultIdx = delinearizedLaneId.size() - 1;
+  // The delinearized indices could have N or N + 1 results, and the basis
+  // elements are aligned with the last N results, so iterate backwards
+  // together.
+  for (size_t i = 1; i <= basis.size(); ++i) {
+    groupSize = basis[basis.size() - i];
+    incrementResultIdx = delinearizedLaneId.size() - i;
+    if (groupSize > 1) {
+      break;
+    }
+  }
+
+  auto laneConstantAttr =
+      IREE::GPU::LaneConstantAttr::get(builder.getContext(), groupSize);
+  auto laneIncrementAttr = IREE::GPU::LaneIncrementAttr::get(
+      builder.getContext(), groupSize, /*step=*/1, /*aligned=*/true);
+
+  SmallVector<Value> results;
+  for (auto [i, value] : llvm::enumerate(delinearizedLaneId)) {
+    // The result corresponding to innermost non-unit basis gets lane-increment;
+    // all other results get lane-constant hints.
+    Attribute hint = (i == incrementResultIdx) ? Attribute(laneIncrementAttr)
+                                               : Attribute(laneConstantAttr);
+    auto hintOp = IREE::Codegen::IndexHintOp::create(builder, loc, value, hint);
+    results.push_back(hintOp.getResult());
+  }
+
+  return results;
 }
 
 static LogicalResult populateCanonicalOffsetsSizesAndStrides(
@@ -817,6 +941,12 @@ static LogicalResult populateCanonicalOffsetsSizesAndStrides(
   auto splitLaneId = affine::AffineDelinearizeIndexOp::create(
       builder, loc, laneId, vtidBasis, /*hasOuterBound=*/false);
 
+  // Wrap delinearize results with index_hint ops for transpose load.
+  // The delinearize results are already in the correct order
+  // (innermost/fastest-varying dimension is last).
+  SmallVector<Value> hintedSplitLaneId = createTransposeLoadIndexHint(
+      builder, loc, splitLaneId.getResults(), vtidBasis);
+
   // Each thread grabs `element` contiguous data, so the vtid needs to be
   // multiplied by `element` to get the next bunch of data.
   // vtid: virtual thread id
@@ -828,7 +958,7 @@ static LogicalResult populateCanonicalOffsetsSizesAndStrides(
   // worsen the generated code quality.
   for (auto [splitResultIdx, element] :
        llvm::zip_equal(dimToVtid, subgroupLayout.element)) {
-    Value vtid = splitLaneId.getResult(splitResultIdx);
+    Value vtid = hintedSplitLaneId[splitResultIdx];
     int64_t vtidLen = vtidBasis[splitResultIdx - 1];
     if (element != 1) {
       vtid = affine::AffineLinearizeIndexOp::create(
@@ -898,6 +1028,13 @@ int64_t DataTiledMMAAttr::getFlatWorkgroupSize() const {
          getSubgroupsK();
 }
 
+SmallVector<SmallVector<utils::IteratorType>>
+DataTiledMMAAttr::getOperandIteratorTypes() const {
+  return {{utils::IteratorType::parallel, utils::IteratorType::reduction},
+          {utils::IteratorType::reduction, utils::IteratorType::parallel},
+          {utils::IteratorType::parallel, utils::IteratorType::parallel}};
+}
+
 /// Increment the mutable vector `indices` to traverse the index space below
 /// `sizes`, with the last dimension moving fastest, or returns false if that
 /// index space was exhausted.
@@ -932,12 +1069,13 @@ static Value flattenVector(OpBuilder &builder, Location loc, Value value) {
 static SmallVector<Value>
 distributeMmaFragmentToIntrinsics(OpBuilder &builder, Location loc, Value value,
                                   const TileSwizzle &swizzle) {
-  auto internalShape = sliceSwizzledShape(swizzle, [](TileSwizzle::Dim dim) {
-    return dim.kind == TileSwizzle::Dim::Kind::Internal;
-  });
+  auto internalShape =
+      Codegen::sliceSwizzledShape(swizzle, [](TileSwizzle::Dim dim) {
+        return dim.kind() == TileSwizzle::Dim::Kind::Internal;
+      });
   auto crossIntrinsicShape =
-      sliceSwizzledShape(swizzle, [](TileSwizzle::Dim dim) {
-        return dim.kind == TileSwizzle::Dim::Kind::CrossIntrinsic;
+      Codegen::sliceSwizzledShape(swizzle, [](TileSwizzle::Dim dim) {
+        return dim.kind() == TileSwizzle::Dim::Kind::CrossIntrinsic;
       });
   LDBG() << "crossIntrinsicShape: " << llvm::interleaved(crossIntrinsicShape);
   int rank = internalShape.size();
@@ -1007,12 +1145,12 @@ LogicalResult DataTiledMMAAttr::buildUnderlyingOperations(
 
   // Insert the results into the destination accumulator.
   SmallVector<int64_t> accCrossIntrinsicShape =
-      sliceSwizzledShape(accSwizzle, [](TileSwizzle::Dim dim) {
-        return dim.kind == TileSwizzle::Dim::Kind::CrossIntrinsic;
+      Codegen::sliceSwizzledShape(accSwizzle, [](TileSwizzle::Dim dim) {
+        return dim.kind() == TileSwizzle::Dim::Kind::CrossIntrinsic;
       });
   SmallVector<int64_t> accInternalShape =
-      sliceSwizzledShape(accSwizzle, [](TileSwizzle::Dim dim) {
-        return dim.kind == TileSwizzle::Dim::Kind::Internal;
+      Codegen::sliceSwizzledShape(accSwizzle, [](TileSwizzle::Dim dim) {
+        return dim.kind() == TileSwizzle::Dim::Kind::Internal;
       });
 
   LDBG() << "accCrossIntrinsicShape: "
@@ -1240,18 +1378,18 @@ LogicalResult VirtualMMAAttr::buildUnderlyingOperations(
     Value acc = outputs[0];
     for (int i = 0; i < unrollKFactor; i++) {
       int64_t offset = vectorWidth * i;
-      Value sliced_lhs = vector::ExtractStridedSliceOp::create(
+      Value slicedLhs = vector::ExtractStridedSliceOp::create(
           builder, loc, inputs[0], ArrayRef<int64_t>{offset},
           ArrayRef<int64_t>{vectorWidth}, ArrayRef<int64_t>{1});
-      Value sliced_rhs = vector::ExtractStridedSliceOp::create(
+      Value slicedRhs = vector::ExtractStridedSliceOp::create(
           builder, loc, inputs[1], ArrayRef<int64_t>{offset},
           ArrayRef<int64_t>{vectorWidth}, ArrayRef<int64_t>{1});
       if (getColMajor()) {
-        std::swap(sliced_lhs, sliced_rhs);
+        std::swap(slicedLhs, slicedRhs);
       }
       acc = amdgpu::MFMAOp::create(builder, loc, outputs[0].getType(), m, n,
-                                   nativeKSize, getBlockSize(), sliced_lhs,
-                                   sliced_rhs, acc)
+                                   nativeKSize, getBlockSize(), slicedLhs,
+                                   slicedRhs, acc)
                 .getResult();
     }
     results.push_back(acc);
@@ -1272,6 +1410,13 @@ int64_t VirtualMMAAttr::getBlockSize() const {
   }
   assert(false && "unhandled virtual mma layout type.");
   return 0;
+}
+
+SmallVector<SmallVector<utils::IteratorType>>
+VirtualMMAAttr::getOperandIteratorTypes() const {
+  return {{utils::IteratorType::parallel, utils::IteratorType::reduction},
+          {utils::IteratorType::reduction, utils::IteratorType::parallel},
+          {utils::IteratorType::parallel, utils::IteratorType::parallel}};
 }
 
 MMASingleSubgroupLayout getSingleSubgroupLayout(VirtualMMAIntrinsic intrinsic,
@@ -1618,6 +1763,17 @@ LogicalResult ScaledMMAAttr::buildUnderlyingOperations(
   return success();
 }
 
+SmallVector<SmallVector<utils::IteratorType>>
+ScaledMMAAttr::getOperandIteratorTypes() const {
+  return {{utils::IteratorType::parallel, utils::IteratorType::reduction,
+           utils::IteratorType::reduction},
+          {utils::IteratorType::reduction, utils::IteratorType::reduction,
+           utils::IteratorType::parallel},
+          {utils::IteratorType::parallel, utils::IteratorType::reduction},
+          {utils::IteratorType::reduction, utils::IteratorType::parallel},
+          {utils::IteratorType::parallel, utils::IteratorType::parallel}};
+}
+
 //===----------------------------------------------------------------------===//
 // DataTiledScaledMMA Attributes
 //===----------------------------------------------------------------------===//
@@ -1777,12 +1933,12 @@ LogicalResult DataTiledScaledMMAAttr::buildUnderlyingOperations(
 
   // Insert the results into the destination accumulator.
   SmallVector<int64_t> accCrossIntrinsicShape =
-      sliceSwizzledShape(accSwizzle, [](TileSwizzle::Dim dim) {
-        return dim.kind == TileSwizzle::Dim::Kind::CrossIntrinsic;
+      Codegen::sliceSwizzledShape(accSwizzle, [](TileSwizzle::Dim dim) {
+        return dim.kind() == TileSwizzle::Dim::Kind::CrossIntrinsic;
       });
   SmallVector<int64_t> accInternalShape =
-      sliceSwizzledShape(accSwizzle, [](TileSwizzle::Dim dim) {
-        return dim.kind == TileSwizzle::Dim::Kind::Internal;
+      Codegen::sliceSwizzledShape(accSwizzle, [](TileSwizzle::Dim dim) {
+        return dim.kind() == TileSwizzle::Dim::Kind::Internal;
       });
 
   LDBG() << "accCrossIntrinsicShape: "
@@ -1825,14 +1981,26 @@ DataTiledScaledMMAAttr::verifyIndexingMaps(ArrayRef<AffineMap> maps) const {
   return IREE::LinalgExt::inferScaledContractionDims(maps);
 }
 
+SmallVector<SmallVector<utils::IteratorType>>
+DataTiledScaledMMAAttr::getOperandIteratorTypes() const {
+  return {{utils::IteratorType::parallel, utils::IteratorType::reduction,
+           utils::IteratorType::reduction},
+          {utils::IteratorType::reduction, utils::IteratorType::reduction,
+           utils::IteratorType::parallel},
+          {utils::IteratorType::parallel, utils::IteratorType::reduction},
+          {utils::IteratorType::reduction, utils::IteratorType::parallel},
+          {utils::IteratorType::parallel, utils::IteratorType::parallel}};
+}
+
 //===----------------------------------------------------------------------===//
 // Target Attributes
 //===----------------------------------------------------------------------===//
 
 std::optional<int> TargetAttr::getCUDAComputeCapability() const {
   StringRef arch = getArch();
-  if (!arch.starts_with("sm_"))
+  if (!arch.starts_with("sm_")) {
     return false;
+  }
   APInt version;
   if (arch.substr(3).getAsInteger(10, version)) {
     return false;
@@ -1843,14 +2011,16 @@ std::optional<int> TargetAttr::getCUDAComputeCapability() const {
 bool TargetAttr::supportsTF32InputMMAOps() const {
   // TODO: scan the list of MMA ops to decude after plumbing through support
   // for NVIDIA TensorCore MMA ops.
-  if (auto cc = getCUDAComputeCapability())
+  if (auto cc = getCUDAComputeCapability()) {
     return cc >= 80;
+  }
   return false;
 }
 
 bool TargetAttr::supportsSyncMMAOps() const {
-  if (auto cc = getCUDAComputeCapability())
+  if (auto cc = getCUDAComputeCapability()) {
     return cc >= 80;
+  }
   return false;
 }
 
@@ -1983,8 +2153,9 @@ getLoopBounds(ArrayRef<Range> loopRanges,
   for (auto [loopRange, givenTileSize] :
        llvm::zip_equal(loopRanges, givenTileSizes)) {
     // No loop if the tile size is 0.
-    if (isZeroInteger(givenTileSize))
+    if (isZeroInteger(givenTileSize)) {
       continue;
+    }
     lbs.push_back(loopRange.offset);
     ubs.push_back(loopRange.size);
     steps.push_back(givenTileSize);
@@ -2014,7 +2185,7 @@ static AffineExpr getSubExpr(OpBuilder &b) {
   return s0 - s1;
 }
 
-/// Computes the total number of different Tile loads accross all XCDs per
+/// Computes the total number of different Tile loads across all XCDs per
 /// iteration for the pingpong matmul kernel. For each iteration, we distribute
 /// tile loads to invidiual CUs along the X axis of the RHS.
 static Value computeNumTileLoads(OpBuilder &b, Location loc, OpFoldResult size,
@@ -2237,24 +2408,33 @@ bool DerivedThreadConfigAttr::hasTilingLevel(unsigned level) const {
 SmallVector<int64_t>
 UseGlobalLoadDMAAttr::getStaticTilingLevelSizes(unsigned level,
                                                 Operation *op) const {
-  if (level != llvm::to_underlying(GPU::TilingLevel::Thread)) {
+  if (level == llvm::to_underlying(GPU::TilingLevel::Subgroup)) {
+    // Subgroup tile sizes are derived from translation_info, not stored here.
     return {};
   }
-  return globalLoadDMATileSizes(op);
+  if (level == llvm::to_underlying(GPU::TilingLevel::Thread)) {
+    return globalLoadDMATileSizes(op);
+  }
+  return {};
 }
 
 SmallVector<OpFoldResult>
 UseGlobalLoadDMAAttr::getTilingLevelSizes(OpBuilder &b, unsigned level,
                                           Operation *op) const {
-  if (level > llvm::to_underlying(GPU::TilingLevel::Subgroup)) {
+  if (level == llvm::to_underlying(GPU::TilingLevel::Subgroup)) {
+    // Subgroup tile sizes are derived from translation_info, not stored here.
     return {};
   }
-  SmallVector<int64_t> sizes = globalLoadDMATileSizes(op);
-  return getAsIndexOpFoldResult(b.getContext(), sizes);
+  if (level == llvm::to_underlying(GPU::TilingLevel::Thread)) {
+    SmallVector<int64_t> sizes = globalLoadDMATileSizes(op);
+    return getAsIndexOpFoldResult(b.getContext(), sizes);
+  }
+  return {};
 }
 
 bool UseGlobalLoadDMAAttr::hasTilingLevel(unsigned level) const {
-  return level == llvm::to_underlying(GPU::TilingLevel::Subgroup);
+  // Subgroup level is not stored in this attribute anymore.
+  return level == llvm::to_underlying(GPU::TilingLevel::Thread);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2264,6 +2444,15 @@ bool UseGlobalLoadDMAAttr::hasTilingLevel(unsigned level) const {
 Value PromoteWithCacheSwizzleAttr::promoteOperand(
     mlir::OpBuilder &builder, mlir::OpOperand &operand) const {
   return cacheSwizzlePromotionImpl(builder, operand, getCopyConfig());
+}
+
+//===----------------------------------------------------------------------===//
+// SwizzleOperandAttr
+//===----------------------------------------------------------------------===//
+
+Value SwizzleOperandAttr::promoteOperand(mlir::OpBuilder &builder,
+                                         mlir::OpOperand &operand) const {
+  return swizzlePromotionImpl(builder, operand, getCopyConfig(), getSwizzle());
 }
 
 //===----------------------------------------------------------------------===//
@@ -2281,7 +2470,7 @@ int64_t LaneIdAttr::getRelativeIndex() const { return getDim(); }
 //===----------------------------------------------------------------------===//
 
 GPUPipelineOptionsAttr GPUPipelineOptionsAttr::get(
-    MLIRContext *context, bool prefetchSharedMemory,
+    MLIRContext *context, unsigned prefetchNumStages,
     bool noReduceSharedMemoryBankConflicts, bool useIgemmConvolution,
     std::optional<ReorderWorkgroupsStrategy> reorderWorkgroupsStrategy) {
   auto strategyAttr = ReorderWorkgroupsStrategyAttr();
@@ -2290,9 +2479,155 @@ GPUPipelineOptionsAttr GPUPipelineOptionsAttr::get(
         ReorderWorkgroupsStrategyAttr::get(context, *reorderWorkgroupsStrategy);
   }
   Builder b(context);
-  return Base::get(context, b.getBoolAttr(prefetchSharedMemory),
+  std::optional<int64_t> prefetchOpt;
+  if (prefetchNumStages > 0) {
+    prefetchOpt = prefetchNumStages;
+  }
+  return Base::get(context, prefetchOpt,
                    b.getBoolAttr(noReduceSharedMemoryBankConflicts),
                    b.getBoolAttr(useIgemmConvolution), strategyAttr);
+}
+
+//===----------------------------------------------------------------------===//
+// DimensionExpansionAttr
+//===----------------------------------------------------------------------===//
+
+DimensionExpansionAttr
+DimensionExpansionAttr::get(MLIRContext *context,
+                            ArrayRef<ReassociationIndices> reassociations,
+                            ArrayRef<int64_t> outputShape) {
+  Builder b(context);
+  SmallVector<Attribute> reassociationAttrs;
+  for (const ReassociationIndices &indices : reassociations) {
+    SmallVector<Attribute> indexAttrs;
+    for (int64_t idx : indices) {
+      indexAttrs.push_back(b.getI64IntegerAttr(idx));
+    }
+    reassociationAttrs.push_back(b.getArrayAttr(indexAttrs));
+  }
+  ArrayAttr reassociationAttr = b.getArrayAttr(reassociationAttrs);
+  DenseI64ArrayAttr outputShapeAttr = b.getDenseI64ArrayAttr(outputShape);
+  return get(context, reassociationAttr, outputShapeAttr);
+}
+
+LogicalResult
+DimensionExpansionAttr::verify(function_ref<InFlightDiagnostic()> emitError,
+                               ArrayAttr reassociations,
+                               DenseI64ArrayAttr outputShape) {
+  if (reassociations.empty()) {
+    return emitError() << "reassociations cannot be empty";
+  }
+
+  int64_t nextExpected = 0;
+
+  for (auto [groupIdx, attr] : llvm::enumerate(reassociations)) {
+    auto indexArray = dyn_cast<ArrayAttr>(attr);
+    if (!indexArray) {
+      return emitError() << "reassociation at index " << groupIdx
+                         << " must be an array";
+    }
+
+    if (indexArray.empty()) {
+      return emitError() << "reassociation group " << groupIdx
+                         << " cannot be empty";
+    }
+
+    int numDynamicDims = 0;
+    for (auto [innerIdx, idxAttr] : llvm::enumerate(indexArray)) {
+      auto intAttr = dyn_cast<IntegerAttr>(idxAttr);
+      if (!intAttr) {
+        return emitError() << "reassociation index at [" << groupIdx << "]["
+                           << innerIdx << "] must be an integer";
+      }
+
+      int64_t idx = intAttr.getInt();
+      if (idx != nextExpected) {
+        return emitError() << "reassociation indices must form contiguous "
+                           << "sequence; expected dimension " << nextExpected
+                           << " at [" << groupIdx << "][" << innerIdx
+                           << "], got " << idx;
+      }
+
+      if (outputShape[idx] == ShapedType::kDynamic) {
+        numDynamicDims++;
+      }
+
+      nextExpected++;
+    }
+
+    if (numDynamicDims > 1) {
+      return emitError()
+             << "reassociation group " << groupIdx
+             << " has multiple dynamic dimensions; at most 1 allowed";
+    }
+  }
+
+  ArrayRef<int64_t> outputShapeArray = outputShape.asArrayRef();
+  if (nextExpected != static_cast<int64_t>(outputShapeArray.size())) {
+    return emitError() << "reassociations cover " << nextExpected
+                       << " dimensions, but output_shape has rank "
+                       << outputShapeArray.size();
+  }
+
+  return success();
+}
+
+// Index Hint Attributes
+//===----------------------------------------------------------------------===//
+
+// Custom parser/printer to make the step and aligned fields optional.
+// When step is 1 and aligned is false, these fields will be omitted.
+// Format: <group_size[, step = N][, aligned]>
+Attribute IREE::GPU::LaneIncrementAttr::parse(AsmParser &parser, Type) {
+  int64_t groupSize = 0;
+  if (failed(parser.parseLess()) || failed(parser.parseInteger(groupSize))) {
+    return {};
+  }
+  int64_t step = 1;
+  bool aligned = false;
+  bool parsedStep = false;
+  bool parsedAligned = false;
+  // Parse optional ", step = N" and/or ", aligned"
+  while (succeeded(parser.parseOptionalComma())) {
+    if (succeeded(parser.parseOptionalKeyword("step"))) {
+      if (parsedStep) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "'step' specified more than once");
+        return {};
+      }
+      if (failed(parser.parseEqual()) || failed(parser.parseInteger(step))) {
+        return {};
+      }
+      parsedStep = true;
+    } else if (succeeded(parser.parseOptionalKeyword("aligned"))) {
+      if (parsedAligned) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "'aligned' specified more than once");
+        return {};
+      }
+      aligned = true;
+      parsedAligned = true;
+    } else {
+      parser.emitError(parser.getCurrentLocation(),
+                       "expected 'step' or 'aligned'");
+      return {};
+    }
+  }
+  if (failed(parser.parseGreater())) {
+    return {};
+  }
+  return LaneIncrementAttr::get(parser.getContext(), groupSize, step, aligned);
+}
+
+void IREE::GPU::LaneIncrementAttr::print(AsmPrinter &printer) const {
+  printer << "<" << getGroupSize();
+  if (getStep() != 1) {
+    printer << ", step = " << getStep();
+  }
+  if (getAligned()) {
+    printer << ", aligned";
+  }
+  printer << ">";
 }
 
 //===----------------------------------------------------------------------===//

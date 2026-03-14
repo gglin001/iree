@@ -33,15 +33,22 @@ static iree_status_t iree_wait_primitive_create_eventfd(
   out_handle->value.event.fd =
       eventfd(initial_state ? 1 : 0, EFD_CLOEXEC | EFD_NONBLOCK);
   if (IREE_UNLIKELY(out_handle->value.event.fd == -1)) {
-    return iree_make_status(iree_status_code_from_errno(errno),
-                            "failed to create eventfd (%d)", errno);
+    int saved_errno = errno;
+    if (saved_errno == EMFILE || saved_errno == ENFILE) {
+      return iree_make_status(
+          IREE_STATUS_RESOURCE_EXHAUSTED,
+          "failed to create eventfd: too many open file descriptors "
+          "(errno %d); raise the fd limit with `ulimit -n 4096` or "
+          "sysctl fs.file-max",
+          saved_errno);
+    }
+    return iree_make_status(iree_status_code_from_errno(saved_errno),
+                            "failed to create eventfd (%d)", saved_errno);
   }
 
   return iree_ok_status();
 }
-#endif  // IREE_HAVE_WAIT_TYPE_EVENTFD
-
-#if defined(IREE_HAVE_WAIT_TYPE_PIPE)
+#elif defined(IREE_HAVE_WAIT_TYPE_PIPE)
 static iree_status_t iree_wait_primitive_create_pipe(
     bool initial_state, iree_wait_handle_t* out_handle) {
   memset(out_handle, 0, sizeof(*out_handle));
@@ -50,8 +57,17 @@ static iree_status_t iree_wait_primitive_create_pipe(
   // Create read (fds[0]) and write (fds[1]) handles.
   // https://man7.org/linux/man-pages/man2/pipe.2.html
   if (IREE_UNLIKELY(pipe(out_handle->value.pipe.fds) < 0)) {
-    return iree_make_status(iree_status_code_from_errno(errno),
-                            "failed to create pipe (%d)", errno);
+    int saved_errno = errno;
+    if (saved_errno == EMFILE || saved_errno == ENFILE) {
+      return iree_make_status(
+          IREE_STATUS_RESOURCE_EXHAUSTED,
+          "failed to create pipe: too many open file descriptors "
+          "(errno %d); raise the fd limit with `ulimit -n 4096` or "
+          "sysctl kern.maxfilesperproc (macOS defaults to 256)",
+          saved_errno);
+    }
+    return iree_make_status(iree_status_code_from_errno(saved_errno),
+                            "failed to create pipe (%d)", saved_errno);
   }
 
   // Set both fds to non-blocking.

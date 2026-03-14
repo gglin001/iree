@@ -36,11 +36,11 @@ static Value createTranspose(OpBuilder &builder, Value source,
 }
 
 // Transposes the concatenation dimension to happen along the outer most
-// non-unit dim of the inputs. The idea is that outer dim concatentations
+// non-unit dim of the inputs. The idea is that outer dim concatenations
 // can lower to `flow.tensor.update` and ideally disappear, in the worst case
 // becoming a sequence of copies. The hope then is that the transposes on the
 // inputs and output is then fusable with surrounding operations.
-struct TransposeInnerConcatenation : public OpRewritePattern<tensor::ConcatOp> {
+struct TransposeInnerConcatenation : OpRewritePattern<tensor::ConcatOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::ConcatOp concatOp,
@@ -54,8 +54,9 @@ struct TransposeInnerConcatenation : public OpRewritePattern<tensor::ConcatOp> {
     ArrayRef<int64_t> concatShape = concatType.getShape();
     int64_t outerMostNonUnitDim = 0;
     while (outerMostNonUnitDim < concatOp.getRank()) {
-      if (concatShape[outerMostNonUnitDim] != 1)
+      if (concatShape[outerMostNonUnitDim] != 1) {
         break;
+      }
       outerMostNonUnitDim++;
     }
 
@@ -89,7 +90,7 @@ struct TransposeInnerConcatenation : public OpRewritePattern<tensor::ConcatOp> {
 /// folded into other dispatches. Outerdim concats get lowered to
 /// `flow.tensor.update` on conversion to Flow and then they get modified to be
 /// in-place.
-struct DecomposeNonOuterDimConcats : public OpRewritePattern<tensor::ConcatOp> {
+struct DecomposeNonOuterDimConcats : OpRewritePattern<tensor::ConcatOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::ConcatOp concatOp,
@@ -116,7 +117,7 @@ struct DecomposeNonOuterDimConcats : public OpRewritePattern<tensor::ConcatOp> {
 };
 
 struct DecomposeConcatPass
-    : public impl::DecomposeConcatPassBase<DecomposeConcatPass> {
+    : impl::DecomposeConcatPassBase<DecomposeConcatPass> {
   using Base::Base;
   explicit DecomposeConcatPass(bool enableConcatTransposition) {
     this->enableConcatTransposition = enableConcatTransposition;

@@ -66,7 +66,7 @@ module {
     return
   }
 }
-// CHECK: #iree_codegen.export_config<workgroup_size = [4, 1]
+// CHECK: #iree_codegen.export_config<workgroup_size = [4, 1]>
 
 // -----
 
@@ -123,5 +123,39 @@ module {
     translation_info = #iree_codegen.translation_info<pipeline = None subgroup_size = -1> {
       return
     }
+  }
+}
+
+// -----
+
+module {
+  /// Pass pipeline attribute round-trips correctly.
+  func.func @test_pass_pipeline() attributes {
+      translation_info = #iree_codegen.translation_info<pipeline = #iree_codegen.pass_pipeline<"canonicalize">>} {
+    return
+  }
+}
+// CHECK: #translation = #iree_codegen.translation_info<pipeline = #iree_codegen.pass_pipeline<"canonicalize">>
+
+// -----
+
+module {
+  /// Pass pipeline attribute with workgroup size and subgroup size round-trips.
+  func.func @test_pass_pipeline_with_config() attributes {
+      translation_info = #iree_codegen.translation_info<pipeline = #iree_codegen.pass_pipeline<"canonicalize"> workgroup_size = [64, 1, 1] subgroup_size = 32>} {
+    return
+  }
+}
+// CHECK: #translation = #iree_codegen.translation_info<pipeline = #iree_codegen.pass_pipeline<"canonicalize"> workgroup_size = [64, 1, 1] subgroup_size = 32>
+
+// -----
+
+module {
+  /// Invalid pass pipeline string should be caught at verify time.
+  func.func @invalid_pass_pipeline() attributes {
+    // expected-error @+1 {{invalid pass pipeline specification: 'not_a_real_pass'}}
+    translation_info = #iree_codegen.translation_info<pipeline = #iree_codegen.pass_pipeline<"not_a_real_pass">>
+  } {
+    return
   }
 }

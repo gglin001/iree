@@ -25,7 +25,7 @@ namespace mlir::iree_compiler {
 
 namespace {
 
-struct ModuleOpConversion : public OpConversionPattern<ModuleOp> {
+struct ModuleOpConversion : OpConversionPattern<ModuleOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(ModuleOp srcOp, OpAdaptor adaptor,
@@ -109,22 +109,24 @@ static void copyFuncAttrs(func::FuncOp srcOp, Operation *dstOp) {
   }
 }
 
-struct FuncOpConversion : public OpConversionPattern<func::FuncOp> {
+struct FuncOpConversion : OpConversionPattern<func::FuncOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(func::FuncOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // Handled by import-specific conversion.
-    if (srcOp.isExternal())
+    if (srcOp.isExternal()) {
       return failure();
+    }
 
     // Convert function signature.
     TypeConverter::SignatureConversion signatureConversion(
         srcOp.getNumArguments());
     auto newFuncType = convertFuncSignature(srcOp, *getTypeConverter(),
                                             signatureConversion, rewriter);
-    if (failed(newFuncType))
+    if (failed(newFuncType)) {
       return failure();
+    }
 
     // Create new function with converted argument and result types.
     // Note that attributes are dropped. Consider preserving some if needed.
@@ -183,14 +185,15 @@ static void copyImportAttrs(func::FuncOp srcOp, IREE::VM::ImportOp dstOp) {
   }
 }
 
-struct ExternalFuncOpConversion : public OpConversionPattern<func::FuncOp> {
+struct ExternalFuncOpConversion : OpConversionPattern<func::FuncOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(func::FuncOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // Handled by internal-specific conversion.
-    if (!srcOp.isExternal())
+    if (!srcOp.isExternal()) {
       return failure();
+    }
 
     // If the user declared an intended signature then we can use that instead
     // of running conversion ourselves. This can be used in cases where the
@@ -210,8 +213,9 @@ struct ExternalFuncOpConversion : public OpConversionPattern<func::FuncOp> {
           srcOp.getNumArguments());
       auto convertedSignature = convertFuncSignature(
           srcOp, *getTypeConverter(), signatureConversion, rewriter);
-      if (failed(convertedSignature))
+      if (failed(convertedSignature)) {
         return failure();
+      }
       newSignature = *convertedSignature;
     }
 
@@ -239,7 +243,7 @@ struct ExternalFuncOpConversion : public OpConversionPattern<func::FuncOp> {
   }
 };
 
-struct CallOpConversion : public OpConversionPattern<func::CallOp> {
+struct CallOpConversion : OpConversionPattern<func::CallOp> {
   ImportTable &importTable;
   CallOpConversion(const TypeConverter &typeConverter, MLIRContext *context,
                    ImportTable &importTable, PatternBenefit benefit = 1)
@@ -354,8 +358,9 @@ struct CallOpConversion : public OpConversionPattern<func::CallOp> {
     rewriter.setInsertionPointToStart(fallbackBlock);
     auto fallbackResults = convertCallOp(rootOp, loc, fallbackName, operands,
                                          resultTypes, importTable, rewriter);
-    if (failed(fallbackResults))
+    if (failed(fallbackResults)) {
       return failure();
+    }
     IREE::VM::BranchOp::create(rewriter, loc, exitBlock, *fallbackResults);
 
     return exitResults;
@@ -391,7 +396,7 @@ struct CallOpConversion : public OpConversionPattern<func::CallOp> {
   }
 };
 
-struct ReturnOpConversion : public OpConversionPattern<mlir::func::ReturnOp> {
+struct ReturnOpConversion : OpConversionPattern<mlir::func::ReturnOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(mlir::func::ReturnOp srcOp, OpAdaptor adaptor,
@@ -403,7 +408,7 @@ struct ReturnOpConversion : public OpConversionPattern<mlir::func::ReturnOp> {
 };
 
 template <typename StdOp>
-struct CastingOpConversion final : public OpConversionPattern<StdOp> {
+struct CastingOpConversion final : OpConversionPattern<StdOp> {
   using OpConversionPattern<StdOp>::OpConversionPattern;
   LogicalResult
   matchAndRewrite(StdOp srcOp, typename StdOp::Adaptor adaptor,
@@ -413,7 +418,7 @@ struct CastingOpConversion final : public OpConversionPattern<StdOp> {
   }
 };
 
-struct AssertOpConversion : public OpConversionPattern<cf::AssertOp> {
+struct AssertOpConversion : OpConversionPattern<cf::AssertOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(cf::AssertOp srcOp, OpAdaptor adaptor,
@@ -433,7 +438,7 @@ struct AssertOpConversion : public OpConversionPattern<cf::AssertOp> {
   }
 };
 
-struct BranchOpConversion : public OpConversionPattern<cf::BranchOp> {
+struct BranchOpConversion : OpConversionPattern<cf::BranchOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(cf::BranchOp srcOp, OpAdaptor adaptor,
@@ -444,7 +449,7 @@ struct BranchOpConversion : public OpConversionPattern<cf::BranchOp> {
   }
 };
 
-struct CondBranchOpConversion : public OpConversionPattern<cf::CondBranchOp> {
+struct CondBranchOpConversion : OpConversionPattern<cf::CondBranchOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(cf::CondBranchOp srcOp, OpAdaptor adaptor,
@@ -457,7 +462,7 @@ struct CondBranchOpConversion : public OpConversionPattern<cf::CondBranchOp> {
   }
 };
 
-struct SwitchOpConversion : public OpConversionPattern<cf::SwitchOp> {
+struct SwitchOpConversion : OpConversionPattern<cf::SwitchOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(cf::SwitchOp srcOp, OpAdaptor adaptor,

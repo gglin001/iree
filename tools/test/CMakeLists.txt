@@ -26,6 +26,7 @@ iree_lit_test_suite(
     "iree-benchmark-module.mlir"
     "iree-compile-help.txt"
     "iree-convert-parameters.txt"
+    "iree-dump-module.mlir"
     "iree-dump-parameters.txt"
     "iree-link-bundle.mlir"
     "iree-link.mlir"
@@ -37,9 +38,12 @@ iree_lit_test_suite(
     "iree-run-module-outputs.mlir"
     "iree-run-module.mlir"
     "iree-tblgen-json.td"
+    "iree-tokenize-json.txt"
+    "iree-tokenize-tiktoken.txt"
     "multiple_args.mlir"
     "multiple_exported_functions.mlir"
     "null_values.mlir"
+    "parameters_dynamic.mlir"
     "parameters_scoped.mlir"
     "parameters_unscoped.mlir"
     "repeated_return.mlir"
@@ -51,12 +55,14 @@ iree_lit_test_suite(
     iree-benchmark-module
     iree-compile
     iree-convert-parameters
+    iree-dump-module
     iree-dump-parameters
     iree-link
     iree-opt
     iree-run-mlir
     iree-run-module
     iree-tblgen
+    iree-tokenize
     not
   DATA
     MLIROpBaseTdFiles
@@ -68,9 +74,12 @@ iree_lit_test_suite(
     iree-link-module-a.mlir
     iree-link-module-b.mlir
     iree-link-module-c.mlir
+    iree-tokenize.json
+    iree-tokenize.tiktoken
     iree::compiler::Utils::td_files
     parameters_a.safetensors
     parameters_b.safetensors
+    parameters_dynamic.safetensors
   LABELS
     "driver=local-task"
     "hostonly"

@@ -145,11 +145,17 @@ iree_status_t iree_wait_set_allocate(iree_host_size_t capacity,
 
   IREE_TRACE_ZONE_BEGIN(z0);
 
-  iree_host_size_t user_handle_list_size =
-      capacity * sizeof(iree_wait_handle_t);
-  iree_host_size_t native_handle_list_size = capacity * sizeof(HANDLE);
-  iree_host_size_t total_size = iree_sizeof_struct(iree_wait_set_t) +
-                                user_handle_list_size + native_handle_list_size;
+  iree_host_size_t total_size = 0;
+  iree_host_size_t user_handles_offset = 0;
+  iree_host_size_t native_handles_offset = 0;
+  iree_status_t status = IREE_STRUCT_LAYOUT(
+      iree_sizeof_struct(iree_wait_set_t), &total_size,
+      IREE_STRUCT_FIELD(capacity, iree_wait_handle_t, &user_handles_offset),
+      IREE_STRUCT_FIELD(capacity, HANDLE, &native_handles_offset));
+  if (!iree_status_is_ok(status)) {
+    IREE_TRACE_ZONE_END(z0);
+    return status;
+  }
 
   iree_wait_set_t* set = NULL;
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
@@ -159,10 +165,8 @@ iree_status_t iree_wait_set_allocate(iree_host_size_t capacity,
   iree_wait_set_clear(set);
 
   set->user_handles =
-      (iree_wait_handle_t*)((uint8_t*)set +
-                            iree_sizeof_struct(iree_wait_set_t));
-  set->native_handles =
-      (HANDLE*)((uint8_t*)set->user_handles + user_handle_list_size);
+      (iree_wait_handle_t*)((uint8_t*)set + user_handles_offset);
+  set->native_handles = (HANDLE*)((uint8_t*)set + native_handles_offset);
 
   *out_set = set;
   IREE_TRACE_ZONE_END(z0);
@@ -318,7 +322,7 @@ static iree_status_t iree_wait_multi(iree_wait_set_t* set, bool require_all,
     return iree_status_from_code(IREE_STATUS_DEADLINE_EXCEEDED);
   } else if (result >= WAIT_OBJECT_0 &&
              result < WAIT_OBJECT_0 + set->handle_count) {
-    // One (or more) handles were signaled sucessfully.
+    // One (or more) handles were signaled successfully.
     if (out_wake_handle) {
       DWORD wake_index = result - WAIT_OBJECT_0;
       iree_wait_primitive_value_t wake_value;
@@ -334,7 +338,7 @@ static iree_status_t iree_wait_multi(iree_wait_set_t* set, bool require_all,
     return iree_ok_status();
   } else if (result >= WAIT_ABANDONED_0 &&
              result < WAIT_ABANDONED_0 + set->handle_count) {
-    // One (or more) mutex handles were abandonded during the wait.
+    // One (or more) mutex handles were abandoned during the wait.
     // This happens when a thread holding the mutex dies without releasing it.
     // This is less common in-process and more for the cross-process situations
     // where we have duped/opened a remote handle and the remote process dies.
@@ -348,7 +352,7 @@ static iree_status_t iree_wait_multi(iree_wait_set_t* set, bool require_all,
     DWORD wake_index = result - WAIT_ABANDONED_0;
     return iree_make_status(
         IREE_STATUS_DATA_LOSS,
-        "mutex native handle %lu abanonded; shared state is "
+        "mutex native handle %lu abandoned; shared state is "
         "(likely) inconsistent",
         wake_index);
   } else if (result == WAIT_FAILED) {
@@ -404,7 +408,7 @@ iree_status_t iree_wait_one(iree_wait_handle_t* handle,
     // Handle was signaled successfully.
     status = iree_ok_status();
   } else if (result == WAIT_ABANDONED_0) {
-    // The mutex handle was abandonded during the wait.
+    // The mutex handle was abandoned during the wait.
     // This happens when a thread holding the mutex dies without releasing it.
     // This is less common in-process and more for the cross-process situations
     // where we have duped/opened a remote handle and the remote process dies.
@@ -416,7 +420,7 @@ iree_status_t iree_wait_one(iree_wait_handle_t* handle,
     // that mutex abandonment is exceptional. If you see this you are probably
     // going to want to look for thread exit messages or zombie processes.
     status = iree_make_status(IREE_STATUS_DATA_LOSS,
-                              "mutex native handle abanonded; shared state is "
+                              "mutex native handle abandoned; shared state is "
                               "(likely) inconsistent");
   } else if (result == WAIT_FAILED) {
     status = iree_make_status(iree_status_code_from_win32_error(GetLastError()),

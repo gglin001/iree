@@ -32,7 +32,7 @@ namespace {
 // Similar to the upstream variant but supports our unreachable ops, does not
 // assume the `func` dialect is used, and can be used to support custom
 // behavior like tied operands.
-struct UtilToSCFInterface : public mlir::CFGToSCFInterface {
+struct UtilToSCFInterface : mlir::CFGToSCFInterface {
   // Creates scf.if or scf.index_switch for structured branches.
   FailureOr<Operation *> createStructuredBranchRegionOp(
       OpBuilder &builder, Operation *controlFlowCondOp, TypeRange resultTypes,
@@ -217,9 +217,9 @@ struct LiftCFGToSCFPass final : impl::LiftCFGToSCFPassBase<LiftCFGToSCFPass> {
     UtilToSCFInterface interface;
     bool changed = false;
     for (auto callableOp : moduleOp.getOps<mlir::CallableOpInterface>()) {
-      // Skip if the region is empty (usually a declaration/extern).
+      // Skip if the region is null or empty (usually a declaration/extern).
       Region *region = callableOp.getCallableRegion();
-      if (region->empty()) {
+      if (!region || region->empty()) {
         continue;
       }
 

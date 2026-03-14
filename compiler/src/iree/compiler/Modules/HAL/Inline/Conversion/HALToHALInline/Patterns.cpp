@@ -19,39 +19,39 @@ namespace mlir::iree_compiler {
 
 namespace {
 
-struct ElementTypeOpConversion
-    : public OpConversionPattern<IREE::HAL::ElementTypeOp> {
+struct ElementTypeOpConversion : OpConversionPattern<IREE::HAL::ElementTypeOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::ElementTypeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto value =
         IREE::HAL::ElementTypeOp::getTypeValue(op.getTypeAttr().getValue());
-    if (!value.has_value())
+    if (!value.has_value()) {
       return rewriter.notifyMatchFailure(op.getLoc(),
                                          "unsupported element type");
+    }
     rewriter.replaceOpWithNewOp<arith::ConstantIntOp>(op, value.value(), 32);
     return success();
   }
 };
 
 struct EncodingTypeOpConversion
-    : public OpConversionPattern<IREE::HAL::EncodingTypeOp> {
+    : OpConversionPattern<IREE::HAL::EncodingTypeOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::EncodingTypeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto value = IREE::HAL::EncodingTypeOp::getTypeValue(op.getEncodingAttr());
-    if (!value.has_value())
+    if (!value.has_value()) {
       return rewriter.notifyMatchFailure(op.getLoc(),
                                          "unsupported encoding type");
+    }
     rewriter.replaceOpWithNewOp<arith::ConstantIntOp>(op, value.value(), 32);
     return success();
   }
 };
 
-struct MemoryTypeOpConversion
-    : public OpConversionPattern<IREE::HAL::MemoryTypeOp> {
+struct MemoryTypeOpConversion : OpConversionPattern<IREE::HAL::MemoryTypeOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::MemoryTypeOp op, OpAdaptor adaptor,
@@ -62,8 +62,7 @@ struct MemoryTypeOpConversion
   }
 };
 
-struct BufferUsageOpConversion
-    : public OpConversionPattern<IREE::HAL::BufferUsageOp> {
+struct BufferUsageOpConversion : OpConversionPattern<IREE::HAL::BufferUsageOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferUsageOp op, OpAdaptor adaptor,
@@ -75,7 +74,7 @@ struct BufferUsageOpConversion
 };
 
 struct BufferSubspanOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferSubspanOp> {
+    : OpConversionPattern<IREE::HAL::BufferSubspanOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferSubspanOp op, OpAdaptor adaptor,
@@ -88,8 +87,7 @@ struct BufferSubspanOpPattern
   }
 };
 
-struct BufferLengthOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferLengthOp> {
+struct BufferLengthOpPattern : OpConversionPattern<IREE::HAL::BufferLengthOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferLengthOp op, OpAdaptor adaptor,
@@ -101,8 +99,7 @@ struct BufferLengthOpPattern
   }
 };
 
-struct BufferLoadOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferLoadOp> {
+struct BufferLoadOpPattern : OpConversionPattern<IREE::HAL::BufferLoadOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferLoadOp op, OpAdaptor adaptor,
@@ -122,8 +119,7 @@ struct BufferLoadOpPattern
   }
 };
 
-struct BufferStoreOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferStoreOp> {
+struct BufferStoreOpPattern : OpConversionPattern<IREE::HAL::BufferStoreOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferStoreOp op, OpAdaptor adaptor,
@@ -143,7 +139,7 @@ struct BufferStoreOpPattern
 };
 
 struct BufferViewCreateOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferViewCreateOp> {
+    : OpConversionPattern<IREE::HAL::BufferViewCreateOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferViewCreateOp op, OpAdaptor adaptor,
@@ -157,7 +153,7 @@ struct BufferViewCreateOpPattern
 };
 
 struct BufferViewBufferOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferViewBufferOp> {
+    : OpConversionPattern<IREE::HAL::BufferViewBufferOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferViewBufferOp op, OpAdaptor adaptor,
@@ -169,7 +165,7 @@ struct BufferViewBufferOpPattern
 };
 
 struct BufferViewAssertOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferViewAssertOp> {
+    : OpConversionPattern<IREE::HAL::BufferViewAssertOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferViewAssertOp op, OpAdaptor adaptor,
@@ -183,7 +179,7 @@ struct BufferViewAssertOpPattern
 };
 
 struct BufferViewElementTypeOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferViewElementTypeOp> {
+    : OpConversionPattern<IREE::HAL::BufferViewElementTypeOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferViewElementTypeOp op, OpAdaptor adaptor,
@@ -195,7 +191,7 @@ struct BufferViewElementTypeOpPattern
 };
 
 struct BufferViewEncodingTypeOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferViewEncodingTypeOp> {
+    : OpConversionPattern<IREE::HAL::BufferViewEncodingTypeOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferViewEncodingTypeOp op, OpAdaptor adaptor,
@@ -207,7 +203,7 @@ struct BufferViewEncodingTypeOpPattern
 };
 
 struct BufferViewRankOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferViewRankOp> {
+    : OpConversionPattern<IREE::HAL::BufferViewRankOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferViewRankOp op, OpAdaptor adaptor,
@@ -219,7 +215,7 @@ struct BufferViewRankOpPattern
 };
 
 struct BufferViewDimOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferViewDimOp> {
+    : OpConversionPattern<IREE::HAL::BufferViewDimOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferViewDimOp op, OpAdaptor adaptor,
@@ -232,7 +228,7 @@ struct BufferViewDimOpPattern
 };
 
 struct BufferViewTraceOpPattern
-    : public OpConversionPattern<IREE::HAL::BufferViewTraceOp> {
+    : OpConversionPattern<IREE::HAL::BufferViewTraceOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::BufferViewTraceOp op, OpAdaptor adaptor,

@@ -554,7 +554,7 @@ iree_status_t BufferInstance::CopyToHost(void* dst, iree_host_size_t dst_size,
     auto* copy_data = static_cast<CopyToHostData*>(user_data);
 
     if (!error) {
-      // If there is an allocated buffer we need to copy to the destinaton.
+      // If there is an allocated buffer we need to copy to the destination.
       if (copy_data->alloc) {
         std::memcpy(copy_data->dst, copy_data->aligned, copy_data->size);
       }
@@ -1680,12 +1680,16 @@ iree_status_t ClientInstance::PopulateVMModules(
     iree_hal_device_t* hal_device,
     iree::vm::ref<iree_vm_module_t>& main_module) {
   // HAL module.
+  iree_hal_device_group_t* device_group = nullptr;
+  IREE_RETURN_IF_ERROR(iree_hal_device_group_create_from_device(
+      hal_device, host_allocator(), &device_group));
   modules.push_back({});
-  IREE_RETURN_IF_ERROR(iree_hal_module_create(
-      vm_instance(), iree_hal_module_device_policy_default(),
-      /*device_count=*/1, &hal_device, IREE_HAL_MODULE_FLAG_NONE,
-      iree_hal_module_debug_sink_stdio(stderr), host_allocator(),
-      &modules.back()));
+  iree_status_t status = iree_hal_module_create(
+      vm_instance(), iree_hal_module_device_policy_default(), device_group,
+      IREE_HAL_MODULE_FLAG_NONE, iree_hal_module_debug_sink_stdio(stderr),
+      host_allocator(), &modules.back());
+  iree_hal_device_group_release(device_group);
+  IREE_RETURN_IF_ERROR(status);
 
   // Main module.
   modules.push_back(main_module);
@@ -2015,7 +2019,7 @@ iree_status_t LoadedExecutableInstance::LoadAll() {
     // binary CompilerOutput (mmap).
     auto* binary = image_->binary.get();
     IREE_RETURN_IF_ERROR(iree_vm_bytecode_module_create(
-        client_.vm_instance(),
+        client_.vm_instance(), IREE_VM_BYTECODE_MODULE_FLAG_NONE,
         iree_make_const_byte_span(binary->GetData(), binary->GetDataSize()),
         /*archive_allocator=*/iree_allocator_null(), client_.host_allocator(),
         &loaded.main_module));

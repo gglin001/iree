@@ -46,7 +46,7 @@ namespace {
 //     (presently for all buffer arguments but in the future could only be
 //     those which are not tied to fine grained fences).
 //   * Adding a postamble with a synchronization barrier on any produced
-//     or mutated tensors and appropriate exports/in-place tieing to buffers.
+//     or mutated tensors and appropriate exports/in-place tying to buffers.
 //   * Generation of a synchronous wrapper function with the original name
 //     (the async function is named with an `$async` suffix) which internally
 //     sets up/waits on fences while delegating to the async function.
@@ -82,8 +82,9 @@ getEnclosingWaitSignalFences(Operation *op) {
   auto parentFuncOp = dyn_cast<IREE::Util::FuncOp>(op);
   if (!parentFuncOp) {
     parentFuncOp = parentFuncOp->getParentOfType<IREE::Util::FuncOp>();
-    if (!parentFuncOp)
+    if (!parentFuncOp) {
       return {};
+    }
   }
   Block *entryBlock = &parentFuncOp.front();
   auto numArguments = entryBlock->getNumArguments();
@@ -99,8 +100,9 @@ getEnclosingWaitSignalFences(Value value) {
 
 Value convertToBuiltinTensor(OpBuilder &builder, Value possibleTorchTensor) {
   Type ty = possibleTorchTensor.getType();
-  if (isa<TensorType>(ty))
+  if (isa<TensorType>(ty)) {
     return possibleTorchTensor;
+  }
 
   if (auto defining = dyn_cast_if_present<TorchConversion::FromBuiltinTensorOp>(
           possibleTorchTensor.getDefiningOp())) {
@@ -123,6 +125,7 @@ enum class TypeDisposition {
   MUTABLE_TENSOR,
   TORCH_PRIMITIVE,
   PASSTHROUGH,
+  TRANSIENT_BUFFER,
   FENCE,
 };
 
@@ -147,6 +150,8 @@ struct ConvertedAsyncFunctionInfo {
   SmallVector<Value> barrierInputs;
   // Meta data per barrier input: storage, torchType, returnIndex (or -1)
   SmallVector<BarrierResult> barrierResultMeta;
+  // Transient buffer
+  BlockArgument transientBuffer;
 
   LogicalResult postProcess();
   LogicalResult convertImmutableTensorArg(BlockArgument argValue,
@@ -164,6 +169,11 @@ struct ConvertedAsyncFunctionInfo {
     });
   }
 
+  void setTransientBuffer(BlockArgument bufferArg) {
+    assert(!transientBuffer && "Cannot reassign existing transient buffer.");
+    transientBuffer = bufferArg;
+  }
+
   Attribute getTorchArgAttr(BlockArgument argValue, StringRef attrName) {
     return torchArgAttrs.empty()
                ? Attribute{}
@@ -177,8 +187,9 @@ struct ConvertedAsyncFunctionInfo {
 };
 
 LogicalResult ConvertedAsyncFunctionInfo::postProcess() {
-  if (funcOp.isExternal())
+  if (funcOp.isExternal()) {
     return success();
+  }
 
   if (returnOps.size() != 1) {
     // Multi-exit/CFG could be supported but requires more complicated dominance
@@ -197,14 +208,17 @@ LogicalResult ConvertedAsyncFunctionInfo::postProcess() {
        llvm::zip_equal(inputDispositions, entryArgs, torchInputTypes)) {
     switch (disp) {
     case TypeDisposition::IMMUTABLE_TENSOR: {
-      if (failed(
-              convertImmutableTensorArg(argValue, torchType, preambleBuilder)))
+      if (failed(convertImmutableTensorArg(argValue, torchType,
+                                           preambleBuilder))) {
         return failure();
+      }
       break;
     }
     case TypeDisposition::MUTABLE_TENSOR: {
-      if (failed(convertMutableTensorArg(argValue, torchType, preambleBuilder)))
+      if (failed(
+              convertMutableTensorArg(argValue, torchType, preambleBuilder))) {
         return failure();
+      }
       break;
     }
     case TypeDisposition::TORCH_PRIMITIVE: {
@@ -233,6 +247,9 @@ LogicalResult ConvertedAsyncFunctionInfo::postProcess() {
     }
     case TypeDisposition::PASSTHROUGH:
       // Do nothing.
+      break;
+    case TypeDisposition::TRANSIENT_BUFFER:
+      setTransientBuffer(argValue);
       break;
     case TypeDisposition::FENCE:
       // Do nothing.
@@ -301,6 +318,7 @@ LogicalResult ConvertedAsyncFunctionInfo::postProcess() {
     SmallVector<Value> aliasedResults;
     for (auto [barrierInput, meta] :
          llvm::zip_equal(barrierInputs, barrierResultMeta)) {
+      Value aliasResult;
       if (meta.storage) {
         // Use the wait fence indicating when the storage is available for
         // mutation. We need to ensure that no writes are made to the storage
@@ -312,13 +330,21 @@ LogicalResult ConvertedAsyncFunctionInfo::postProcess() {
         Value waitFence = waitSignalFences->first;
         auto barrierInputDims = IREE::Util::buildDynamicDimsForValue(
             barrierInput.getLoc(), barrierInput, postambleBuilder);
-        aliasedResults.push_back(IREE::HAL::TensorAliasOp::create(
+        aliasResult = IREE::HAL::TensorAliasOp::create(
             postambleBuilder, barrierInput.getLoc(), barrierInput.getType(),
             barrierInput, barrierInputDims, meta.storage, waitFence,
-            storageAffinityAttr));
+            storageAffinityAttr);
       } else {
-        aliasedResults.push_back(barrierInput);
+        aliasResult = barrierInput;
       }
+      if (transientBuffer) {
+        auto sourceDims = IREE::Util::buildDynamicDimsForValue(
+            aliasResult.getLoc(), aliasResult, postambleBuilder);
+        aliasResult = IREE::HAL::TensorTransientsOp::create(
+            postambleBuilder, aliasResult.getLoc(), aliasResult.getType(),
+            aliasResult, sourceDims, transientBuffer, Attribute{});
+      }
+      aliasedResults.push_back(aliasResult);
     }
     auto barrierOp = IREE::HAL::TensorBarrierOp::create(
         postambleBuilder, funcOp.getLoc(), aliasedResults, coarseSignalFence);
@@ -374,12 +400,14 @@ LogicalResult ConvertedAsyncFunctionInfo::convertImmutableTensorArg(
   // it.
   bool hasNonTrivialUse = false;
   for (auto *userOp : argValue.getUsers()) {
-    if (isa<IREE::Util::ReturnOp>(userOp))
+    if (isa<IREE::Util::ReturnOp>(userOp)) {
       continue;
+    }
     hasNonTrivialUse = true;
   }
-  if (!hasNonTrivialUse)
+  if (!hasNonTrivialUse) {
     return success();
+  }
 
   // Remember original uses so we can redirect them.
   OriginalUses originalUses(argValue);
@@ -481,8 +509,9 @@ void retainFunctionAttributes(Operation *srcOp, IREE::Util::FuncOp destOp) {
   for (auto retainAttrName : retainedAttributes) {
     StringRef attrName(retainAttrName);
     Attribute attr = srcOp->getAttr(attrName);
-    if (attr)
+    if (attr) {
       destOp->setAttr(attrName, attr);
+    }
   }
 }
 
@@ -493,6 +522,8 @@ void createCoarseFencesSyncWrapper(StringRef syncFunctionName,
   // The coarse fences wrapper has the same signature as the async variant
   // but with the last two inputs (wait, signal fence) sliced off.
   FunctionType asyncFuncType = asyncFuncOp.getFunctionType();
+  // Note: If we externalize a transient buffer, we are currently including it
+  // as the final input for the sync wrapper.
   SmallVector<Type> inputTypes(asyncFuncType.getInputs().begin(),
                                asyncFuncType.getInputs().end() - 2);
 
@@ -549,6 +580,12 @@ void createCoarseFencesSyncWrapper(StringRef syncFunctionName,
 class FuncConversionPass final
     : public impl::FuncConversionPassBase<FuncConversionPass> {
 public:
+  using Base::Base;
+
+  FuncConversionPass(bool externalizeTransients) {
+    this->externalizeTransients = externalizeTransients;
+  }
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<mlir::tensor::TensorDialect>();
     registry.insert<IREE::HAL::HALDialect>();
@@ -566,8 +603,9 @@ public:
     SmallVector<Operation *> eraseFuncOps;
     std::vector<ConvertedAsyncFunctionInfo> convertedFuncInfos;
     for (auto funcOp : moduleOp.getOps<func::FuncOp>()) {
-      if (!shouldConvertFunc(funcOp))
+      if (!shouldConvertFunc(funcOp)) {
         continue;
+      }
       ConvertedAsyncFunctionInfo &convertedFuncInfo =
           convertedFuncInfos.emplace_back();
       if (failed(convertFuncOp(funcOp, convertedFuncInfo))) {
@@ -594,12 +632,14 @@ public:
     // calling convention. In the future, we may support "torch externals"
     // which we convert to mate up with a torch module. We can remove/adapt
     // this when that is elaborated.
-    if (torchFunc.isExternal())
+    if (torchFunc.isExternal()) {
       return false;
+    }
 
     // Something has already converted this and told us not to touch it.
-    if (torchFunc->hasAttr("iree.abi.stub"))
+    if (torchFunc->hasAttr("iree.abi.stub")) {
       return false;
+    }
 
     return true;
   }
@@ -622,16 +662,13 @@ public:
     torchFunc.getAllResultAttrs(convertedFuncInfo.torchResultAttrs);
 
     // Convert function signature.
+    Type bufferType = rewriter.getType<IREE::HAL::BufferType>();
     Type fenceType = rewriter.getType<IREE::HAL::FenceType>();
     FunctionType torchFuncType = torchFunc.getFunctionType();
     convertedFuncInfo.torchInputTypes.append(torchFuncType.getInputs().begin(),
                                              torchFuncType.getInputs().end());
     convertedFuncInfo.torchResultTypes.append(
         torchFuncType.getResults().begin(), torchFuncType.getResults().end());
-    // For the coarse-fences ABI, we add two fences to the end. Treat these as
-    // original types so that the lists line up.
-    convertedFuncInfo.torchInputTypes.push_back(fenceType);
-    convertedFuncInfo.torchInputTypes.push_back(fenceType);
     SmallVector<Type> ireeInputTypes(convertedFuncInfo.torchInputTypes);
     SmallVector<Type> ireeResultTypes(convertedFuncInfo.torchResultTypes);
     convertedFuncInfo.inputDispositions.resize(ireeInputTypes.size());
@@ -640,16 +677,31 @@ public:
     for (size_t i = 0; i < convertedFuncInfo.torchInputTypes.size(); ++i) {
       if (failed(convertType(loc, convertedFuncInfo.torchInputTypes[i],
                              ireeInputTypes[i],
-                             convertedFuncInfo.inputDispositions[i])))
+                             convertedFuncInfo.inputDispositions[i]))) {
         return failure();
+      }
     }
     for (size_t i = 0; i < convertedFuncInfo.torchResultTypes.size(); ++i) {
       if (failed(convertType(loc, convertedFuncInfo.torchResultTypes[i],
                              ireeResultTypes[i],
-                             convertedFuncInfo.resultDispositions[i])))
+                             convertedFuncInfo.resultDispositions[i]))) {
         return failure();
+      }
     }
 
+    // When externalizing transient memory, put the input buffer before fences.
+    if (externalizeTransients) {
+      convertedFuncInfo.torchInputTypes.push_back(bufferType);
+      ireeInputTypes.push_back(bufferType);
+      convertedFuncInfo.inputDispositions.push_back(
+          TypeDisposition::TRANSIENT_BUFFER);
+    }
+    // For the coarse-fences ABI, we add two fences to the end. Treat these as
+    // original types so that the lists line up.
+    convertedFuncInfo.torchInputTypes.append({fenceType, fenceType});
+    ireeInputTypes.append({fenceType, fenceType});
+    convertedFuncInfo.inputDispositions.append(
+        {TypeDisposition::FENCE, TypeDisposition::FENCE});
     // Build tied operands index mapping results back to operands.
     SmallVector<int64_t> tiedOperands;
     bool anyTiedOperands = false;
@@ -749,6 +801,13 @@ public:
     if (isa<Torch::FloatType>(torchType)) {
       ireeType = Float64Type::get(torchType.getContext());
       disp = TypeDisposition::TORCH_PRIMITIVE;
+      return success();
+    }
+
+    if (isa<IREE::HAL::BufferType>(torchType)) {
+      // Are there other situations where we might have buffer inputs?
+      ireeType = torchType;
+      disp = TypeDisposition::TRANSIENT_BUFFER;
       return success();
     }
 

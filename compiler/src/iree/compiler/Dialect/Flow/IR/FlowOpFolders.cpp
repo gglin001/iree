@@ -45,12 +45,13 @@ namespace {
 // This is to support ops that are "pure" but can't be marked as such because
 // the MLIR CSE pass would deduplicate them.
 template <typename Op>
-struct ElideUnusedOp : public OpRewritePattern<Op> {
+struct ElideUnusedOp : OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
-    if (!op.use_empty())
+    if (!op.use_empty()) {
       return failure();
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -59,13 +60,15 @@ struct ElideUnusedOp : public OpRewritePattern<Op> {
 // Returns true if |value| is definitely empty at runtime.
 static bool isTensorZeroElements(Value value) {
   auto type = dyn_cast<ShapedType>(value.getType());
-  if (!type)
+  if (!type) {
     return false;
+  }
   // Any static dimension being zero is definitely empty.
   for (int64_t i = 0; i < type.getRank(); ++i) {
     int64_t dim = type.getDimSize(i);
-    if (dim == 0)
+    if (dim == 0) {
       return true;
+    }
   }
   return false; // may still be dynamically empty
 }
@@ -85,13 +88,14 @@ static bool isTensorResultZeroElements(Value value) {
 }
 
 template <typename Op, int OperandIdx, int ResultIdx = 0>
-struct ReplaceOpIfTensorOperandZeroElements : public OpRewritePattern<Op> {
+struct ReplaceOpIfTensorOperandZeroElements : OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
     auto operand = op->getOperand(OperandIdx);
-    if (!isTensorOperandZeroElements(operand))
+    if (!isTensorOperandZeroElements(operand)) {
       return failure();
+    }
     auto result = op->getResult(ResultIdx);
     auto dynamicDims = op.getResultDynamicDims(result.getResultNumber());
     rewriter.replaceOpWithNewOp<IREE::Flow::TensorEmptyOp>(op, result.getType(),
@@ -101,13 +105,14 @@ struct ReplaceOpIfTensorOperandZeroElements : public OpRewritePattern<Op> {
 };
 
 template <typename Op, int ResultIdx>
-struct ReplaceOpIfTensorResultZeroElements : public OpRewritePattern<Op> {
+struct ReplaceOpIfTensorResultZeroElements : OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
     auto result = op->getResult(ResultIdx);
-    if (!isTensorResultZeroElements(result))
+    if (!isTensorResultZeroElements(result)) {
       return failure();
+    }
     auto dynamicDims = op.getResultDynamicDims(result.getResultNumber());
     rewriter.replaceOpWithNewOp<IREE::Flow::TensorEmptyOp>(op, result.getType(),
                                                            dynamicDims);
@@ -116,14 +121,15 @@ struct ReplaceOpIfTensorResultZeroElements : public OpRewritePattern<Op> {
 };
 
 template <typename Op, int OperandIdx, int ResultIdx = 0>
-struct ReplaceOpIfTensorOperandEmpty : public OpRewritePattern<Op> {
+struct ReplaceOpIfTensorOperandEmpty : OpRewritePattern<Op> {
   using OpRewritePattern<Op>::OpRewritePattern;
   LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
     auto operand = op->getOperand(OperandIdx);
     auto emptyOp = dyn_cast_if_present<TensorEmptyOp>(operand.getDefiningOp());
-    if (!emptyOp)
+    if (!emptyOp) {
       return failure();
+    }
     auto result = op->getResult(ResultIdx);
     auto dynamicDims = op.getResultDynamicDims(result.getResultNumber());
     rewriter.replaceOpWithNewOp<IREE::Flow::TensorEmptyOp>(op, result.getType(),
@@ -139,8 +145,9 @@ static SmallVector<Value> refreshDimsOnTypeChange(Operation *op, Type oldType,
                                                   Type newType,
                                                   ValueRange oldDims,
                                                   PatternRewriter &rewriter) {
-  if (oldType == newType)
+  if (oldType == newType) {
     return llvm::to_vector(oldDims);
+  }
 
   // Build an expanded list of all the dims - constants will be nullptr.
   // This lets us map back the new types without worrying about whether some
@@ -204,7 +211,7 @@ dedupAndGetOldToNewPosMapping(ValueRange values) {
 }
 
 struct ReplaceDispatchResultIfZeroElements
-    : public OpRewritePattern<DispatchWorkgroupsOp> {
+    : OpRewritePattern<DispatchWorkgroupsOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(DispatchWorkgroupsOp op,
                                 PatternRewriter &rewriter) const override {
@@ -212,8 +219,9 @@ struct ReplaceDispatchResultIfZeroElements
     // will drop it.
     bool didReplaceAny = false;
     for (auto result : op.getResults()) {
-      if (result.use_empty())
+      if (result.use_empty()) {
         continue;
+      }
       if (isTensorResultZeroElements(result)) {
         auto dynamicDims = op.getResultDynamicDims(result.getResultNumber());
         auto emptyOp = IREE::Flow::TensorEmptyOp::create(
@@ -228,8 +236,7 @@ struct ReplaceDispatchResultIfZeroElements
 
 /// Deduplicate redundant workload values of a dispatch.workgroups op. This
 /// requires modifying the `count` region of the op to match the new workloads.
-struct ElideRedundantWorkloadValues
-    : public OpRewritePattern<DispatchWorkgroupsOp> {
+struct ElideRedundantWorkloadValues : OpRewritePattern<DispatchWorkgroupsOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(DispatchWorkgroupsOp op,
                                 PatternRewriter &rewriter) const override {
@@ -385,15 +392,15 @@ OpFoldResult DispatchTieShapeOp::fold(FoldAdaptor operands) {
 
 namespace {
 
-struct DeduplicateDispatchEntryRefs final
-    : public OpRewritePattern<DispatchOp> {
+struct DeduplicateDispatchEntryRefs final : OpRewritePattern<DispatchOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(DispatchOp dispatchOp,
                                 PatternRewriter &rewriter) const override {
     auto originalAttr = dispatchOp.getEntryPointsAttr();
     auto newAttr = deduplicateArrayElements(originalAttr);
-    if (newAttr == originalAttr)
+    if (newAttr == originalAttr) {
       return failure();
+    }
     rewriter.modifyOpInPlace(dispatchOp,
                              [&]() { dispatchOp.setEntryPointsAttr(newAttr); });
     return success();
@@ -447,8 +454,7 @@ OpFoldResult TensorDynamicConstantOp::fold(FoldAdaptor operands) {
 
 namespace {
 
-struct ExpandDynamicShapeConstant
-    : public OpRewritePattern<TensorDynamicConstantOp> {
+struct ExpandDynamicShapeConstant : OpRewritePattern<TensorDynamicConstantOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(TensorDynamicConstantOp op,
                                 PatternRewriter &rewriter) const override {
@@ -523,7 +529,7 @@ namespace {
 // source. This prevents big useless chains and makes it easier to track the
 // original storage for the tensor.
 template <typename CastOpTy>
-struct FlattenTensorCastLikeChain : public OpRewritePattern<CastOpTy> {
+struct FlattenTensorCastLikeChain : OpRewritePattern<CastOpTy> {
   using OpRewritePattern<CastOpTy>::OpRewritePattern;
   LogicalResult matchAndRewrite(CastOpTy reshapeOp,
                                 PatternRewriter &rewriter) const override {
@@ -563,7 +569,7 @@ struct FlattenTensorCastLikeChain : public OpRewritePattern<CastOpTy> {
   }
 };
 
-struct ResolveShapedRank : public OpRewritePattern<tensor::RankOp> {
+struct ResolveShapedRank : OpRewritePattern<tensor::RankOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(tensor::RankOp op,
                                 PatternRewriter &rewriter) const override {
@@ -574,7 +580,7 @@ struct ResolveShapedRank : public OpRewritePattern<tensor::RankOp> {
   }
 };
 
-struct ResolveShapedDim : public OpRewritePattern<tensor::DimOp> {
+struct ResolveShapedDim : OpRewritePattern<tensor::DimOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(tensor::DimOp op,
                                 PatternRewriter &rewriter) const override {
@@ -598,8 +604,9 @@ struct ResolveShapedDim : public OpRewritePattern<tensor::DimOp> {
     if (dynamicDims.has_value()) {
       unsigned dimOffset = 0;
       for (unsigned i = 0; i < idx; ++i) {
-        if (shapedType.isDynamicDim(i))
+        if (shapedType.isDynamicDim(i)) {
           ++dimOffset;
+        }
       }
       rewriter.replaceOp(op, dynamicDims.value()[dimOffset]);
       return success();
@@ -673,14 +680,15 @@ namespace {
 
 // Replace `flow.tensor.splat`-`flow.tensor.load` op-pairs by the input
 // primitive value for the splat op.
-struct FoldSplatLoadIntoPrimitive : public OpRewritePattern<TensorLoadOp> {
+struct FoldSplatLoadIntoPrimitive : OpRewritePattern<TensorLoadOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(TensorLoadOp loadOp,
                                 PatternRewriter &rewriter) const override {
     auto sourceOp =
         dyn_cast_if_present<TensorSplatOp>(loadOp.getSource().getDefiningOp());
-    if (!sourceOp)
+    if (!sourceOp) {
       return failure();
+    }
     rewriter.replaceOp(loadOp, sourceOp.getValue());
     return success();
   }
@@ -699,8 +707,9 @@ void TensorLoadOp::getCanonicalizationPatterns(RewritePatternSet &results,
 
 OpFoldResult TensorStoreOp::fold(FoldAdaptor operands) {
   auto value = operands.getValue();
-  if (!value)
+  if (!value) {
     return {};
+  }
   if (auto target = dyn_cast_if_present<ElementsAttr>(operands.getTarget())) {
     // Store into the constant target tensor.
     auto targetType = cast<ShapedType>(target.getType());
@@ -745,14 +754,15 @@ void TensorEmptyOp::getCanonicalizationPatterns(RewritePatternSet &results,
 
 namespace {
 
-struct FoldSplatReshapeIntoSplat : public OpRewritePattern<TensorReshapeOp> {
+struct FoldSplatReshapeIntoSplat : OpRewritePattern<TensorReshapeOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(TensorReshapeOp reshapeOp,
                                 PatternRewriter &rewriter) const override {
     auto splatOp = dyn_cast_if_present<TensorSplatOp>(
         reshapeOp.getSource().getDefiningOp());
-    if (!splatOp)
+    if (!splatOp) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<TensorSplatOp>(
         reshapeOp, reshapeOp.getResult().getType(), splatOp.getValue(),
         reshapeOp.getResultDims());
@@ -869,7 +879,7 @@ namespace {
 // is transferred to the same context it's already on. This does not look across
 // control flow edges or globals and is mostly for simplifying IR that may come
 // in with a transfer on every single tensor.
-struct ElideRedundantTransfer : public OpRewritePattern<TensorTransferOp> {
+struct ElideRedundantTransfer : OpRewritePattern<TensorTransferOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(TensorTransferOp op,
                                 PatternRewriter &rewriter) const override {
@@ -955,7 +965,7 @@ static ElementsAttr tensorSlice(ElementsAttr tensor, uint64_t dim,
 
 OpFoldResult TensorSliceOp::fold(FoldAdaptor operands) {
   if (llvm::count(operands.getOperands(), nullptr) == 0) {
-    // Ignore DenseResources for now and do not perfom folding on them.
+    // Ignore DenseResources for now and do not perform folding on them.
     if (isa<DenseResourceElementsAttr>(operands.getSource())) {
       return {};
     }
@@ -1061,14 +1071,15 @@ namespace {
 
 // When the target tensor is a result of a tensor.cast operation, the op needs
 // to be updated to use the source of the cast as the target tensor.
-struct FoldTensorUpdateOpWithCasts : public OpRewritePattern<TensorUpdateOp> {
+struct FoldTensorUpdateOpWithCasts : OpRewritePattern<TensorUpdateOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(TensorUpdateOp updateOp,
                                 PatternRewriter &rewriter) const override {
     auto targetCastOp = updateOp.getTarget().getDefiningOp<tensor::CastOp>();
     auto updateCastOp = updateOp.getUpdate().getDefiningOp<tensor::CastOp>();
-    if (!targetCastOp && !updateCastOp)
+    if (!targetCastOp && !updateCastOp) {
       return failure();
+    }
     Value target = (targetCastOp ? cast<Value>(targetCastOp.getSource())
                                  : cast<Value>(updateOp.getTarget()));
     Value update = (updateCastOp ? cast<Value>(updateCastOp.getSource())
@@ -1089,13 +1100,14 @@ struct FoldTensorUpdateOpWithCasts : public OpRewritePattern<TensorUpdateOp> {
 };
 
 struct ReplaceOpIfTensorUpdateOperandZeroElements
-    : public OpRewritePattern<TensorUpdateOp> {
+    : OpRewritePattern<TensorUpdateOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(TensorUpdateOp op,
                                 PatternRewriter &rewriter) const override {
     auto operand = op.getUpdate();
-    if (!isTensorOperandZeroElements(operand))
+    if (!isTensorOperandZeroElements(operand)) {
       return failure();
+    }
     rewriter.replaceOp(op, op.getTarget());
     return success();
   }

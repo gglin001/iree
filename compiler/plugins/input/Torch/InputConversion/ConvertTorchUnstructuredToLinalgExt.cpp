@@ -21,8 +21,7 @@ namespace mlir::iree_compiler::TorchInput {
 
 namespace {
 
-struct FftRfftOpConversion
-    : public OpRewritePattern<torch::Torch::AtenFftRfftOp> {
+struct FftRfftOpConversion : OpRewritePattern<torch::Torch::AtenFftRfftOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(torch::Torch::AtenFftRfftOp op,
                                 PatternRewriter &rewriter) const override {
@@ -90,7 +89,7 @@ struct FftRfftOpConversion
         self);
 
     auto rewriteRes =
-        IREE::LinalgExt::rewriteFft(op, builtinCast, fftLength, rewriter);
+        IREE::LinalgExt::rewriteRfft(op, builtinCast, fftLength, rewriter);
     if (failed(rewriteRes)) {
       return failure();
     }

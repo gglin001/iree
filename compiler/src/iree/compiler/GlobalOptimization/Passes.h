@@ -9,6 +9,7 @@
 
 #include <functional>
 
+#include "iree/compiler/Pipelines/Options.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
@@ -16,7 +17,7 @@
 
 namespace mlir::iree_compiler::GlobalOptimization {
 
-struct TransformOptions : public PassPipelineOptions<TransformOptions> {
+struct TransformOptions : PassPipelineOptions<TransformOptions> {
   ListOption<std::string> parameterImportPaths{
       *this,
       "parameter-import-paths",
@@ -49,9 +50,9 @@ struct TransformOptions : public PassPipelineOptions<TransformOptions> {
       llvm::cl::desc("Minimum size of constants to export as parameters."),
       llvm::cl::init(0),
   };
-  Option<std::string> parameterSplatExportFile{
+  Option<std::string> parameterSplatPath{
       *this,
-      "parameter-splat-export-file",
+      "parameter-splat-path",
       llvm::cl::desc("File path to create a splat parameter archive out of all "
                      "parameters in the module."),
       llvm::cl::init(""),
@@ -62,6 +63,19 @@ struct TransformOptions : public PassPipelineOptions<TransformOptions> {
       llvm::cl::desc(
           "Enables aggressive propagation of transposes to the inputs of named "
           "ops, rewriting named ops as fused generics."),
+      llvm::cl::init(false),
+  };
+  Option<bool> propagateTransposesThroughConv{
+      *this,
+      "propagate-transposes-through-conv",
+      llvm::cl::desc(
+          "Enables propagation of transpose ops through convolutions"),
+      llvm::cl::init(false),
+  };
+  Option<bool> sinkTransposeThroughPad{
+      *this,
+      "sink-transpose-through-pad",
+      llvm::cl::desc("Enables sinking transpose through pad operations"),
       llvm::cl::init(false),
   };
   Option<bool> outerDimConcat{
@@ -105,6 +119,14 @@ struct TransformOptions : public PassPipelineOptions<TransformOptions> {
       *this,
       "generalize-matmul",
       llvm::cl::desc("Converts linalg named matmul ops to linalg generic ops."),
+      llvm::cl::init(false),
+  };
+  Option<bool> useIm2colForConvs{
+      *this,
+      "use-im2col-for-convs",
+      llvm::cl::desc(
+          "Enables converting convolution operations to im2col + "
+          "matmul form to leverage optimized matmul implementations."),
       llvm::cl::init(false),
   };
   Option<bool> constExprHoisting{

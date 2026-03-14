@@ -14,6 +14,7 @@
 # Programs with a dependency on the compiler are not designed to run on device
 # platforms (e.g. Android), so they are tagged "hostonly".
 
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("//build_tools/bazel:build_defs.oss.bzl", "iree_compiler_cc_binary", "iree_runtime_cc_binary")
 
 package(
@@ -29,7 +30,7 @@ iree_runtime_cc_binary(
     srcs = ["iree-benchmark-executable-main.c"],
     deps = [
         "//runtime/src/iree/base",
-        "//runtime/src/iree/base/internal:flags",
+        "//runtime/src/iree/base/tooling:flags",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/io:file_handle",
         "//runtime/src/iree/modules/hal:types",
@@ -45,7 +46,7 @@ iree_runtime_cc_binary(
     srcs = ["iree-benchmark-module-main.cc"],
     deps = [
         "//runtime/src/iree/base",
-        "//runtime/src/iree/base/internal:flags",
+        "//runtime/src/iree/base/tooling:flags",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/modules/hal:types",
         "//runtime/src/iree/tooling:context_util",
@@ -62,7 +63,7 @@ iree_runtime_cc_binary(
     srcs = ["iree-check-module-main.cc"],
     deps = [
         "//runtime/src/iree/base",
-        "//runtime/src/iree/base/internal:flags",
+        "//runtime/src/iree/base/tooling:flags",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/modules/check",
         "//runtime/src/iree/testing:gtest",
@@ -78,7 +79,7 @@ iree_runtime_cc_binary(
     srcs = ["iree-convert-parameters-main.c"],
     deps = [
         "//runtime/src/iree/base",
-        "//runtime/src/iree/base/internal:flags",
+        "//runtime/src/iree/base/tooling:flags",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/io:file_handle",
         "//runtime/src/iree/io:parameter_index",
@@ -103,7 +104,7 @@ iree_runtime_cc_binary(
     srcs = ["iree-create-parameters-main.c"],
     deps = [
         "//runtime/src/iree/base",
-        "//runtime/src/iree/base/internal:flags",
+        "//runtime/src/iree/base/tooling:flags",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/io:file_handle",
         "//runtime/src/iree/io:parameter_index",
@@ -130,11 +131,12 @@ iree_runtime_cc_binary(
     srcs = ["iree-dump-module-main.c"],
     deps = [
         "//runtime/src/iree/base",
-        "//runtime/src/iree/base/internal:flags",
         "//runtime/src/iree/base/internal/flatcc:debugging",
         "//runtime/src/iree/base/internal/flatcc:parsing",
+        "//runtime/src/iree/base/tooling:flags",
         "//runtime/src/iree/io:file_handle",
         "//runtime/src/iree/schemas:bytecode_module_def_c_fbs",
+        "//runtime/src/iree/vm",
         "//runtime/src/iree/vm/bytecode:module",
     ],
 )
@@ -144,11 +146,32 @@ iree_runtime_cc_binary(
     srcs = ["iree-dump-parameters-main.c"],
     deps = [
         "//runtime/src/iree/base",
-        "//runtime/src/iree/base/internal:flags",
+        "//runtime/src/iree/base/tooling:flags",
         "//runtime/src/iree/io:file_handle",
         "//runtime/src/iree/io:parameter_index",
         "//runtime/src/iree/io:scope_map",
         "//runtime/src/iree/tooling:parameter_util",
+    ],
+)
+
+iree_runtime_cc_binary(
+    name = "iree-encode-parameters",
+    srcs = ["iree-encode-parameters-main.c"],
+    deps = [
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/tooling:flags",
+        "//runtime/src/iree/hal",
+        "//runtime/src/iree/io:file_handle",
+        "//runtime/src/iree/io:parameter_index",
+        "//runtime/src/iree/io:parameter_index_provider",
+        "//runtime/src/iree/io:scope_map",
+        "//runtime/src/iree/io:stream",
+        "//runtime/src/iree/io/formats/irpa",
+        "//runtime/src/iree/modules/hal",
+        "//runtime/src/iree/tooling:context_util",
+        "//runtime/src/iree/tooling:function_util",
+        "//runtime/src/iree/tooling:parameter_util",
+        "//runtime/src/iree/vm",
     ],
 )
 
@@ -195,7 +218,7 @@ cc_binary(
         "//compiler/src/iree/compiler/API:Impl",
         "//runtime/src:runtime_defines",
         "//runtime/src/iree/base",
-        "//runtime/src/iree/base/internal:flags",
+        "//runtime/src/iree/base/tooling:flags",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/tooling:context_util",
         "//runtime/src/iree/tooling:device_util",
@@ -209,7 +232,7 @@ iree_runtime_cc_binary(
     srcs = ["iree-run-module-main.c"],
     deps = [
         "//runtime/src/iree/base",
-        "//runtime/src/iree/base/internal:flags",
+        "//runtime/src/iree/base/tooling:flags",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/tooling:context_util",
         "//runtime/src/iree/tooling:run_module",
@@ -230,6 +253,21 @@ iree_compiler_cc_binary(
         "@llvm-project//mlir:MlirTableGenMain",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TableGen",
+    ],
+)
+
+iree_runtime_cc_binary(
+    name = "iree-tokenize",
+    srcs = ["iree-tokenize-main.c"],
+    deps = [
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:json",
+        "//runtime/src/iree/base/tooling:flags",
+        "//runtime/src/iree/io:file_handle",
+        "//runtime/src/iree/tokenizer",
+        "//runtime/src/iree/tokenizer/format/huggingface:tokenizer_json",
+        "//runtime/src/iree/tokenizer/format/tiktoken",
+        "//runtime/src/iree/tokenizer/vocab",
     ],
 )
 

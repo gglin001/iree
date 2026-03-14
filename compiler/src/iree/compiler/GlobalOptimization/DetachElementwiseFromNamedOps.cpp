@@ -13,6 +13,7 @@
 
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtInterfaces.h"
 #include "iree/compiler/GlobalOptimization/Passes.h"
+#include "llvm/ADT/SmallVectorExtras.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
@@ -30,8 +31,7 @@ namespace mlir::iree_compiler::GlobalOptimization {
 
 namespace {
 
-struct DetachElementwisePattern
-    : public OpInterfaceRewritePattern<linalg::LinalgOp> {
+struct DetachElementwisePattern : OpInterfaceRewritePattern<linalg::LinalgOp> {
   using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
 
   LogicalResult matchAndRewrite(linalg::LinalgOp linalgOp,
@@ -40,20 +40,22 @@ struct DetachElementwisePattern
         !isa<linalg::ConvolutionOpInterface>(*linalgOp)) {
       return failure();
     }
-    if (!linalgOp.hasPureTensorSemantics())
+    if (!linalgOp.hasPureTensorSemantics()) {
       return failure();
+    }
 
     // Nothing to do if the output tensor operand is already a fill op.
     SmallVector<OpOperand *> outputOperands;
     if (!linalgOp.hasPureBufferSemantics()) {
-      outputOperands = llvm::to_vector(
-          llvm::map_range(linalgOp.getDpsInitsMutable(),
-                          [](OpOperand &opOperand) { return &opOperand; }));
+      outputOperands =
+          llvm::map_to_vector(linalgOp.getDpsInitsMutable(),
+                              [](OpOperand &opOperand) { return &opOperand; });
     }
     // Right now all the cases we see have one output. This can be relaxed once
     // we see multiple output ops.
-    if (outputOperands.size() != 1)
+    if (outputOperands.size() != 1) {
       return failure();
+    }
     Value outputOperand = outputOperands.front()->get();
 
     auto outsDefiningOp = outputOperand.getDefiningOp<linalg::LinalgOp>();
@@ -62,8 +64,9 @@ struct DetachElementwisePattern
       return failure();
     }
     auto outputType = cast<RankedTensorType>(outputOperand.getType());
-    if (!outputType.getElementType().isIntOrFloat())
+    if (!outputType.getElementType().isIntOrFloat()) {
       return failure();
+    }
     auto elementType = outputType.getElementType();
 
     Location loc = linalgOp.getLoc();
@@ -123,7 +126,7 @@ struct DetachElementwisePattern
 /// to a splat, but both without stack allocations.
 template <typename InterfaceOp>
 struct DetachSplatConstantOutsOperands
-    : public OpInterfaceRewritePattern<InterfaceOp> {
+    : OpInterfaceRewritePattern<InterfaceOp> {
   using OpInterfaceRewritePattern<InterfaceOp>::OpInterfaceRewritePattern;
 
   LogicalResult matchAndRewrite(InterfaceOp interfaceOp,
@@ -139,17 +142,20 @@ struct DetachSplatConstantOutsOperands
     for (auto outOperand : llvm::enumerate(dpsInterfaceOp.getDpsInits())) {
       auto constOp =
           outOperand.value().template getDefiningOp<arith::ConstantOp>();
-      if (!constOp)
+      if (!constOp) {
         continue;
+      }
 
       auto resultType =
           dyn_cast<RankedTensorType>(constOp.getResult().getType());
-      if (!resultType || !resultType.getElementType().isIntOrFloat())
+      if (!resultType || !resultType.getElementType().isIntOrFloat()) {
         continue;
+      }
 
       auto attr = dyn_cast<ElementsAttr>(constOp.getValue());
-      if (!attr || !attr.isSplat())
+      if (!attr || !attr.isSplat()) {
         continue;
+      }
 
       Location loc = constOp.getLoc();
       Type elementType = resultType.getElementType();
@@ -179,7 +185,7 @@ struct DetachSplatConstantOutsOperands
 };
 
 struct DetachElementwiseFromNamedOpsPass
-    : public impl::DetachElementwiseFromNamedOpsPassBase<
+    : impl::DetachElementwiseFromNamedOpsPassBase<
           DetachElementwiseFromNamedOpsPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<arith::ArithDialect, linalg::LinalgDialect,

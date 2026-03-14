@@ -17,6 +17,7 @@
 #include "iree/compiler/Codegen/Common/GPU/Passes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/TargetUtils/ConfigUtils.h"
+#include "iree/compiler/Codegen/Utils/CodegenOptions.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "mlir/Pass/Pass.h"
 
@@ -42,10 +43,6 @@ void addGPUTileAndFusePassPipeline(OpPassManager &funcPassManager,
 /// Transform dialect-based path.
 void addGPUTransformDialectPasses(OpPassManager &funcPassManager,
                                   StringRef entryPoint);
-
-/// Lowering transpose using shared memory.
-void addGPUTransposePassPipeline(OpPassManager &funcPassManager,
-                                 const GPUPipelineOptions &options);
 
 /// Lowering calling vectorization patterns. Expects pass manager to be a
 /// module-level pass manager.

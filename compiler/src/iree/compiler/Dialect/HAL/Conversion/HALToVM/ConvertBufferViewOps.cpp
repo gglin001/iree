@@ -10,32 +10,33 @@
 
 namespace mlir::iree_compiler {
 
-struct ElementTypeOpConversion
-    : public OpConversionPattern<IREE::HAL::ElementTypeOp> {
+struct ElementTypeOpConversion : OpConversionPattern<IREE::HAL::ElementTypeOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::ElementTypeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto value =
         IREE::HAL::ElementTypeOp::getTypeValue(op.getTypeAttr().getValue());
-    if (!value.has_value())
+    if (!value.has_value()) {
       return rewriter.notifyMatchFailure(op.getLoc(),
                                          "unsupported element type");
+    }
     rewriter.replaceOpWithNewOp<IREE::VM::ConstI32Op>(op, value.value());
     return success();
   }
 };
 
 struct EncodingTypeOpConversion
-    : public OpConversionPattern<IREE::HAL::EncodingTypeOp> {
+    : OpConversionPattern<IREE::HAL::EncodingTypeOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::HAL::EncodingTypeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto value = IREE::HAL::EncodingTypeOp::getTypeValue(op.getEncodingAttr());
-    if (!value.has_value())
+    if (!value.has_value()) {
       return rewriter.notifyMatchFailure(op.getLoc(),
                                          "unsupported encoding type");
+    }
     rewriter.replaceOpWithNewOp<IREE::VM::ConstI32Op>(op, value.value());
     return success();
   }

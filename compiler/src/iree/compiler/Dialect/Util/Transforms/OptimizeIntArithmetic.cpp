@@ -42,7 +42,7 @@ namespace {
 // platforms, demoting to an index is only conservatively correct if all
 // operands and all results are within the unsigned 32bit bounds.
 // While there is a good chance that such arithmetic that exceeds these
-// bounds is simply wrong/overflow-ridden, we opt to do no harm and preseve
+// bounds is simply wrong/overflow-ridden, we opt to do no harm and preserve
 // the exact results. This optimization is targeted at "small" sequences
 // anyway and this catches everything known to exist. If needed, this rule
 // could be dropped if it is ever appropriate to unconditionally assume
@@ -93,14 +93,15 @@ staticallyLegalToConvertToUnsignedOp(DataFlowSolver &solver, Operation *op) {
 }
 
 template <typename Signed, typename Unsigned>
-struct ConvertOpToUnsigned : public OpRewritePattern<Signed> {
+struct ConvertOpToUnsigned : OpRewritePattern<Signed> {
   ConvertOpToUnsigned(MLIRContext *context, DataFlowSolver &solver)
       : OpRewritePattern<Signed>(context), solver(solver) {}
 
   LogicalResult matchAndRewrite(Signed op,
                                 PatternRewriter &rewriter) const override {
-    if (failed(staticallyLegalToConvertToUnsignedOp(solver, op)))
+    if (failed(staticallyLegalToConvertToUnsignedOp(solver, op))) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<Unsigned>(op, op->getResultTypes(),
                                           op->getOperands(), op->getAttrs());
     return success();
@@ -126,7 +127,7 @@ struct ConvertOpToUnsigned : public OpRewritePattern<Signed> {
 //   %5 = arith.addi %3, %4 : index
 //
 struct ConvertUnsignedI64IndexCastProducerToIndex
-    : public OpRewritePattern<arith::IndexCastUIOp> {
+    : OpRewritePattern<arith::IndexCastUIOp> {
   ConvertUnsignedI64IndexCastProducerToIndex(MLIRContext *context,
                                              DataFlowSolver &solver)
       : OpRewritePattern(context), solver(solver) {}
@@ -135,15 +136,18 @@ struct ConvertUnsignedI64IndexCastProducerToIndex
                                 PatternRewriter &rewriter) const override {
     Type inType = origIndexOp.getIn().getType();
     Type outType = origIndexOp.getOut().getType();
-    if (!inType.isSignlessInteger(64) || !isa<IndexType>(outType))
+    if (!inType.isSignlessInteger(64) || !isa<IndexType>(outType)) {
       return failure();
+    }
 
     Operation *producer = origIndexOp.getIn().getDefiningOp();
-    if (!producer)
+    if (!producer) {
       return failure();
+    }
     auto producerResult = producer->getResult(0);
-    if (!producerResult.hasOneUse())
+    if (!producerResult.hasOneUse()) {
       return failure();
+    }
 
     auto pred = [&](Value v) -> bool {
       auto *result = solver.lookupState<IntegerValueRangeLattice>(v);
@@ -163,17 +167,20 @@ struct ConvertUnsignedI64IndexCastProducerToIndex
 
     if (!isa_and_present<arith::AddIOp, arith::CeilDivUIOp, arith::DivUIOp,
                          arith::MaxUIOp, arith::MinUIOp, arith::MulIOp,
-                         arith::RemUIOp, arith::SubIOp>(producer))
+                         arith::RemUIOp, arith::SubIOp>(producer)) {
       return failure();
-    if (!isOpStaticallyLegal(producer))
+    }
+    if (!isOpStaticallyLegal(producer)) {
       return failure();
+    }
 
     // Make modifications.
     rewriter.modifyOpInPlace(producer, [&]() {
       rewriter.setInsertionPoint(producer);
       for (auto &operand : producer->getOpOperands()) {
-        if (operand.get().getType() != inType)
+        if (operand.get().getType() != inType) {
           continue;
+        }
         Value newOperand = arith::IndexCastUIOp::create(
             rewriter, producer->getLoc(), outType, operand.get());
         operand.set(newOperand);
@@ -195,8 +202,7 @@ struct ConvertUnsignedI64IndexCastProducerToIndex
 // introduces unnecessary zero-extensions and truncations to/from `index`
 // when introducing assumptions.
 //===----------------------------------------------------------------------===//
-struct RemoveIndexCastForAssumeOfI32
-    : public OpRewritePattern<Util::AssumeIntOp> {
+struct RemoveIndexCastForAssumeOfI32 : OpRewritePattern<Util::AssumeIntOp> {
   RemoveIndexCastForAssumeOfI32(MLIRContext *context, DataFlowSolver &solver)
       : OpRewritePattern(context), solver(solver) {}
 
@@ -204,20 +210,24 @@ struct RemoveIndexCastForAssumeOfI32
                                 PatternRewriter &rewriter) const override {
     llvm::SmallBitVector needNarrowing(op.getNumOperands(), false);
     for (auto [idx, arg] : llvm::enumerate(op.getOperands())) {
-      if (!arg.getType().isIndex())
+      if (!arg.getType().isIndex()) {
         continue;
+      }
       auto castOp = arg.getDefiningOp<arith::IndexCastUIOp>();
-      if (!castOp)
+      if (!castOp) {
         continue;
+      }
       Value castIn = castOp.getIn();
       Type intType = castIn.getType();
-      if (intType.getIntOrFloatBitWidth() > 32)
+      if (intType.getIntOrFloatBitWidth() > 32) {
         continue;
+      }
 
       needNarrowing[idx] = true;
     }
-    if (needNarrowing.none())
+    if (needNarrowing.none()) {
       return failure();
+    }
 
     SmallVector<Value> newArgs;
     newArgs.reserve(op.getNumOperands());
@@ -258,7 +268,7 @@ struct RemoveIndexCastForAssumeOfI32
 // If the induction variable of an scf.for can be represented as an I32,
 // make that change to save on registers etc.
 //===----------------------------------------------------------------------===//
-struct NarrowSCFForIvToI32 : public OpRewritePattern<scf::ForOp> {
+struct NarrowSCFForIvToI32 : OpRewritePattern<scf::ForOp> {
   NarrowSCFForIvToI32(MLIRContext *context, DataFlowSolver &solver)
       : OpRewritePattern(context), solver(solver) {}
 
@@ -267,22 +277,27 @@ struct NarrowSCFForIvToI32 : public OpRewritePattern<scf::ForOp> {
     Location loc = forOp.getLoc();
     Value iv = forOp.getInductionVar();
     Type srcType = iv.getType();
-    if (!srcType.isIndex() && !srcType.isInteger(64))
+    if (!srcType.isIndex() && !srcType.isInteger(64)) {
       return rewriter.notifyMatchFailure(forOp, "IV isn't an index or i64");
-    if (!staticallyLegalToConvertToUnsigned(solver, iv))
+    }
+    if (!staticallyLegalToConvertToUnsigned(solver, iv)) {
       return rewriter.notifyMatchFailure(forOp, "IV isn't non-negative");
-    if (!staticallyLegalToConvertToUnsigned(solver, forOp.getStep()))
+    }
+    if (!staticallyLegalToConvertToUnsigned(solver, forOp.getStep())) {
       return rewriter.notifyMatchFailure(forOp, "Step isn't non-negative");
+    }
     auto *ivState = solver.lookupState<IntegerValueRangeLattice>(iv);
-    if (ivState->getValue().getValue().smax().getActiveBits() > 31)
+    if (ivState->getValue().getValue().smax().getActiveBits() > 31) {
       return rewriter.notifyMatchFailure(forOp, "IV won't fit in signed int32");
+    }
 
     Type i32 = rewriter.getI32Type();
     auto doCastDown = [&](Value v) -> Value {
-      if (srcType.isIndex())
+      if (srcType.isIndex()) {
         return arith::IndexCastUIOp::create(rewriter, loc, i32, v);
-      else
+      } else {
         return arith::TruncIOp::create(rewriter, loc, i32, v);
+      }
     };
     Value newLb = doCastDown(forOp.getLowerBound());
     Value newUb = doCastDown(forOp.getUpperBound());
@@ -322,33 +337,37 @@ static LogicalResult getDivisibility(DataFlowSolver &solver, Operation *op,
                                      Value value, PatternRewriter &rewriter,
                                      ConstantIntDivisibility &out) {
   auto *div = solver.lookupState<IntegerDivisibilityLattice>(value);
-  if (!div || div->getValue().isUninitialized())
+  if (!div || div->getValue().isUninitialized()) {
     return rewriter.notifyMatchFailure(op,
                                        "divisibility could not be determined");
+  }
 
   out = div->getValue().getValue();
   LLVM_DEBUG(dbgs() << "  * Resolved divisibility: " << out << "\n");
   return success();
 }
 
-struct RemUIDivisibilityByConstant : public OpRewritePattern<arith::RemUIOp> {
+struct RemUIDivisibilityByConstant : OpRewritePattern<arith::RemUIOp> {
   RemUIDivisibilityByConstant(MLIRContext *context, DataFlowSolver &solver)
       : OpRewritePattern(context), solver(solver) {}
 
   LogicalResult matchAndRewrite(arith::RemUIOp op,
                                 PatternRewriter &rewriter) const override {
     APInt rhsConstant;
-    if (!matchPattern(op.getRhs(), m_ConstantInt(&rhsConstant)))
+    if (!matchPattern(op.getRhs(), m_ConstantInt(&rhsConstant))) {
       return rewriter.notifyMatchFailure(op, "rhs is not constant");
+    }
 
     ConstantIntDivisibility lhsDiv;
-    if (failed(getDivisibility(solver, op, op.getLhs(), rewriter, lhsDiv)))
+    if (failed(getDivisibility(solver, op, op.getLhs(), rewriter, lhsDiv))) {
       return failure();
+    }
 
     uint64_t rhsValue = rhsConstant.getZExtValue();
     if (rhsValue > 0 && lhsDiv.udiv() > 0) {
-      if (lhsDiv.udiv() % rhsValue != 0)
+      if (lhsDiv.udiv() % rhsValue != 0) {
         return rewriter.notifyMatchFailure(op, "rhs does not divide lhs");
+      }
 
       rewriter.replaceOpWithNewOp<arith::ConstantOp>(
           op, rewriter.getZeroAttr(op.getResult().getType()));
@@ -391,16 +410,18 @@ void expandAffineOps(Operation *rootOp) {
 // General optimization patterns
 //===----------------------------------------------------------------------===//
 
-struct ElideTruncOfIndexCast : public OpRewritePattern<arith::TruncIOp> {
+struct ElideTruncOfIndexCast : OpRewritePattern<arith::TruncIOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(arith::TruncIOp truncOp,
                                 PatternRewriter &rewriter) const override {
     Operation *producer = truncOp.getOperand().getDefiningOp();
-    if (!producer)
+    if (!producer) {
       return failure();
-    if (!isa<arith::IndexCastOp, arith::IndexCastUIOp>(producer))
+    }
+    if (!isa<arith::IndexCastOp, arith::IndexCastUIOp>(producer)) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(
         truncOp, truncOp.getResult().getType(), producer->getOperand(0));
     return success();
@@ -418,8 +439,9 @@ public:
 protected:
   void notifyOperationErased(Operation *op) override {
     s.eraseState(s.getProgramPointAfter(op));
-    for (Value res : op->getResults())
+    for (Value res : op->getResults()) {
       s.eraseState(res);
+    }
   }
 
   void notifyOperationModified(Operation *op) override {
@@ -443,7 +465,7 @@ class OptimizeIntArithmeticPass
     expandAffineOps(op);
 
     DataFlowSolver solver;
-    // Needed to make the dead code analyis not be too conservative.
+    // Needed to make the dead code analysis not be too conservative.
     solver.load<SparseConstantPropagation>();
     solver.load<DeadCodeAnalysis>();
     solver.load<IntegerRangeAnalysis>();
@@ -463,8 +485,9 @@ class OptimizeIntArithmeticPass
     // Populate canonicalization patterns.
     auto arithDialect = ctx->getOrLoadDialect<arith::ArithDialect>();
     for (const RegisteredOperationName &name : ctx->getRegisteredOperations()) {
-      if (&name.getDialect() == arithDialect)
+      if (&name.getDialect() == arithDialect) {
         name.getCanonicalizationPatterns(patterns, ctx);
+      }
     }
 
     // General optimization patterns.
@@ -513,8 +536,9 @@ class OptimizeIntArithmeticPass
         return signalPassFailure();
       }
 
-      if (!changed)
+      if (!changed) {
         break;
+      }
     }
   }
 };

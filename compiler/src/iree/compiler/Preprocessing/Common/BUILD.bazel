@@ -37,7 +37,7 @@ iree_compiler_cc_library(
     srcs = [
         "ApplyPDLPatterns.cpp",
         "AttrBasedPipelinePass.cpp",
-        "ConvertConv2DToImg2Col.cpp",
+        "Convert1X1FilterConv2DToMatmul.cpp",
         "ConvertConvFilterToChannelsLast.cpp",
         "ConvertConvToChannelsLast.cpp",
         "FoldAttentionWithTranspose.cpp",
@@ -47,7 +47,6 @@ iree_compiler_cc_library(
         "PadLinalgOps.cpp",
         "PadToIntrinsics.cpp",
         "Passes.cpp",
-        "SinkTransposeThroughPad.cpp",
         "TransposeMatmul.cpp",
     ],
     hdrs = [

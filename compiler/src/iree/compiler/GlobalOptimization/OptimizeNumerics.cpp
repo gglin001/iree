@@ -22,8 +22,9 @@ namespace {
 
 int getNextPotBitWidth(int bitWidth, int minBitWidth = 8) {
   for (int i = minBitWidth;; i *= 2) {
-    if (i >= bitWidth)
+    if (i >= bitWidth) {
       return i;
+    }
   }
 }
 
@@ -108,8 +109,9 @@ struct TensorEmptyCast
   LogicalResult matchAndRewrite(IREE::Util::NumericCastOpInterface castOp,
                                 PatternRewriter &rewriter) const override {
     auto emptyOp = castOp.getInput().getDefiningOp<tensor::EmptyOp>();
-    if (!emptyOp)
+    if (!emptyOp) {
       return failure();
+    }
     Type resultType = castOp.getCasted().getType();
 
     rewriter.replaceOpWithNewOp<tensor::EmptyOp>(castOp, resultType,
@@ -120,15 +122,16 @@ struct TensorEmptyCast
 
 // For a cast produced by a fill, rewrites the cast to be on the fill operands.
 struct LinalgFillCast
-    : public OpInterfaceRewritePattern<IREE::Util::NumericCastOpInterface> {
+    : OpInterfaceRewritePattern<IREE::Util::NumericCastOpInterface> {
   using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
 
   LogicalResult matchAndRewrite(IREE::Util::NumericCastOpInterface castOp,
                                 PatternRewriter &rewriter) const override {
     auto loc = castOp.getLoc();
     auto fillOp = castOp.getInput().getDefiningOp<linalg::FillOp>();
-    if (!fillOp)
+    if (!fillOp) {
       return failure();
+    }
     Type toElementType = getElementTypeOrSelf(castOp.getCastedType());
 
     Value fillInput = fillOp.value();
@@ -153,7 +156,7 @@ struct LinalgFillCast
 };
 
 // For narrowable inputs, selects
-struct LinalgFpMatmulToLowP : public OpRewritePattern<linalg::MatmulOp> {
+struct LinalgFpMatmulToLowP : OpRewritePattern<linalg::MatmulOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(linalg::MatmulOp matmulOp,

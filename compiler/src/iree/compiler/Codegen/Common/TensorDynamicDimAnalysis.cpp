@@ -138,8 +138,9 @@ static void updateTensorDimInfo(
   auto resultType = cast<RankedTensorType>(result.getType());
   int dimOperandIndex = 0;
   for (auto [index, shape] : llvm::enumerate(resultType.getShape())) {
-    if (ShapedType::isStatic(shape))
+    if (ShapedType::isStatic(shape)) {
       continue;
+    }
     updateTensorDimInfo(result, index, dimOperands[dimOperandIndex++], solver,
                         divisibilityInfo, rangeInfo);
   }
@@ -178,15 +179,16 @@ static void updateTensorDimInfo(
           [&](auto op) {
             updateTensorDimInfo(op, solver, divisibilityInfo, rangeInfo);
           })
-      .Case<DestinationStyleOpInterface>([&](auto op) {
+      .Case([&](DestinationStyleOpInterface op) {
         updateTensorDimInfo(op, solver, divisibilityInfo, rangeInfo);
       });
 
   LLVM_DEBUG({
     for (auto [resultIndex, result] : llvm::enumerate(op->getResults())) {
       auto tensorType = dyn_cast<RankedTensorType>(result.getType());
-      if (!tensorType)
+      if (!tensorType) {
         continue;
+      }
       for (auto index : llvm::seq<unsigned>(0, tensorType.getRank())) {
         std::optional<ConstantIntRanges> range;
         std::optional<IREE::Util::ConstantIntDivisibility> divisibility;

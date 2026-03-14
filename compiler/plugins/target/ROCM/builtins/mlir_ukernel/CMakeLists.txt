@@ -14,12 +14,12 @@ if(NOT IREE_TARGET_BACKEND_ROCM)
   return()
 endif()
 
-file(GLOB _GLOB_UKERNEL_PATTERNS_X_MLIR LIST_DIRECTORIES false RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} CONFIGURE_DEPENDS ukernel_patterns_*.mlir)
 iree_c_embed_data(
   NAME
     iree_mlir_ukernel_patterns_amdgpu
   SRCS
-    "${_GLOB_UKERNEL_PATTERNS_X_MLIR}"
+    "ukernel_patterns_gfx942.mlir"
+    "ukernel_patterns_gfx950.mlir"
   C_FILE_OUTPUT
     "iree_mlir_ukernel_patterns_amdgpu.c"
   H_FILE_OUTPUT
@@ -32,7 +32,8 @@ iree_lit_test_suite(
   NAME
     verify_mlir_ukernel_patterns_amdgpu
   SRCS
-    "${_GLOB_UKERNEL_PATTERNS_X_MLIR}"
+    "ukernel_patterns_gfx942.mlir"
+    "ukernel_patterns_gfx950.mlir"
   TOOLS
     iree-opt
 )
@@ -42,7 +43,9 @@ iree_c_embed_data(
     iree_mlir_ukernels_amdgpu
   SRCS
     "iree_uk_amdgpu_dt_matmul_f16.mlir"
+    "iree_uk_amdgpu_dt_matmul_f8E4M3FN.mlir"
     "iree_uk_amdgpu_dt_matmul_f8E4M3FNUZ.mlir"
+    "iree_uk_amdgpu_dt_scaled_matmul_f4E2M1FN.mlir"
     "iree_uk_amdgpu_matmul_bf16.mlir"
     "iree_uk_amdgpu_matmul_f16.mlir"
     "iree_uk_amdgpu_matmul_f8E4M3FN.mlir"
@@ -60,7 +63,9 @@ iree_lit_test_suite(
     verify_mlir_ukernels_amdgpu
   SRCS
     "iree_uk_amdgpu_dt_matmul_f16.mlir"
+    "iree_uk_amdgpu_dt_matmul_f8E4M3FN.mlir"
     "iree_uk_amdgpu_dt_matmul_f8E4M3FNUZ.mlir"
+    "iree_uk_amdgpu_dt_scaled_matmul_f4E2M1FN.mlir"
     "iree_uk_amdgpu_matmul_bf16.mlir"
     "iree_uk_amdgpu_matmul_f16.mlir"
     "iree_uk_amdgpu_matmul_f8E4M3FN.mlir"

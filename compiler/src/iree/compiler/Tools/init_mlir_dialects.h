@@ -44,9 +44,9 @@
 #include "mlir/Dialect/Quant/IR/Quant.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/TransformOps/SCFTransformOps.h"
+#include "mlir/Dialect/SMT/IR/SMTDialect.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
 #include "mlir/Dialect/Shape/IR/Shape.h"
-#include "mlir/Dialect/Shard/IR/ShardDialect.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/IR/TensorInferTypeOpInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
@@ -78,7 +78,6 @@ inline void registerMlirDialects(DialectRegistry &registry) {
                   LLVM::LLVMDialect,
                   linalg::LinalgDialect,
                   math::MathDialect,
-                  shard::ShardDialect,
                   memref::MemRefDialect,
                   ml_program::MLProgramDialect,
                   NVVM::NVVMDialect,
@@ -87,6 +86,7 @@ inline void registerMlirDialects(DialectRegistry &registry) {
                   scf::SCFDialect,
                   quant::QuantDialect,
                   ROCDL::ROCDLDialect,
+                  smt::SMTDialect,
                   spirv::SPIRVDialect,
                   arm_neon::ArmNeonDialect,
                   arm_sve::ArmSVEDialect,

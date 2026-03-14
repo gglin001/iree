@@ -13,6 +13,7 @@
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtInterfaces.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
+#include "iree/compiler/Dialect/LinalgExt/Transforms/LoopMappingUtils.h"
 #include "iree/compiler/Dialect/LinalgExt/Utils/Utils.h"
 #include "iree/compiler/DispatchCreation/FusionUtils.h"
 #include "iree/compiler/DispatchCreation/Passes.h"
@@ -50,35 +51,11 @@
 
 namespace mlir::iree_compiler::DispatchCreation {
 
+using IREE::LinalgExt::getOuterParallelLoops;
+using IREE::LinalgExt::getRootParallelLoopToOpMap;
+
 #define GEN_PASS_DEF_FORMDISPATCHREGIONSPASS
 #include "iree/compiler/DispatchCreation/Passes.h.inc"
-
-/// Returns a bit vector of size number of loops of the `interfaceOp` with
-/// the bits corresponding to outer parallel loops set to `true`.
-static llvm::SmallBitVector getOuterParallelLoops(Operation *op) {
-  if (auto setEncodingOp = dyn_cast<IREE::Encoding::SetEncodingOp>(op)) {
-    return llvm::SmallBitVector(setEncodingOp.getResultType().getRank(), true);
-  }
-  if (auto unsetEncodingOp = dyn_cast<IREE::Encoding::UnsetEncodingOp>(op)) {
-    return llvm::SmallBitVector(unsetEncodingOp.getResultType().getRank(),
-                                true);
-  }
-
-  auto interfaceOp = dyn_cast<TilingInterface>(op);
-  if (!interfaceOp) {
-    // For ops that dont implement the `TilingInterface` just return empty.
-    return llvm::SmallBitVector{};
-  }
-  SmallVector<utils::IteratorType> loopIteratorTypes =
-      interfaceOp.getLoopIteratorTypes();
-  llvm::SmallBitVector parallelLoops(loopIteratorTypes.size());
-  for (auto iteratorType : llvm::enumerate(loopIteratorTypes)) {
-    if (iteratorType.value() != utils::IteratorType::parallel)
-      break;
-    parallelLoops.set(iteratorType.index());
-  }
-  return parallelLoops;
-}
 
 //===----------------------------------------------------------------------===//
 // Root and fusion group handling
@@ -127,6 +104,19 @@ public:
   FailureOr<AffineMap> getRootParallelLoopToOpMap(Operation *op) const;
 
   bool isFusable(Operation *op) const {
+    // We only handle fusion across operation's operands. Don't fuse if the
+    // operation is using values in the fusion group in it's body.
+    bool hasUseFromAbove = false;
+    mlir::visitUsedValuesDefinedAbove(
+        op->getRegions(), [&](OpOperand *operand) {
+          if (loopMaps.contains(operand->get().getDefiningOp())) {
+            hasUseFromAbove = true;
+          }
+        });
+    if (hasUseFromAbove) {
+      return false;
+    }
+
     FailureOr<AffineMap> maybeMap = getRootParallelLoopToOpMap(op);
     if (failed(maybeMap)) {
       return false;
@@ -191,6 +181,9 @@ public:
                         });
   }
 
+  // Check if adding `op` would exceed the operand limit.
+  bool wouldExceedOperandLimit(Operation *op) const;
+
 private:
   Operation *rootOp;
   // All operations to be fused with the root op. This does not include
@@ -219,114 +212,46 @@ void FusionGroup::insert(Operation *op) {
   }
 }
 
+bool FusionGroup::wouldExceedOperandLimit(Operation *newOp) const {
+  llvm::SmallSetVector<Operation *, kIreeMaxOperandCount> dispatchOperands;
+  int64_t numResults = 0;
+
+  auto visitOp = [&](Operation *op) {
+    auto visitOperand = [&](OpOperand *operand) {
+      if (!isa<RankedTensorType>(operand->get().getType())) {
+        return;
+      }
+      Operation *definingOp = operand->get().getDefiningOp();
+      if (llvm::isa_and_nonnull<linalg::FillOp, tensor::EmptyOp>(definingOp)) {
+        return;
+      }
+      if (definingOp && definingOp != newOp && !loopMaps.contains(definingOp)) {
+        dispatchOperands.insert(definingOp);
+      }
+    };
+    visitUsedValuesDefinedAbove(op->getRegions(), visitOperand);
+    llvm::for_each(llvm::make_pointer_range(op->getOpOperands()), visitOperand);
+
+    for (OpResult result : op->getResults()) {
+      if (llvm::any_of(result.getUsers(), [&](Operation *user) {
+            return user != newOp && !loopMaps.contains(user);
+          })) {
+        ++numResults;
+      }
+    }
+  };
+
+  visitOp(newOp);
+  for (auto [op, map] : this->loopMaps) {
+    visitOp(op);
+  }
+  return (dispatchOperands.size() + numResults) > kIreeMaxOperandCount;
+}
+
 FailureOr<AffineMap>
 FusionGroup::getRootParallelLoopToOpMap(Operation *op) const {
   assert(!contains(op) && "op cannot already be in group");
-  auto fusionOp = dyn_cast<IREE::LinalgExt::LinalgFusionOpInterface>(op);
-  if (!fusionOp) {
-    return failure();
-  }
-
-  bool isConsumer = llvm::any_of(op->getOperands(), [this](Value v) {
-    return contains(v.getDefiningOp());
-  });
-  assert(isConsumer !=
-             llvm::any_of(op->getUsers(),
-                          [this](Operation *op) { return contains(op); }) &&
-         "op must be not be a producer and consumer");
-
-  /// Computes the mapping from the root ops outer parallel loops to `op`'s
-  /// iteration space via a direct producer/consumer of `op` that is already in
-  /// the fusion group.
-  auto getMapFromOpInFusionGroup =
-      [&](AffineMap otherToOperand, AffineMap thisToOperand,
-          AffineMap otherMap) -> FailureOr<AffineMap> {
-    if (!otherToOperand || !thisToOperand ||
-        !otherToOperand.isProjectedPermutation() ||
-        !thisToOperand.isProjectedPermutation()) {
-      return failure();
-    }
-
-    // `thisToOperand` is a mapping from the iteration space of `op` to the
-    // operand's data space.
-    // `inverseMap` is the  mapping from the operand data space to `op`'s
-    // iteration space.
-    AffineMap inverseMap =
-        inverseAndBroadcastProjectedPermutation(thisToOperand);
-
-    // `otherToOperand` maps "other's" (an op in the fusion group) iteration
-    // space to the same operand's data space. Composing the two yields a
-    // mapping from other's iteration space to `op`'s iteration space.
-    AffineMap composedMap = inverseMap.compose(otherToOperand);
-
-    // `otherMap` is other's mapping from the root's outer parallel loops to
-    // other's iteration space. `composedMap.compose(otherMap)` computes the
-    // mapping from the root's outer parallel loops to `op`'s iteration space.
-    return composedMap.compose(otherMap);
-  };
-
-  AffineMap newMap;
-  if (isConsumer) {
-    for (OpOperand &operand : op->getOpOperands()) {
-      Operation *definingOp = operand.get().getDefiningOp();
-      if (!contains(definingOp)) {
-        continue;
-      }
-      auto fusionProducer =
-          operand.get()
-              .getDefiningOp<IREE::LinalgExt::LinalgFusionOpInterface>();
-      if (!fusionProducer) {
-        return failure();
-      }
-      auto it = loopMaps.find(fusionProducer);
-      assert(it != loopMaps.end());
-
-      AffineMap producerResultMap = fusionProducer.getIndexingMapMatchingResult(
-          cast<OpResult>(operand.get()));
-      AffineMap consumerOperandMap = fusionOp.getMatchingIndexingMap(&operand);
-      FailureOr<AffineMap> composedMap = getMapFromOpInFusionGroup(
-          producerResultMap, consumerOperandMap, it->second);
-      // Mapping must be the same for all operands.
-      if (failed(composedMap) || (newMap && composedMap != newMap)) {
-        return failure();
-      }
-      newMap = composedMap.value();
-    }
-  } else {
-    for (OpOperand &operand : op->getUses()) {
-      if (!contains(operand.getOwner())) {
-        continue;
-      }
-      auto fusionConsumer = dyn_cast<IREE::LinalgExt::LinalgFusionOpInterface>(
-          operand.getOwner());
-      if (!fusionConsumer) {
-        return failure();
-      }
-      auto it = loopMaps.find(operand.getOwner());
-      assert(it != loopMaps.end());
-
-      AffineMap consumerOperandMap =
-          fusionConsumer.getMatchingIndexingMap(&operand);
-      AffineMap producerResultMap =
-          fusionOp.getIndexingMapMatchingResult(cast<OpResult>(operand.get()));
-      FailureOr<AffineMap> composedMap = getMapFromOpInFusionGroup(
-          consumerOperandMap, producerResultMap, it->second);
-      // Mapping must be the same for all operands.
-      if (failed(composedMap) || (newMap && composedMap != newMap)) {
-        return failure();
-      }
-      newMap = composedMap.value();
-
-      // Producers cannot be more parallel than consumers.
-      if (compressUnusedDims(newMap).getNumDims() != it->second.getNumDims()) {
-        return failure();
-      }
-    }
-  }
-  if (!newMap) {
-    return failure();
-  }
-  return newMap;
+  return IREE::LinalgExt::getRootParallelLoopToOpMap(op, loopMaps);
 }
 
 namespace {
@@ -507,8 +432,9 @@ static bool canUseInOperandAsInitOperand(OpOperand *inOperand,
 
   // Check that the owner is a `generic` op.
   auto genericOp = dyn_cast<linalg::GenericOp>(inOperand->getOwner());
-  if (!genericOp)
+  if (!genericOp) {
     return false;
+  }
 
   // All loops to be parallel.
   if (genericOp.getNumLoops() != genericOp.getNumParallelLoops()) {
@@ -516,13 +442,15 @@ static bool canUseInOperandAsInitOperand(OpOperand *inOperand,
   }
 
   /// The input operand cannot be an init operand already.
-  if (genericOp.isDpsInit(inOperand))
+  if (genericOp.isDpsInit(inOperand)) {
     return false;
+  }
 
   // If the init operand value is used it cannot be reused for the input
   // operand.
-  if (genericOp.payloadUsesValueFromOperand(initOperand))
+  if (genericOp.payloadUsesValueFromOperand(initOperand)) {
     return false;
+  }
 
   // Indexing map used to access the input and init have to match.
   if (genericOp.getMatchingIndexingMap(inOperand) !=
@@ -532,8 +460,9 @@ static bool canUseInOperandAsInitOperand(OpOperand *inOperand,
 
   // Types have to match for the input operand to reuse the buffer from the init
   // operand
-  if (inOperand->get().getType() != initOperand->get().getType())
+  if (inOperand->get().getType() != initOperand->get().getType()) {
     return false;
+  }
 
   return true;
 }
@@ -548,7 +477,9 @@ isFusableWithConsumer(OpOperand &fusedOperand, const FusionTracker &tracker,
 
   // If consumer is a dequant operation, dont fuse it. These get cloned
   // into their consumers.
-  if (IREE::LinalgExt::isBitExtendOp(consumer)) {
+  IREE::Flow::CloneableIntoDispatchOptions cloneableOptions;
+  cloneableOptions.aggressive = options.aggressiveFusion;
+  if (IREE::Flow::isCloneableIntoDispatchOp(consumer, cloneableOptions)) {
     return false;
   }
 
@@ -571,15 +502,15 @@ isFusableWithConsumer(OpOperand &fusedOperand, const FusionTracker &tracker,
 
   if (isPackLikeOp(consumer)) {
     return TypeSwitch<Operation *, bool>(producer)
-        .Case<tensor::PadOp>([&](auto padOp) { return true; })
-        .Case<linalg::LinalgOp>([&](auto linalgOp) {
+        .Case([&](tensor::PadOp padOp) { return true; })
+        .Case([&](linalg::LinalgOp linalgOp) {
           AffineMap producerIndexingMap = linalgOp.getIndexingMapMatchingResult(
               cast<OpResult>(fusedOperand.get()));
           // Make sure the producer op has an identity result indexing map. As
           // CPU backend currently can't handle transpose between fused ops.
           return producerIndexingMap.isIdentity();
         })
-        .Default([](Operation *) { return false; });
+        .Default(false);
   }
 
   // By default, padding should be fused with producers. It is hard to square
@@ -616,8 +547,9 @@ isFusableWithConsumer(OpOperand &fusedOperand, const FusionTracker &tracker,
       dyn_cast<IREE::LinalgExt::LinalgFusionOpInterface>(producer);
   auto consumerFusionOp =
       dyn_cast<IREE::LinalgExt::LinalgFusionOpInterface>(consumer);
-  if (!producerFusionOp || !consumerFusionOp)
+  if (!producerFusionOp || !consumerFusionOp) {
     return false;
+  }
 
   // Check that the consumer is all parallel.
   if (consumerFusionOp.getNumLoops() !=
@@ -629,19 +561,45 @@ isFusableWithConsumer(OpOperand &fusedOperand, const FusionTracker &tracker,
     return false;
   }
 
+  // Check operand limit before allowing fusion
+  if (tracker.getFusionGroup(producer).wouldExceedOperandLimit(consumer)) {
+    return false;
+  }
+
   // Check if the iteration spaces of the producer and consumer are same.
   // TODO(#12664): This is unnecessary requirement, but we need a better config
   // to tile the consumer with a larger iteration space.
   if (!options.aggressiveFusion) {
-    FailureOr<SmallVector<int64_t>> producerIterationSpace =
-        producerFusionOp.getStaticLoopRanges();
-    FailureOr<SmallVector<int64_t>> consumerIterationSpace =
-        consumerFusionOp.getStaticLoopRanges();
-    if (failed(producerIterationSpace) || failed(consumerIterationSpace)) {
+    // FIXME: Implement getStaticLoopRanges for LinalgExt::CustomOp.
+    if (isa<IREE::LinalgExt::CustomOp>(producer)) {
       return false;
     }
-    if (producerIterationSpace.value().size() <
-        consumerIterationSpace.value().size()) {
+
+    SmallVector<int64_t> producerIterationSpace =
+        producerFusionOp.getStaticLoopRanges();
+    SmallVector<int64_t> consumerIterationSpace =
+        consumerFusionOp.getStaticLoopRanges();
+    if (producerIterationSpace.size() < consumerIterationSpace.size()) {
+      return false;
+    }
+  }
+
+  // Block fusion if the consumer has more non-unit loops than the producer's
+  // fusion group root. This prevents fusing cases where a small reduction
+  // result is broadcast to a much larger consumer (e.g., batchn.
+  // patterns). Unit dimensions are ignored..
+  Operation *rootOp = tracker.getFusionGroup(producer).getRoot();
+  if (auto rootFusionOp =
+          dyn_cast<IREE::LinalgExt::LinalgFusionOpInterface>(rootOp);
+      rootFusionOp && !isa<IREE::LinalgExt::CustomOp>(rootOp)) {
+    SmallVector<int64_t> rootLoopRanges = rootFusionOp.getStaticLoopRanges();
+    SmallVector<int64_t> consumerLoopRanges =
+        consumerFusionOp.getStaticLoopRanges();
+    auto countNonUnitDims = [](ArrayRef<int64_t> ranges) {
+      return llvm::count_if(ranges, [](int64_t size) { return size != 1; });
+    };
+    if (countNonUnitDims(consumerLoopRanges) >
+        countNonUnitDims(rootLoopRanges)) {
       return false;
     }
   }
@@ -662,10 +620,11 @@ isFusableWithConsumer(OpOperand &fusedOperand, const FusionTracker &tracker,
   }
 
   for (OpOperand *inputOperand : consumerDstOp.getDpsInputOperands()) {
-    if (inputOperand->get().getDefiningOp() != producer)
+    if (inputOperand->get().getDefiningOp() != producer) {
       continue;
+    }
     if (isa<linalg::ConvolutionOpInterface>(producer) &&
-        !llvm::any_of(
+        llvm::none_of(
             consumerDstOp.getDpsInitsMutable(), [&](OpOperand &initOperand) {
               return canUseInOperandAsInitOperand(inputOperand, &initOperand);
             })) {
@@ -698,17 +657,6 @@ fuseRootsWithConsumers(MLIRContext *context, ArrayRef<Operation *> roots,
         continue;
       }
 
-      // For now prune the fusable uses due to codegen failures. Ideally we
-      // should just be taking the whole set of fusable uses.
-      if (IREE::LinalgExt::isBitTruncateOp(fusableUses.front()->getOwner())) {
-        fusableUses =
-            llvm::filter_to_vector(fusableUses, [](OpOperand *operand) {
-              return IREE::LinalgExt::isBitTruncateOp(operand->getOwner());
-            });
-      } else {
-        fusableUses.resize(1);
-      }
-
       // Analyse the use to see if it is fusable.
       for (OpOperand *fusableUse : fusableUses) {
         Operation *consumerOp = fusableUse->getOwner();
@@ -726,8 +674,6 @@ fuseRootsWithConsumers(MLIRContext *context, ArrayRef<Operation *> roots,
         if (isFusableWithConsumer(*fusableUse, tracker, options)) {
           tracker.appendToFusionGroup(consumerOp, fusionGroup);
           workList.push_back(consumerOp);
-        } else {
-          break;
         }
       }
     }
@@ -766,8 +712,8 @@ static bool isFusableWithProducer(OpOperand &operand,
 
   if (isPackLikeOp(consumer)) {
     return TypeSwitch<Operation *, bool>(producer)
-        .Case<tensor::PadOp>([&](auto padOp) { return true; })
-        .Case<linalg::LinalgOp>([&](auto linalgOp) {
+        .Case([&](tensor::PadOp padOp) { return true; })
+        .Case([&](linalg::LinalgOp linalgOp) {
           if (auto packOp = dyn_cast<linalg::PackOp>(consumer)) {
             // TODO(#12746): fusion of pack with dynamic inner tile size
             // causes an error in backend. Disable for now.
@@ -781,7 +727,7 @@ static bool isFusableWithProducer(OpOperand &operand,
           // CPU backend currently can't handle transpose between fused ops.
           return producerIndexingMap.isIdentity();
         })
-        .Default([](Operation *) { return false; });
+        .Default(false);
   }
 
   if (!isa<IREE::LinalgExt::LinalgFusionOpInterface>(consumer) ||
@@ -799,7 +745,39 @@ static bool isFusableWithProducer(OpOperand &operand,
   if (!tracker.getFusionGroup(consumer).isFusable(producer)) {
     return false;
   }
+
+  // Check operand limit before allowing fusion
+  if (tracker.getFusionGroup(consumer).wouldExceedOperandLimit(producer)) {
+    return false;
+  }
+
   return true;
+}
+
+/// Check if moving the producer into the dispatch at the root's position would
+/// break any existing uses. Returns true if there are uses between the producer
+/// and the root that are not in the fusion group, which would cause a dominance
+/// violation.
+static bool hasUsesBetweenProducerAndRoot(Operation *producer, Operation *root,
+                                          const FusionGroup &fusionGroup,
+                                          const DominanceInfo &dominanceInfo) {
+  for (OpOperand &use : producer->getUses()) {
+    Operation *user = use.getOwner();
+    // Walk up to the parent in the same block as the producer/root.
+    while (user && user->getBlock() != root->getBlock()) {
+      user = user->getParentOp();
+    }
+    // If the user is in the fusion group, it will be moved too.
+    if (!user || fusionGroup.contains(user)) {
+      continue;
+    }
+    // If the user does not come after the root, then moving the producer
+    // into the dispatch at root's position would break dominance.
+    if (!dominanceInfo.properlyDominates(root, user)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /// Starting from the `root` op, traverse the operand use-def chain
@@ -812,15 +790,16 @@ fuseRootsWithProducers(MLIRContext *context, Operation *root,
                        FusionTracker &tracker, bool fuseWithTruncate) {
   SmallVector<Operation *> worklist;
   worklist.push_back(root);
-  IREE::Flow::ClonableIntoDispatchOptions clonableOptions;
-  clonableOptions.aggressive = options.aggressiveFusion;
+  IREE::Flow::CloneableIntoDispatchOptions cloneableOptions;
+  cloneableOptions.aggressive = options.aggressiveFusion;
   while (!worklist.empty()) {
     Operation *candidate = worklist.pop_back_val();
     for (OpOperand &operand : candidate->getOpOperands()) {
       Operation *producer = operand.get().getDefiningOp();
-      if (!producer)
+      if (!producer) {
         continue;
-      if (IREE::Flow::isClonableIntoDispatchOp(producer, clonableOptions) ||
+      }
+      if (IREE::Flow::isCloneableIntoDispatchOp(producer, cloneableOptions) ||
           tracker.isFusedOp(producer) || tracker.isRootOp(producer)) {
         continue;
       }
@@ -829,11 +808,17 @@ fuseRootsWithProducers(MLIRContext *context, Operation *root,
         continue;
       }
 
+      if (hasUsesBetweenProducerAndRoot(producer, root, fusionGroup,
+                                        dominanceInfo)) {
+        continue;
+      }
+
       SmallVector<OpOperand *> fusableUses =
           getFusableUses(context, producer, dominanceInfo,
                          /*aggressiveFusion=*/options.aggressiveFusion);
-      if (fusableUses.empty() || fusableUses.front()->getOwner() != candidate)
+      if (fusableUses.empty() || fusableUses.front()->getOwner() != candidate) {
         continue;
+      }
 
       tracker.appendToFusionGroup(producer, fusionGroup);
       worklist.push_back(producer);
@@ -849,8 +834,8 @@ decideFusableLinalgOps(Region &region, DominanceInfo const &dominanceInfo,
                        FusionTracker &tracker, unsigned numRootOps = 0) {
   MLIRContext *context = region.getContext();
   OpBuilder builder(context);
-  IREE::Flow::ClonableIntoDispatchOptions clonableOptions;
-  clonableOptions.aggressive = options.aggressiveFusion;
+  IREE::Flow::CloneableIntoDispatchOptions cloneableOptions;
+  cloneableOptions.aggressive = options.aggressiveFusion;
   for (Block &block : region) {
     // Dispatch region formation works by first cloning the root into
     // the dispatch region and then pulling operations in.
@@ -868,8 +853,9 @@ decideFusableLinalgOps(Region &region, DominanceInfo const &dominanceInfo,
       }
 
       // Start with a root operation and fuse its producers.
-      if (tracker.isFusedOp(&op) || !isRootLikeOp(&op))
+      if (tracker.isFusedOp(&op) || !isRootLikeOp(&op)) {
         continue;
+      }
       FusionGroup &newGroup = tracker.createFusionGroup(context, &op);
       fuseRootsWithProducers(context, &op, newGroup, dominanceInfo, options,
                              tracker,
@@ -892,27 +878,27 @@ decideFusableLinalgOps(Region &region, DominanceInfo const &dominanceInfo,
     SmallVector<Operation *> roots;
     for (Operation &op : llvm::reverse(block)) {
       // If it is part of a fusion group or root op, ignore it.
-      if (tracker.isFusedOp(&op) || tracker.isRootOp(&op))
+      if (tracker.isFusedOp(&op) || tracker.isRootOp(&op)) {
         continue;
+      }
       // Only look for Linalg ops here. Avoid moving `linalg.fill` that aren't
       // fused with anything else into their own dispatches since it is better
       // to convert them to splats. Also avoid moving dequantization-like ops
       // into their own dispatch since it is better to clone these ops and avoid
       // materializing large tensors between dispatches.
       if (!isa<linalg::LinalgOp, tensor::PadOp, linalg::PackOp>(op) ||
-          IREE::Flow::isClonableIntoDispatchOp(&op, clonableOptions)) {
+          IREE::Flow::isCloneableIntoDispatchOp(&op, cloneableOptions)) {
         continue;
       }
 
       // For now check if this is a rope computation that is to be fused with
       // attention.
       // TODO: Ideally this is just regular gather fusion which will be covered
-      // by the `isClonableIntoDispatchOp` call above, but for now this is done
+      // by the `isCloneableIntoDispatchOp` call above, but for now this is done
       // as a point fix.
       if (IREE::LinalgExt::isGatherlikeOp(&op) &&
-          llvm::all_of(op.getUsers(), [](Operation *op) {
-            return isa<IREE::LinalgExt::AttentionOp>(op);
-          })) {
+          llvm::all_of(op.getUsers(),
+                       llvm::IsaPred<IREE::LinalgExt::AttentionOp>)) {
         continue;
       }
 
@@ -1031,7 +1017,8 @@ createFusionGroups(TensorDimTrackingRewriter &rewriter,
       auto newRegionOp = IREE::Flow::moveFollowingOpIntoDispatchRegion(
           rewriter, consumer, regionOp);
       if (failed(newRegionOp)) {
-        return consumer->emitOpError("failed to move consumer into region");
+        consumer->emitWarning("failed to move consumer into region");
+        continue;
       }
       regionOp = *newRegionOp;
     }
@@ -1057,7 +1044,7 @@ createFusionGroups(TensorDimTrackingRewriter &rewriter,
 namespace {
 /// Pass declaration.
 struct FormDispatchRegionsPass final
-    : public impl::FormDispatchRegionsPassBase<FormDispatchRegionsPass> {
+    : impl::FormDispatchRegionsPassBase<FormDispatchRegionsPass> {
   using Base::Base;
   void runOnOperation() override;
 };

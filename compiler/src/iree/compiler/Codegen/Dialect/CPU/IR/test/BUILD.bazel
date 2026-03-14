@@ -15,8 +15,10 @@ package(
 iree_lit_test_suite(
     name = "lit",
     srcs = enforce_glob(
+        # keep sorted
         [
             "invalid.mlir",
+            "iree_cpu_inner_tiled_ops.mlir",
             "roundtrip.mlir",
         ],
         include = ["*.mlir"],

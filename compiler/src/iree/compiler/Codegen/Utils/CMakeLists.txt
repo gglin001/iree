@@ -33,6 +33,7 @@ iree_cc_library(
     LLVMSupport
     LLVMTargetParser
     MLIRAMDGPUDialect
+    MLIRAMDGPUUtils
     MLIRAffineDialect
     MLIRAnalysis
     MLIRArithDialect
@@ -55,6 +56,7 @@ iree_cc_library(
     MLIRTensorDialect
     MLIRTilingInterface
     MLIRTransformUtils
+    MLIRValueBoundsOpInterface
     MLIRVectorDialect
     MLIRVectorTransforms
     MLIRViewLikeInterface
@@ -90,6 +92,19 @@ iree_cc_library(
     MLIRLinalgInterfacesIncGenLib
     MLIRSupport
     MLIRVectorDialect
+  PUBLIC
+)
+
+iree_cc_library(
+  NAME
+    CodegenOptions
+  HDRS
+    "CodegenOptions.h"
+  SRCS
+    "CodegenOptions.cpp"
+  DEPS
+    LLVMSupport
+    iree::compiler::Utils
   PUBLIC
 )
 

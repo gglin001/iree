@@ -11,6 +11,10 @@ include "mlir/IR/CommonTypeConstraints.td"
 
 def AnyRankedTensorOrMemRef : AnyTypeOf<[AnyRankedTensor, AnyMemRef],
   "ranked tensor or memref of any type", "::mlir::ShapedType">;
+def AnyRankedTensorVectorOrMemRef
+    : AnyTypeOf<[AnyRankedTensor, AnyVectorOfAnyRank, AnyMemRef],
+                "ranked tensor, vector, or memref of any type",
+                "::mlir::ShapedType">;
 
 class RankedTensorOrMemRefOf<list<Type> allowedTypes, list<int> ranks>
     : AnyTypeOf<[TensorRankOf<allowedTypes, ranks>,
@@ -27,5 +31,12 @@ class RankedTensorOrVectorOf<list<Type> allowedTypes> :
   "ranked tensor or vector", "::mlir::ShapedType">;
 
 def AnyRankedTensorOrVector : RankedTensorOrVectorOf<[AnyType]>;
+
+class RankedTensorOrVectorOrMemRefOf<list<Type> allowedTypes> :
+  ShapedContainerType<allowedTypes,
+      Or<[IsVectorOfAnyRankTypePred,
+          And<[IsTensorTypePred, HasRankPred]>,
+          And<[IsMemRefTypePred, HasRankPred]>]>,
+  "ranked tensor or vector or memref", "::mlir::ShapedType">;
 
 #endif // IREE_CODEGEN_UTILS_COMMONTYPECONSTRAINTS

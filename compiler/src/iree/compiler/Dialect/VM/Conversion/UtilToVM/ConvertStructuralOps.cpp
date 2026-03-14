@@ -16,7 +16,7 @@ namespace mlir::iree_compiler {
 namespace {
 
 struct InitializerOpConversion
-    : public OpConversionPattern<IREE::Util::InitializerOp> {
+    : OpConversionPattern<IREE::Util::InitializerOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Util::InitializerOp op, OpAdaptor adaptor,
@@ -89,16 +89,18 @@ class FuncOpConversion : public OpConversionPattern<IREE::Util::FuncOp> {
   matchAndRewrite(IREE::Util::FuncOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // Handled by import-specific conversion.
-    if (srcOp.isExternal())
+    if (srcOp.isExternal()) {
       return failure();
+    }
 
     // Convert function signature.
     TypeConverter::SignatureConversion signatureConversion(
         srcOp.getNumArguments());
     auto newFuncType = convertFuncSignature(srcOp, *getTypeConverter(),
                                             signatureConversion, rewriter);
-    if (failed(newFuncType))
+    if (failed(newFuncType)) {
       return failure();
+    }
 
     // Create new function with converted argument and result types.
     // Note that attributes are dropped. Consider preserving some if needed.
@@ -165,8 +167,9 @@ class ExternalFuncOpConversion
   matchAndRewrite(IREE::Util::FuncOp srcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // Handled by internal-specific conversion.
-    if (!srcOp.isExternal())
+    if (!srcOp.isExternal()) {
       return failure();
+    }
 
     // If the user declared an intended signature then we can use that instead
     // of running conversion ourselves. This can be used in cases where the
@@ -186,8 +189,9 @@ class ExternalFuncOpConversion
           srcOp.getNumArguments());
       auto convertedSignature = convertFuncSignature(
           srcOp, *getTypeConverter(), signatureConversion, rewriter);
-      if (failed(convertedSignature))
+      if (failed(convertedSignature)) {
         return failure();
+      }
       newSignature = *convertedSignature;
     }
 
@@ -215,7 +219,7 @@ class ExternalFuncOpConversion
   }
 };
 
-struct CallOpConversion : public OpConversionPattern<IREE::Util::CallOp> {
+struct CallOpConversion : OpConversionPattern<IREE::Util::CallOp> {
   ImportTable &importTable;
   CallOpConversion(const TypeConverter &typeConverter, MLIRContext *context,
                    ImportTable &importTable, PatternBenefit benefit = 1)
@@ -328,8 +332,9 @@ struct CallOpConversion : public OpConversionPattern<IREE::Util::CallOp> {
     rewriter.setInsertionPointToStart(fallbackBlock);
     auto fallbackResults = convertCallOp(rootOp, loc, fallbackName, operands,
                                          resultTypes, rewriter);
-    if (failed(fallbackResults))
+    if (failed(fallbackResults)) {
       return failure();
+    }
     IREE::VM::BranchOp::create(rewriter, loc, exitBlock, *fallbackResults);
 
     return exitResults;
@@ -365,7 +370,7 @@ struct CallOpConversion : public OpConversionPattern<IREE::Util::CallOp> {
   }
 };
 
-struct ReturnOpConversion : public OpConversionPattern<IREE::Util::ReturnOp> {
+struct ReturnOpConversion : OpConversionPattern<IREE::Util::ReturnOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Util::ReturnOp op, OpAdaptor adaptor,
@@ -376,7 +381,7 @@ struct ReturnOpConversion : public OpConversionPattern<IREE::Util::ReturnOp> {
 };
 
 struct UnreachableOpConversion
-    : public OpConversionPattern<IREE::Util::UnreachableOp> {
+    : OpConversionPattern<IREE::Util::UnreachableOp> {
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
   matchAndRewrite(IREE::Util::UnreachableOp op, OpAdaptor adaptor,

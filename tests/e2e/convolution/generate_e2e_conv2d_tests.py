@@ -4,8 +4,7 @@
 # Licensed under the Apache License v2.0 with LLVM Exceptions.
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-"""Generator for e2e conv2d tests.
-"""
+"""Generator for e2e conv2d tests."""
 
 import argparse
 import enum
@@ -525,7 +524,7 @@ def generate(
             )
             # Different testcases may differ only by runtime parameters but
             # share the same code. For example, dynamic-shapes testcases
-            # share the same code involing tensor<?x?xf32> even though the runtime
+            # share the same code involving tensor<?x?xf32> even though the runtime
             # value in the trace are different. That's why we append conditionally
             # to calls, but unconditionally to function_definitions.
             if function.name not in functions:

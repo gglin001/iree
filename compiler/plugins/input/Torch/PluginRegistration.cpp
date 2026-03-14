@@ -9,6 +9,7 @@
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtDialect.h"
 #include "iree/compiler/Dialect/Stream/IR/StreamDialect.h"
+#include "iree/compiler/Dialect/TensorExt/IR/TensorExtDialect.h"
 #include "iree/compiler/Dialect/Util/IR/UtilDialect.h"
 #include "iree/compiler/PluginAPI/Client.h"
 #include "mlir/Dialect/MLProgram/IR/MLProgram.h"
@@ -28,6 +29,8 @@ namespace {
 struct TorchOptions {
   bool strictSymbolicShapes = true;
   bool decompose = true;
+  bool externalizeTransients = false;
+  bool enableShapeRefinement = false;
   void bindOptions(OptionsBinder &binder) {
     static llvm::cl::OptionCategory category("Torch Input");
     binder.opt<bool>(
@@ -37,14 +40,23 @@ struct TorchOptions {
     binder.opt<bool>("iree-torch-decompose-complex-ops", decompose,
                      llvm::cl::cat(category),
                      llvm::cl::desc("Decompose complex torch operations."));
+    binder.opt<bool>(
+        "iree-torch-externalize-transients", externalizeTransients,
+        llvm::cl::cat(category),
+        llvm::cl::desc("If enabled, an external hal buffer will be appended to "
+                       "program inputs when converting torch functions to IREE "
+                       "input. This buffer will be used for storing transient "
+                       "memory and must be provided by the user at runtime."));
+    binder.opt<bool>("iree-torch-enable-shape-refinement",
+                     enableShapeRefinement, llvm::cl::cat(category),
+                     llvm::cl::desc("Enable shape refinement"));
   }
 };
 
 // The torch plugin provides dialects, passes and opt-in options.
 // Therefore, it is appropriate for default activation.
-struct TorchSession
-    : public PluginSession<TorchSession, TorchOptions,
-                           PluginActivationPolicy::DefaultActivated> {
+struct TorchSession : PluginSession<TorchSession, TorchOptions,
+                                    PluginActivationPolicy::DefaultActivated> {
   static void registerPasses() {
     mlir::torch::registerTorchPasses();
     mlir::torch::registerTorchConversionPasses();
@@ -66,6 +78,7 @@ struct TorchSession
     registry.insert<IREE::Flow::FlowDialect>();
     registry.insert<IREE::HAL::HALDialect>();
     registry.insert<IREE::Stream::StreamDialect>();
+    registry.insert<IREE::TensorExt::IREETensorExtDialect>();
     registry.insert<IREE::Util::UtilDialect>();
   }
 
@@ -85,6 +98,8 @@ struct TorchSession
       TorchInput::TorchToIREELoweringPipelineOptions torchOptions;
       torchOptions.strictSymbolicShapes = options.strictSymbolicShapes;
       torchOptions.decompose = options.decompose;
+      torchOptions.externalizeTransients = options.externalizeTransients;
+      torchOptions.enableShapeRefinement = options.enableShapeRefinement;
       TorchInput::createTorchToIREEPipeline(passManager, torchOptions);
       return true;
     }

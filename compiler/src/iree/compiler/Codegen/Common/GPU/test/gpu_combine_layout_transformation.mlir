@@ -18,7 +18,7 @@ func.func @fold_pad_op(%source : tensor<250xf32>, %result : memref<256xf32>) {
 //   CHECK-DAG:   %[[TRUE:.+]] = arith.constant true
 //   CHECK-DAG:   %[[C1:.+]] = arith.constant 1 : index
 //       CHECK:   %[[MAP_SCATTER_DEST:.+]] = tensor.empty() : tensor<256xf32>
-//       CHECK:   %[[MAP_SCATTER:.+]] = iree_linalg_ext.map_scatter
+//       CHECK:   %[[MAP_SCATTER:.+]] = iree_linalg_ext.map_store
 //  CHECK-SAME:     %[[SOURCE]] into %[[MAP_SCATTER_DEST]] {
 //  CHECK-NEXT:   ^bb0(%[[IDX0:.+]]: index):
 //       CHECK:     iree_linalg_ext.yield %[[IDX0]], %[[TRUE]]
@@ -27,7 +27,7 @@ func.func @fold_pad_op(%source : tensor<250xf32>, %result : memref<256xf32>) {
 
 // Low padding
 
-//       CHECK:   scf.forall (%[[WG_LOOP0_IV:.+]]) = (0) to (2) step (64) {
+//       CHECK:   scf.forall ({{.+}}) = (0) to (2) step (64) {
 //       CHECK:     scf.forall (%[[THREAD_LOOP0_IV:.+]]) in (2) {
 //       CHECK:       %[[THREAD_TILE0_UB:.+]] = affine.min #[[$MAP]](%[[THREAD_LOOP0_IV]])
 //       CHECK:       scf.for %[[LOW_IDX:.+]] = %[[THREAD_LOOP0_IV]] to %[[THREAD_TILE0_UB]] step %[[C1]] {
@@ -38,7 +38,7 @@ func.func @fold_pad_op(%source : tensor<250xf32>, %result : memref<256xf32>) {
 
 // High padding
 
-//       CHECK:   scf.forall (%[[WG_LOOP1_IV:.+]]) = (252) to (256) step (64) {
+//       CHECK:   scf.forall ({{.+}}) = (252) to (256) step (64) {
 //       CHECK:     scf.forall (%[[THREAD_LOOP1_IV:.+]]) = (252) to (256) step (1) {
 //       CHECK:       %[[THREAD_TILE1_UB:.+]] = affine.min #[[$MAP1]](%[[THREAD_LOOP1_IV]])
 //       CHECK:       scf.for %[[HIGH_IDX:.+]] = %[[THREAD_LOOP1_IV]] to %[[THREAD_TILE1_UB]] step %[[C1]] {
@@ -60,7 +60,7 @@ func.func @no_fold_simple_relayout_op_chain(%source : tensor<256x128xf32>, %resu
 }
 
 // CHECK-LABEL: @no_fold_simple_relayout_op_chain
-//   CHECK-NOT:   iree_linalg_ext.map_scatter
+//   CHECK-NOT:   iree_linalg_ext.map_store
 //       CHECK:   linalg.copy
 //       CHECK:   linalg.transpose
 //       CHECK:   tensor.extract_slice
@@ -79,7 +79,7 @@ func.func @fold_pack_op(%source : tensor<256x128xf32>, %result : memref<2x2x128x
 
 // CHECK-LABEL: @fold_pack_op
 //   CHECK-NOT:   linalg.pack
-//       CHECK:   iree_linalg_ext.map_scatter
+//       CHECK:   iree_linalg_ext.map_store
 
 // -----
 
@@ -94,7 +94,7 @@ func.func @fold_unpack_op(%source : tensor<2x2x128x64xf32>, %result : memref<256
 
 // CHECK-LABEL: @fold_unpack_op
 //   CHECK-NOT:   linalg.unpack
-//       CHECK:   iree_linalg_ext.map_scatter
+//       CHECK:   iree_linalg_ext.map_store
 
 // -----
 
@@ -106,7 +106,7 @@ func.func @fold_expand_shape_op(%source : tensor<8x16xf32>, %result : memref<2x4
 
 // CHECK-LABEL: @fold_expand_shape_op
 //   CHECK-NOT:   tensor.expand_shape
-//       CHECK:   iree_linalg_ext.map_scatter
+//       CHECK:   iree_linalg_ext.map_store
 
 // -----
 
@@ -118,4 +118,4 @@ func.func @fold_collapse_shape_op(%source : tensor<2x4x16xf32>, %result : memref
 
 // CHECK-LABEL: @fold_collapse_shape_op
 //   CHECK-NOT:   tensor.collapse_shape
-//       CHECK:   iree_linalg_ext.map_scatter
+//       CHECK:   iree_linalg_ext.map_store

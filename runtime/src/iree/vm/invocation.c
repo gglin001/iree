@@ -20,6 +20,12 @@
 // Invocation utilities for I/O
 //===----------------------------------------------------------------------===//
 
+// Aligns a pointer up to the required alignment.
+static inline uint8_t* iree_vm_invoke_align_ptr(uint8_t* p,
+                                                iree_host_size_t alignment) {
+  return (uint8_t*)iree_host_align((uintptr_t)p, alignment);
+}
+
 // Releases reference counted values in |storage|.
 static void iree_vm_invoke_release_io_refs(iree_string_view_t cconv_fragment,
                                            iree_byte_span_t storage) {
@@ -40,10 +46,12 @@ static void iree_vm_invoke_release_io_refs(iree_string_view_t cconv_fragment,
         break;
       case IREE_VM_CCONV_TYPE_I64:
       case IREE_VM_CCONV_TYPE_F64:
+        p = iree_vm_invoke_align_ptr(p, sizeof(int64_t));
         p += sizeof(int64_t);
         break;
       case IREE_VM_CCONV_TYPE_REF:
-        iree_vm_ref_release((iree_vm_ref_t*)p);  // safe unaligned
+        p = iree_vm_invoke_align_ptr(p, iree_alignof(iree_vm_ref_t));
+        iree_vm_ref_release((iree_vm_ref_t*)p);
         p += sizeof(iree_vm_ref_t);
         break;
     }
@@ -109,6 +117,7 @@ static iree_status_t iree_vm_invoke_marshal_inputs(
         p += sizeof(int32_t);
       } break;
       case IREE_VM_CCONV_TYPE_I64: {
+        p = iree_vm_invoke_align_ptr(p, sizeof(int64_t));
         iree_vm_value_t value;
         IREE_RETURN_IF_ERROR(iree_vm_list_get_value_as(
             inputs, arg_i, IREE_VM_VALUE_TYPE_I64, &value));
@@ -123,6 +132,7 @@ static iree_status_t iree_vm_invoke_marshal_inputs(
         p += sizeof(float);
       } break;
       case IREE_VM_CCONV_TYPE_F64: {
+        p = iree_vm_invoke_align_ptr(p, sizeof(double));
         iree_vm_value_t value;
         IREE_RETURN_IF_ERROR(iree_vm_list_get_value_as(
             inputs, arg_i, IREE_VM_VALUE_TYPE_F64, &value));
@@ -130,10 +140,13 @@ static iree_status_t iree_vm_invoke_marshal_inputs(
         p += sizeof(double);
       } break;
       case IREE_VM_CCONV_TYPE_REF: {
-        // TODO(benvanik): see if we can't remove this retain by instead relying
-        // on the caller still owning the list.
-        IREE_RETURN_IF_ERROR(iree_vm_list_get_ref_assign(
-            inputs, arg_i, (iree_vm_ref_t*)p));  // safe unaligned
+        p = iree_vm_invoke_align_ptr(p, iree_alignof(iree_vm_ref_t));
+        // NOTE: we assign here (not retain) for zero overhead. C++ native
+        // modules that receive refs via ParamUnpack should use borrowed
+        // pointers (T*) rather than owned refs (ref<T>) to avoid ownership
+        // issues, as ParamUnpack takes ownership and zeros the source.
+        IREE_RETURN_IF_ERROR(
+            iree_vm_list_get_ref_assign(inputs, arg_i, (iree_vm_ref_t*)p));
         p += sizeof(iree_vm_ref_t);
       } break;
     }
@@ -176,9 +189,8 @@ static iree_status_t iree_vm_invoke_marshal_outputs(
         p += sizeof(int32_t);
       } break;
       case IREE_VM_CCONV_TYPE_I64: {
-        int64_t result = 0;
-        memcpy(&result, p, sizeof(result));
-        iree_vm_value_t value = iree_vm_value_make_i64(result);
+        p = iree_vm_invoke_align_ptr(p, sizeof(int64_t));
+        iree_vm_value_t value = iree_vm_value_make_i64(*(int64_t*)p);
         IREE_RETURN_IF_ERROR(iree_vm_list_set_value(outputs, arg_i, &value));
         p += sizeof(int64_t);
       } break;
@@ -188,15 +200,15 @@ static iree_status_t iree_vm_invoke_marshal_outputs(
         p += sizeof(float);
       } break;
       case IREE_VM_CCONV_TYPE_F64: {
-        double result = 0;
-        memcpy(&result, p, sizeof(result));
-        iree_vm_value_t value = iree_vm_value_make_f64(result);
+        p = iree_vm_invoke_align_ptr(p, sizeof(double));
+        iree_vm_value_t value = iree_vm_value_make_f64(*(double*)p);
         IREE_RETURN_IF_ERROR(iree_vm_list_set_value(outputs, arg_i, &value));
         p += sizeof(double);
       } break;
       case IREE_VM_CCONV_TYPE_REF: {
-        IREE_RETURN_IF_ERROR(iree_vm_list_set_ref_move(
-            outputs, arg_i, (iree_vm_ref_t*)p));  // safe unaligned
+        p = iree_vm_invoke_align_ptr(p, iree_alignof(iree_vm_ref_t));
+        IREE_RETURN_IF_ERROR(
+            iree_vm_list_set_ref_move(outputs, arg_i, (iree_vm_ref_t*)p));
         p += sizeof(iree_vm_ref_t);
       } break;
     }
@@ -234,7 +246,7 @@ static iree_vm_invocation_id_t iree_vm_invoke_allocate_id(
                                                    iree_memory_order_relaxed);
     IREE_LEAK_CHECK_DISABLE_PUSH();
     char* name = (char*)malloc(32);
-    snprintf(name, 32, "invoke-%04d", invocation_id - 1);
+    iree_snprintf(name, 32, "invoke-%04d", invocation_id - 1);
     IREE_LEAK_CHECK_DISABLE_POP();
     return (iree_vm_invocation_id_t)name;
   } else {
@@ -405,7 +417,7 @@ IREE_API_EXPORT iree_status_t iree_vm_begin_invoke(
 
   // Allocate argument storage on the native stack. It only needs to survive the
   // begin call as it's consumed by the invokee.
-  iree_byte_span_t arguments = iree_make_byte_span(NULL, 0);
+  iree_byte_span_t arguments = iree_byte_span_empty();
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0,
       iree_vm_function_call_compute_cconv_fragment_size(
@@ -430,7 +442,7 @@ IREE_API_EXPORT iree_status_t iree_vm_begin_invoke(
   // storage. This reduces the overall available stack space but not by much,
   // and if the stack needs to dynamically grow the inlined storage will still
   // be available.
-  iree_byte_span_t results = iree_make_byte_span(NULL, 0);
+  iree_byte_span_t results = iree_byte_span_empty();
   IREE_RETURN_AND_END_ZONE_IF_ERROR(
       z0, iree_vm_function_call_compute_cconv_fragment_size(
               cconv_results, /*segment_size_list=*/NULL, &results.data_length));

@@ -34,7 +34,7 @@ static std::optional<SmallVector<OpFoldResult>> getDefiningMixedSizes(Value v) {
   return {};
 }
 
-struct FoldFullInsertSlice : public OpRewritePattern<tensor::InsertSliceOp> {
+struct FoldFullInsertSlice : OpRewritePattern<tensor::InsertSliceOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::InsertSliceOp insertSliceOp,
@@ -94,15 +94,16 @@ public:
     auto maybeExpandedMap =
         affine::expandAffineMap(rewriter, op.getLoc(), op.getAffineMap(),
                                 llvm::to_vector<8>(op.getOperands()));
-    if (!maybeExpandedMap)
+    if (!maybeExpandedMap) {
       return failure();
+    }
     rewriter.replaceOp(op, *maybeExpandedMap);
     return success();
   }
 };
 
 /// Canonicalize operations in nested regions.
-struct CanonicalizePass : public impl::CanonicalizePassBase<CanonicalizePass> {
+struct CanonicalizePass : impl::CanonicalizePassBase<CanonicalizePass> {
   using IREE::Flow::impl::CanonicalizePassBase<
       CanonicalizePass>::CanonicalizePassBase;
   /// Initialize the canonicalizer by building the set of patterns used during
@@ -113,10 +114,12 @@ struct CanonicalizePass : public impl::CanonicalizePassBase<CanonicalizePass> {
         mlir::GreedySimplifyRegionLevel::Normal);
 
     RewritePatternSet owningPatterns(context);
-    for (auto *dialect : context->getLoadedDialects())
+    for (auto *dialect : context->getLoadedDialects()) {
       dialect->getCanonicalizationPatterns(owningPatterns);
-    for (RegisteredOperationName op : context->getRegisteredOperations())
+    }
+    for (RegisteredOperationName op : context->getRegisteredOperations()) {
       op.getCanonicalizationPatterns(owningPatterns, context);
+    }
 
     // Pull in some borderline/downstream canonicalizations for the Flow
     // compilation phase.

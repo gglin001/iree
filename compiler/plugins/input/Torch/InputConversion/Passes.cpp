@@ -50,9 +50,13 @@ void createTorchToIREEPipeline(
       torch::Torch::createReduceOpVariantsPass(llvm::StringRef()));
   pm.addNestedPass<func::FuncOp>(
       mlir::torch::TorchConversion::createConvertCustomQuantOpPass());
-  if (options.decompose)
+  if (options.enableShapeRefinement) {
+    torch::Torch::createTorchShapeRefinementPipeline(pm, /*options=*/{});
+  }
+  if (options.decompose) {
     pm.addNestedPass<func::FuncOp>(
         torch::Torch::createDecomposeComplexOpsPass(BackendLegalOps::get()));
+  }
   pm.addNestedPass<func::FuncOp>(torch::Torch::createFuseQuantizedOpsPass());
   pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
   pm.addNestedPass<func::FuncOp>(torch::Torch::createScalarizeShapesPass());
@@ -82,7 +86,7 @@ void createTorchToIREEPipeline(
   // differently and would not be subject to inlining.
   pm.addPass(mlir::createInlinerPass());
 
-  pm.addPass(createFuncConversionPass());
+  pm.addPass(createFuncConversionPass({options.externalizeTransients}));
   pm.addNestedPass<IREE::Util::FuncOp>(createCanonicalizerPass());
   pm.addPass(createSymbolDCEPass());
 

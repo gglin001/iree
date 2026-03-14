@@ -23,6 +23,7 @@ iree_lit_test_suite(
     "check_ir_before_llvm_conversion.mlir"
     "check_ir_before_llvm_conversion_not_fail_unbound.mlir"
     "convert_to_llvm.mlir"
+    "custom_pass_pipeline.mlir"
     "emit_vectorization_remarks.mlir"
     "expand_f16_op_to_f32.mlir"
     "hal_executable_constants.mlir"
@@ -30,6 +31,7 @@ iree_lit_test_suite(
     "hal_interface_constants.mlir"
     "hal_interface_workgroup_info.mlir"
     "illegal_configuration.mlir"
+    "lowering_strategy_from_tuning_spec.mlir"
     "peel.mlir"
     "pipeline_arm_sme_streaming_mode_tests.mlir"
     "pipeline_disable_distribution_tests.mlir"
@@ -48,7 +50,6 @@ iree_lit_test_suite(
     "select_aarch64_sme_lowering_strategy.mlir"
     "select_aarch64_sve_lowering_strategy.mlir"
     "select_aarch64_sve_lowering_strategy_peeling.mlir"
-    "select_lowering_strategy_without_distribution.mlir"
     "select_riscv_lowering_strategy.mlir"
     "select_x86_64_lowering_strategy.mlir"
     "split_reduction.mlir"
@@ -69,6 +70,8 @@ iree_lit_test_suite(
     FileCheck
     iree-compile
     iree-opt
+  DATA
+    tuning_spec_matmul.mlir
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

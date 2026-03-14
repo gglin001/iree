@@ -25,17 +25,17 @@ namespace mlir::iree_compiler::IREE::Flow {
 
 static std::string inferTraceKey(Operation *op) {
   return TypeSwitch<Operation *, std::string>(op)
-      .Case<IREE::Flow::DispatchOp>(
-          [&](auto op) { return op.getEntryPointName(); })
-      .Case<IREE::Util::CallOp>([&](auto op) { return op.getCallee().str(); })
+      .Case([&](IREE::Flow::DispatchOp op) { return op.getEntryPointName(); })
+      .Case([&](IREE::Util::CallOp op) { return op.getCallee().str(); })
       .Default([](auto *op) { return op->getName().getStringRef().str(); });
 }
 
 static SmallVector<Value> filterTensorValues(ValueRange &&range) {
   SmallVector<Value> result;
   for (auto value : range) {
-    if (isa<TensorType>(value.getType()))
+    if (isa<TensorType>(value.getType())) {
       result.push_back(value);
+    }
   }
   return result;
 }
@@ -68,18 +68,18 @@ static void injectTracingOnOp(Operation *op, StringRef traceKey) {
 }
 
 struct InjectTensorTracingPass
-    : public IREE::Flow::impl::InjectTensorTracingPassBase<
-          InjectTensorTracingPass> {
+    : IREE::Flow::impl::InjectTensorTracingPassBase<InjectTensorTracingPass> {
   void runOnOperation() override {
     auto attrName = StringAttr::get(&getContext(), "iree.tensor.trace");
     mlir::FunctionOpInterface funcOp = getOperation();
     funcOp.walk([&](Operation *op) {
       if (auto attr = op->getAttr(attrName)) {
         std::string traceKey;
-        if (auto stringAttr = dyn_cast<StringAttr>(attr))
+        if (auto stringAttr = dyn_cast<StringAttr>(attr)) {
           traceKey = stringAttr.getValue().str();
-        else
+        } else {
           traceKey = inferTraceKey(op);
+        }
         injectTracingOnOp(op, traceKey);
         op->removeAttr(attrName);
       }

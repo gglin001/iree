@@ -96,8 +96,9 @@ static void fixupGlobalMutability(Operation *moduleOp,
   explorer.initialize();
   SmallVector<Operation *> deadOps;
   explorer.forEachGlobal([&](const Explorer::GlobalInfo *globalInfo) {
-    if (globalInfo->uses.empty())
+    if (globalInfo->uses.empty()) {
       return;
+    }
     // TODO(benvanik): verify we want this behavior - we likely want to change
     // this to be mutable only if stores exist outside of initializers.
     //
@@ -114,7 +115,7 @@ static void fixupGlobalMutability(Operation *moduleOp,
   });
 }
 
-// Finds all global variables and moves their inital values/initializer calls
+// Finds all global variables and moves their initial values/initializer calls
 // into a single function. Relies on the inliner to later make the uber function
 // better.
 //
@@ -224,7 +225,6 @@ class GlobalInitializationPass
       // initial value/initializer and avoid the work entirely.
       return success();
     }
-    globalOp.setGlobalMutable(true);
     return storePrimitiveGlobal(globalOp.getLoc(), globalOp.getGlobalName(),
                                 value, builder);
   }

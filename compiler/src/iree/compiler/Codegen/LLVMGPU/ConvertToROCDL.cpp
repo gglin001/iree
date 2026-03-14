@@ -7,6 +7,7 @@
 #include "iree/compiler/Codegen/Common/GPU/GPUPatterns.h"
 #include "iree/compiler/Codegen/Common/Transforms.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUOps.h"
 #include "iree/compiler/Codegen/LLVMGPU/ConvertToLLVM.h"
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h"
 #include "iree/compiler/Codegen/Utils/GPUUtils.h"
@@ -27,6 +28,7 @@
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
 #include "mlir/Dialect/AMDGPU/IR/AMDGPUDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
@@ -46,31 +48,70 @@ namespace mlir::iree_compiler {
 #include "iree/compiler/Codegen/LLVMGPU/Passes.h.inc"
 
 static llvm::cl::opt<int>
-    clROCMIndexingBits("iree-hip-index-bits",
+    clROCMIndexingBits("iree-rocm-index-bits",
                        llvm::cl::desc("Set the bit width of indices in ROCm."),
                        llvm::cl::init(64));
+static llvm::cl::opt<int> clROCMIndexingBitsDeprecated(
+    "iree-hip-index-bits",
+    llvm::cl::desc("Deprecated; use --iree-rocm-index-bits instead."),
+    llvm::cl::init(64), llvm::cl::cb<void, int>([](int value) {
+      llvm::errs() << "warning: --iree-hip-index-bits is deprecated; "
+                   << "use --iree-rocm-index-bits instead\n";
+      clROCMIndexingBits = value;
+    }));
 
 namespace {
 
-// Transform gpu.barrier -> amdgpu.lds_barrier
-// IREE code generation currently only ever needs to synchronize for
-// LDS operations. This conversion is to make the barrier operations
-// LDS specific because the gpu.barrier contains global memory
-// operations as well.
-struct ReplaceGPUBarrierWithLDSBarrier
-    : public OpRewritePattern<gpu::BarrierOp> {
-  using Base::Base;
+// Lower iree_gpu.global_subgroup_barrier to just the hardware barrier
+// instruction, with NO memory fences. Fences are handled separately.
+//
+// Based on LDSBarrierOpLowering but without the release/acquire fences.
+// Chipset handling:
+//   pre-gfx90a: inline asm s_barrier
+//   gfx90a-gfx11: rocdl.s.barrier
+//   gfx12+: rocdl.s.barrier.signal + rocdl.s.barrier.wait
+struct LowerGlobalSubgroupBarrier
+    : OpRewritePattern<IREE::GPU::GlobalSubgroupBarrierOp> {
+  LowerGlobalSubgroupBarrier(MLIRContext *context, amdgpu::Chipset chipset)
+      : OpRewritePattern(context), chipset(chipset) {}
 
-  LogicalResult matchAndRewrite(gpu::BarrierOp op,
+  LogicalResult matchAndRewrite(IREE::GPU::GlobalSubgroupBarrierOp op,
                                 PatternRewriter &rewriter) const override {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.replaceOpWithNewOp<amdgpu::LDSBarrierOp>(op);
+    Location loc = op.getLoc();
+    constexpr amdgpu::Chipset kGfx90a(9, 0, 0x0a);
+
+    if (chipset < kGfx90a) {
+      // Pre-gfx90a: use inline asm.
+      auto asmDialectAttr = LLVM::AsmDialectAttr::get(rewriter.getContext(),
+                                                      LLVM::AsmDialect::AD_ATT);
+      const char *asmStr = ";;;WARNING: BREAKS DEBUG WATCHES\ns_barrier";
+      rewriter.replaceOpWithNewOp<LLVM::InlineAsmOp>(
+          op, /*resultTypes=*/TypeRange(), /*operands=*/ValueRange(),
+          /*asm_string=*/asmStr, /*constraints=*/"",
+          /*has_side_effects=*/true,
+          /*is_align_stack=*/false, LLVM::TailCallKind::None,
+          /*asm_dialect=*/asmDialectAttr,
+          /*operand_attrs=*/ArrayAttr());
+    } else if (chipset.majorVersion < 12) {
+      // gfx90a-gfx11: use rocdl.s.barrier.
+      rewriter.replaceOpWithNewOp<ROCDL::SBarrierOp>(op);
+    } else {
+      // gfx12+: use rocdl.s.barrier.signal + rocdl.s.barrier.wait.
+      ROCDL::BarrierSignalOp::create(rewriter, loc, -1);
+      rewriter.replaceOpWithNewOp<ROCDL::BarrierWaitOp>(
+          op, static_cast<int16_t>(-1));
+    }
     return success();
   }
+
+private:
+  amdgpu::Chipset chipset;
 };
 
-static void populateConvertGPUToAMDGPUPatterns(RewritePatternSet &patterns) {
-  patterns.add<ReplaceGPUBarrierWithLDSBarrier>(patterns.getContext());
+static void
+populateLowerGlobalSubgroupBarrierPatterns(RewritePatternSet &patterns,
+                                           const amdgpu::Chipset &chipset) {
+  patterns.add<LowerGlobalSubgroupBarrier>(patterns.getContext(), chipset);
 }
 
 /// Hacky pattern to swap `s_setprio` operations with `amdgpu.mfma` ops.
@@ -95,7 +136,7 @@ static void populateConvertGPUToAMDGPUPatterns(RewritePatternSet &patterns) {
 /// This only looks at successor mfmas within the same block and is best
 /// effort.
 constexpr StringLiteral kSwapName = "iree_gpu.swap_mfma";
-struct SwapSetPrioWithMFMA : public OpRewritePattern<ROCDL::SetPrioOp> {
+struct SwapSetPrioWithMFMA : OpRewritePattern<ROCDL::SetPrioOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(ROCDL::SetPrioOp setPrio,
                                 PatternRewriter &rewriter) const override {
@@ -143,20 +184,31 @@ static bool containsAPred(Type type) {
   return isa<Floats...>(type);
 }
 
-// Function to check valid data types on the ROCm backend.
-// Note to readers: different chips take different FP8 formats but re-use the
-// same instruction and intrinsic names, so we must filter out the "wrong" FP8
-// here.
+// Validates that arith.extf/truncf operations use fp8 types supported by the
+// chipset. Storage in fp8 memrefs is always allowed; only conversion operations
+// require hardware support or software emulation.
+//
+// Note: different chips take different FP8 formats but re-use the same
+// instruction and intrinsic names, so we must filter out the "wrong" FP8 here.
 static LogicalResult validateDataTypes(Operation *op,
                                        const amdgpu::Chipset &chipset) {
+  // Only validate arith.extf and arith.truncf - these are the operations that
+  // need hardware or software conversion support. Other ops (memrefs, etc.)
+  // just store fp8 data and don't need special handling.
+  if (!isa<arith::ExtFOp, arith::TruncFOp>(op)) {
+    return success();
+  }
+
   constexpr amdgpu::Chipset kGfx942 = amdgpu::Chipset(9, 4, 2);
   if (!amdgpu::hasOcpFp8(chipset)) {
     auto pred = containsAPred<Float8E5M2Type, Float8E4M3FNType>;
     if (llvm::any_of(op->getOperandTypes(), pred) ||
         llvm::any_of(op->getResultTypes(), pred)) {
-      return op->emitOpError("F8E5M2 and F8E4M3FN types are not supported on "
-                             "gfx942 (MI-300) or older chipsets; try "
-                             "F8E5M2FNUZ or F8E4M3FNUZ instead.");
+      return op->emitOpError(
+          "F8E5M2 and F8E4M3FN types are not supported on "
+          "gfx942 (MI-300) or older chipsets; try F8E5M2FNUZ or F8E4M3FNUZ "
+          "instead, or use --iree-llvmgpu-enable-small-float-emulation "
+          "to enable software emulation.");
     }
   }
 
@@ -166,7 +218,9 @@ static LogicalResult validateDataTypes(Operation *op,
         llvm::any_of(op->getResultTypes(), pred)) {
       return op->emitOpError(
           "F8E5M2FNUZ and F8E4M3FNUZ types are not supported on non-gfx942 "
-          "(MI-300) chipsets; try F8E5M2 or F8E4M3FN instead.");
+          "(MI-300) chipsets; try F8E5M2 or F8E4M3FN instead, or use "
+          "--iree-llvmgpu-enable-small-float-emulation "
+          "to enable software emulation.");
     }
   }
   return success();
@@ -226,6 +280,9 @@ struct ConvertToROCDLPass final
     // which need to be lowered further, which is not supported by a single
     // conversion pass.
     // Run Vector -> Vector transformations ahead of conversion to LLVM.
+    GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+
     {
       RewritePatternSet patterns(&getContext());
       auto options =
@@ -250,7 +307,7 @@ struct ConvertToROCDLPass final
           /*chipset=*/*maybeChipset);
       arith::populateCeilFloorDivExpandOpsPatterns(patterns);
       populateSwapSetPrioWithMFMAPatterns(patterns);
-      populateConvertGPUToAMDGPUPatterns(patterns);
+      populateLowerGlobalSubgroupBarrierPatterns(patterns, *maybeChipset);
       populateConvertSharedMemoryAllocOps(patterns);
       populateDropSharedMemoryDeallocOpPatterns(patterns);
       vector::populateVectorToVectorCanonicalizationPatterns(patterns);
@@ -276,7 +333,7 @@ struct ConvertToROCDLPass final
           patterns, options.vectorTransposeLowering);
       vector::populateVectorTransferLoweringPatterns(patterns);
       arith::populateExpandBFloat16Patterns(patterns);
-      if (failed(applyPatternsGreedily(m, std::move(patterns)))) {
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         return signalPassFailure();
       }
 
@@ -285,8 +342,8 @@ struct ConvertToROCDLPass final
       arith::populateExpandScalingExtTruncPatterns(fallbackSmallFloatPatterns);
       arith::populateExpandF4E2M1Patterns(fallbackSmallFloatPatterns);
       arith::populateExpandF8E8M0Patterns(fallbackSmallFloatPatterns);
-      if (failed(applyPatternsGreedily(
-              m, std::move(fallbackSmallFloatPatterns)))) {
+      if (failed(applyPatternsGreedily(m, std::move(fallbackSmallFloatPatterns),
+                                       config))) {
         LDBG() << "Small float patterns failed\n" << m;
         return signalPassFailure();
       }
@@ -299,7 +356,7 @@ struct ConvertToROCDLPass final
       populateGpuRewritePatterns(patterns);
       populateGpuPromoteShuffleToAMDGPUPatterns(patterns, maybeChipset);
       populateGpuSubgroupIdPatterns(patterns);
-      if (failed(applyPatternsGreedily(m, std::move(patterns)))) {
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         return signalPassFailure();
       }
     }
@@ -313,7 +370,7 @@ struct ConvertToROCDLPass final
       // (https://github.com/llvm/llvm-project/issues/67815).
       RewritePatternSet patterns(&getContext());
       populateReplaceSlowMinMaxOpsPatterns(patterns);
-      if (failed(applyPatternsGreedily(m, std::move(patterns)))) {
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         return signalPassFailure();
       }
     }

@@ -4,6 +4,8 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+
 package(
     default_visibility = ["//visibility:public"],
     features = ["layering_check"],
@@ -27,4 +29,28 @@ config_setting(
     define_values = {
         "iree_is_android": "true",
     },
+)
+
+# OS platform constraints. Used in select() for platform-specific backend
+# selection. bazel_to_cmake maps these to CMAKE_SYSTEM_NAME checks.
+config_setting(
+    name = "iree_is_linux",
+    constraint_values = ["@platforms//os:linux"],
+)
+
+config_setting(
+    name = "iree_is_macos",
+    constraint_values = ["@platforms//os:macos"],
+)
+
+config_setting(
+    name = "iree_is_windows",
+    constraint_values = ["@platforms//os:windows"],
+)
+
+# ROCM GPU chip target for test and sample compilation. Override with:
+#   --//build_tools/bazel:rocm_test_target=gfx942
+string_flag(
+    name = "rocm_test_target",
+    build_setting_default = "gfx1100",
 )

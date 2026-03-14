@@ -18,6 +18,7 @@ extern "C" {
 // Defines the behavior of the dynamic library loader.
 enum iree_dynamic_library_flag_bits_t {
   IREE_DYNAMIC_LIBRARY_FLAG_NONE = 0u,
+  IREE_DYNAMIC_LIBRARY_FLAG_NODELETE = 1
 };
 typedef uint32_t iree_dynamic_library_flags_t;
 
@@ -61,6 +62,12 @@ void iree_dynamic_library_release(iree_dynamic_library_t* library);
 // Performs a symbol lookup in the dynamic library exports.
 iree_status_t iree_dynamic_library_lookup_symbol(
     iree_dynamic_library_t* library, const char* symbol_name, void** out_fn);
+
+// Tries to lookup a symbol from the dynamic library exports without creating
+// a status. Returns NULL if the symbol is not found. Use
+// iree_dynamic_library_lookup_symbol if error details are needed.
+void* iree_dynamic_library_try_lookup_symbol(iree_dynamic_library_t* library,
+                                             const char* symbol_name);
 
 // Loads a debug database (PDB/DWARF/etc) from the given path providing debug
 // symbols for this library and attaches it to the symbol store (if active).

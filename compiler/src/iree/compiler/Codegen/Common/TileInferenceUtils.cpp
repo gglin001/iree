@@ -77,8 +77,8 @@ inferWorkgroupTileMultiplesFromPackUnPack(
     int64_t innerTileIdx = i + innerTiles.size();
     // Compute the LCM with the initial multiples for both the inner tile and
     // the corresponding outer tile. The multiples for the packedMultiples will
-    // then be these LCMs, and the multiple for the unPackedMultipes will be the
-    // product of these LCMs.
+    // then be these LCMs, and the multiple for the unPackedMultiples will be
+    // the product of these LCMs.
     int64_t lcmInnerTileMultiple = tile;
     int64_t lcmOuterTileMultiple = 1;
     if (initialPackedMultiples) {
@@ -218,7 +218,7 @@ expandMultiples(ArrayRef<int64_t> collapsedMultiples,
   return expandedMultiples;
 }
 
-/// Find a set of required workgroup tile size mulitples for the given OpResult
+/// Find a set of required workgroup tile size multiples for the given OpResult
 /// by walking the producer chain of the OpResult's owner, and finding ops that
 /// require specific tile size multiples. For now, the only ops that need
 /// special workgroup tile size multiples are pack and unpack ops. The returned
@@ -244,7 +244,7 @@ static SmallVector<int64_t> inferResultWorkgroupTileMultiples(OpResult result) {
   // Propagate the operand multiples through the given operation to compute
   // the multiples for the desired result.
   return llvm::TypeSwitch<Operation *, SmallVector<int64_t>>(op)
-      .Case<tensor::ExpandShapeOp>([&](tensor::ExpandShapeOp expandOp) {
+      .Case([&](tensor::ExpandShapeOp expandOp) {
         SmallVector<int64_t> srcMultiples = getOperandMultiples()[0];
         LDBG() << "Inferring workgroup tile size multiples for "
                << expandOp->getName() << " result.\n";
@@ -256,21 +256,21 @@ static SmallVector<int64_t> inferResultWorkgroupTileMultiples(OpResult result) {
                << llvm::interleaved_array(resultMultiples);
         return resultMultiples;
       })
-      .Case<linalg::PackOp>([&](linalg::PackOp packOp) {
+      .Case([&](linalg::PackOp packOp) {
         SmallVector<int64_t> srcMultiples = getOperandMultiples()[0];
         return inferWorkgroupTileMultiplesFromPackUnPack(
                    packOp, /*initialPackedMultiples=*/std::nullopt,
                    /*initialUnPackedMultiples=*/srcMultiples)
             .second;
       })
-      .Case<linalg::UnPackOp>([&](linalg::UnPackOp unPackOp) {
+      .Case([&](linalg::UnPackOp unPackOp) {
         SmallVector<int64_t> srcMultiples = getOperandMultiples()[0];
         return inferWorkgroupTileMultiplesFromPackUnPack(
                    unPackOp, /*initialPackedMultiples=*/srcMultiples,
                    /*initialUnPackedMultiples=*/std::nullopt)
             .second;
       })
-      .Case<linalg::LinalgOp>([&](linalg::LinalgOp linalgOp) {
+      .Case([&](linalg::LinalgOp linalgOp) {
         SmallVector<SmallVector<int64_t>> operandMultiples =
             getOperandMultiples();
         LDBG()
@@ -291,7 +291,7 @@ static SmallVector<int64_t> inferResultWorkgroupTileMultiples(OpResult result) {
       });
 }
 
-/// Find a set of required workgroup tile size mulitples for the given OpOperand
+/// Find a set of required workgroup tile size multiples for the given OpOperand
 /// by walking the use chain of the OpOperand's owner, and finding ops that
 /// require specific tile size multiples. For now, the only ops that need
 /// special workgroup tile size multiples are pack and unpack ops. The returned
@@ -315,7 +315,7 @@ static SmallVector<int64_t> inferUseWorkgroupTileMultiples(OpOperand *use) {
   // Propagate the operand multiples through the given operation to compute
   // the multiples for the desired result.
   return llvm::TypeSwitch<Operation *, SmallVector<int64_t>>(op)
-      .Case<tensor::CollapseShapeOp>([&](tensor::CollapseShapeOp collapseOp) {
+      .Case([&](tensor::CollapseShapeOp collapseOp) {
         SmallVector<int64_t> destMultiples = getResultMultiples()[0];
         LDBG() << "Inferring workgroup tile size multiples for "
                << collapseOp->getName() << "source.\n";
@@ -327,14 +327,14 @@ static SmallVector<int64_t> inferUseWorkgroupTileMultiples(OpOperand *use) {
                << llvm::interleaved_array(srcMultiples);
         return srcMultiples;
       })
-      .Case<linalg::PackOp>([&](linalg::PackOp packOp) {
+      .Case([&](linalg::PackOp packOp) {
         SmallVector<int64_t> destMultiples = getResultMultiples()[0];
         return inferWorkgroupTileMultiplesFromPackUnPack(
                    packOp, /*initialPackedMultiples=*/destMultiples,
                    /*initialUnPackedMultiples=*/std::nullopt)
             .first;
       })
-      .Case<linalg::UnPackOp>([&](linalg::UnPackOp unpackOp) {
+      .Case([&](linalg::UnPackOp unpackOp) {
         SmallVector<int64_t> destMultiples = getResultMultiples()[0];
         return inferWorkgroupTileMultiplesFromPackUnPack(
                    unpackOp, /*initialPackedMultiples=*/std::nullopt,

@@ -8,6 +8,7 @@
 
 #include <memory>
 
+#include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Dialect/HAL/IR/HALDialect.h"
 #include "iree/compiler/Dialect/HAL/IR/HALOps.h"
 #include "iree/compiler/Dialect/HAL/Target/Devices/LocalDevice.h"
@@ -16,7 +17,6 @@
 #include "iree/compiler/Utils/PassUtils.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
-#include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/Passes.h"
@@ -25,7 +25,7 @@ namespace mlir::iree_compiler::IREE::HAL {
 
 namespace {
 
-struct TransformOptions : public PassPipelineOptions<TransformOptions> {
+struct TransformOptions : PassPipelineOptions<TransformOptions> {
   Option<bool> serializeExecutables{
       *this,
       "serialize-executables",
@@ -90,7 +90,7 @@ static llvm::cl::list<std::string> clSubstituteExecutableConfiguration{
     llvm::cl::desc(
         "A `executable_name=object_file.xxx` pair specifying a hal.executable "
         "symbol name that will be substituted with the configured executable "
-        "file at the given path. Configured execuable paths are relative to "
+        "file at the given path. Configured executable paths are relative to "
         "those specified on `--iree-hal-executable-object-search-path=`. If a "
         "`.mlir` or `.mlirbc` file is specified the entire executable will be "
         "replaced with an equivalently named hal.executable in the referenced "
@@ -555,10 +555,10 @@ void buildHALTransformPassPipeline(OpPassManager &passManager,
   // TODO: Maybe this should be a part of Affine lowering pass.
   // Remove if it is added there.
   // https://github.com/llvm/llvm-project/issues/78458
-  passManager.addPass(affine::createAffineExpandIndexOpsPass());
+  passManager.addPass(createIREECodegenAffineExpandIndexOpsPass());
   // Fixup workgroup count calculations that may have used the affine dialect.
   // Kind of random here but can happen if the benchmarking code does things.
-  passManager.addPass(mlir::createLowerAffinePass());
+  passManager.addPass(createIREECodegenLowerAffinePass());
 
   // TODO(benvanik): remove the need for this; some cleanup passes such as
   // SimplifyGlobalAccesses are currently broken with scf present.

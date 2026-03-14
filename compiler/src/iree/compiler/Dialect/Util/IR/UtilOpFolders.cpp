@@ -81,14 +81,16 @@ static LogicalResult canonicalizeAssumeIntOp(AssumeIntOp op,
       needsRewrite = true;
     }
   }
-  if (!needsRewrite)
+  if (!needsRewrite) {
     return failure();
+  }
 
   // Need to rewrite the assumption.
   auto normalizeAssumptions = [](Attribute row, bool &madeChange) {
     auto rowArray = cast<ArrayAttr>(row);
-    if (rowArray.size() <= 1)
+    if (rowArray.size() <= 1) {
       return rowArray;
+    }
 
     bool allSame = true;
     for (unsigned i = 1; i < rowArray.size(); ++i) {
@@ -98,8 +100,9 @@ static LogicalResult canonicalizeAssumeIntOp(AssumeIntOp op,
       }
     }
 
-    if (!allSame)
+    if (!allSame) {
       return rowArray;
+    }
 
     // All entries are the same: compress down to a single column.
     madeChange = true;
@@ -208,7 +211,7 @@ static ArrayAttr getZippedAssumeRange(Builder &b, ArrayAttr l, ArrayAttr r) {
 namespace {
 
 /// Deduplicates operands, merging assume ranges along the way.
-struct DeduplicateOperands : public OpRewritePattern<AssumeIntOp> {
+struct DeduplicateOperands : OpRewritePattern<AssumeIntOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(AssumeIntOp op,
                                 PatternRewriter &rewriter) const override {
@@ -270,7 +273,7 @@ struct DeduplicateOperands : public OpRewritePattern<AssumeIntOp> {
 /// %2 = arith.muli %1, X
 ///
 /// Where X | Y.
-struct FoldDivMulOfAssume : public OpRewritePattern<arith::MulIOp> {
+struct FoldDivMulOfAssume : OpRewritePattern<arith::MulIOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(arith::MulIOp mulOp,
                                 PatternRewriter &rewriter) const override {
@@ -344,14 +347,15 @@ namespace {
 
 /// Folds cast ops into the result of other ops.
 /// Only safe to apply to ops that don't care about their types.
-struct FoldCastIntoNullOp : public OpRewritePattern<CastOp> {
+struct FoldCastIntoNullOp : OpRewritePattern<CastOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(CastOp castOp,
                                 PatternRewriter &rewriter) const override {
     auto nullOp =
         dyn_cast_if_present<NullOp>(castOp.getOperand().getDefiningOp());
-    if (!nullOp)
+    if (!nullOp) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<NullOp>(castOp, castOp.getResult().getType());
     return success();
   }
@@ -425,8 +429,9 @@ static OpFoldResult foldRangeOp(Type type, ValueRange operands,
   int64_t value = initialValue;
   for (auto operand : attrOperands) {
     auto intValue = dyn_cast_if_present<IntegerAttr>(operand);
-    if (!intValue)
+    if (!intValue) {
       return {};
+    }
     value = expr(value, intValue.getValue().getSExtValue());
   }
   return IntegerAttr::get(type, value);
@@ -451,7 +456,7 @@ namespace {
 // ->
 //  %min = arith.minui %0, %1 : index
 template <typename RangeOpT, typename StdOpT>
-struct ExpandSimpleRangeOp : public OpRewritePattern<RangeOpT> {
+struct ExpandSimpleRangeOp : OpRewritePattern<RangeOpT> {
   using OpRewritePattern<RangeOpT>::OpRewritePattern;
   LogicalResult matchAndRewrite(RangeOpT op,
                                 PatternRewriter &rewriter) const override {
@@ -474,7 +479,7 @@ struct ExpandSimpleRangeOp : public OpRewritePattern<RangeOpT> {
 // ->
 //  %min = util.range.min %c1, %0, %1
 template <typename OpT, int64_t initialValue, int64_t expr(int64_t, int64_t)>
-struct SimplifyUniformRangeOp : public OpRewritePattern<OpT> {
+struct SimplifyUniformRangeOp : OpRewritePattern<OpT> {
   using OpRewritePattern<OpT>::OpRewritePattern;
   LogicalResult matchAndRewrite(OpT op,
                                 PatternRewriter &rewriter) const override {
@@ -540,7 +545,7 @@ static Value makeRangeEnd(Location loc, Value offset, Value length,
 
 namespace {
 
-struct FoldConstantRanges : public OpRewritePattern<RangeExtentsOp> {
+struct FoldConstantRanges : OpRewritePattern<RangeExtentsOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(RangeExtentsOp op,
                                 PatternRewriter &rewriter) const override {
@@ -566,8 +571,9 @@ struct FoldConstantRanges : public OpRewritePattern<RangeExtentsOp> {
         lengths.push_back(length);
       }
     }
-    if (offsets.size() == op.getOffsets().size())
+    if (offsets.size() == op.getOffsets().size()) {
       return failure();
+    }
 
     // Preserve dynamic ranges.
     Value min;
@@ -603,7 +609,7 @@ struct FoldConstantRanges : public OpRewritePattern<RangeExtentsOp> {
   }
 };
 
-struct ExpandSimpleRangeExtentsOp : public OpRewritePattern<RangeExtentsOp> {
+struct ExpandSimpleRangeExtentsOp : OpRewritePattern<RangeExtentsOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(RangeExtentsOp op,
                                 PatternRewriter &rewriter) const override {
@@ -627,14 +633,15 @@ struct ExpandSimpleRangeExtentsOp : public OpRewritePattern<RangeExtentsOp> {
                                  op.getLengths().back(), one, rewriter);
       maxValue = arith::MaxUIOp::create(rewriter, loc, endLhs, endRhs);
     }
-    if (!minValue || !maxValue)
+    if (!minValue || !maxValue) {
       return failure();
+    }
     rewriter.replaceOp(op, {minValue, maxValue});
     return success();
   }
 };
 
-struct DeduplicateRangeExtentsOp : public OpRewritePattern<RangeExtentsOp> {
+struct DeduplicateRangeExtentsOp : OpRewritePattern<RangeExtentsOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(RangeExtentsOp op,
                                 PatternRewriter &rewriter) const override {
@@ -645,8 +652,9 @@ struct DeduplicateRangeExtentsOp : public OpRewritePattern<RangeExtentsOp> {
     for (auto range : llvm::zip_equal(op.getOffsets(), op.getLengths())) {
       ranges.insert(range);
     }
-    if (ranges.size() == op.getOffsets().size())
+    if (ranges.size() == op.getOffsets().size()) {
       return failure();
+    }
 
     // Recreate with the deduplicated ranges.
     SmallVector<Value> offsets;
@@ -702,8 +710,9 @@ static bool isAlignedTo(Value value, Value alignment) {
   // If the value is produced by an align op we can check that.
   if (auto sourceAlignOp = value.getDefiningOp<IREE::Util::AlignOp>()) {
     // Check for same exact alignment - even if dynamic.
-    if (sourceAlignOp.getAlignment() == alignment)
+    if (sourceAlignOp.getAlignment() == alignment) {
       return true;
+    }
 
     // If the alignments are constant we can compare them inline.
     APInt sourceAlignment;
@@ -762,8 +771,9 @@ static bool isAlignedTo(Value value, Value alignment) {
 OpFoldResult AlignOp::fold(FoldAdaptor operands) {
   // If aligning an already-aligned value then fold if this is provably a
   // no-op. We can check this for equality even with dynamic alignments.
-  if (isAlignedTo(getValue(), getAlignment()))
+  if (isAlignedTo(getValue(), getAlignment())) {
     return getValue();
+  }
 
   // If values are static we can perform the alignment here.
   APInt staticValue;
@@ -849,7 +859,7 @@ static bool inSingleBlockSCFRegion(Operation *op) {
 // to clean up what it produces. It may also be introduced by SCF simplification
 // patterns that are always applied.
 struct ConvertSCFUnreachableToTerminatorOp
-    : public OpRewritePattern<SCFUnreachableOp> {
+    : OpRewritePattern<SCFUnreachableOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(SCFUnreachableOp op,
                                 PatternRewriter &rewriter) const override {
@@ -895,7 +905,7 @@ struct ConvertSCFUnreachableToTerminatorOp
 // Pattern to handle util.scf.unreachable inside single-block SCF regions by
 // erasing subsequent operations and creating poison values.
 struct SimplifySCFUnreachableInSCFRegionOp
-    : public OpRewritePattern<SCFUnreachableOp> {
+    : OpRewritePattern<SCFUnreachableOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(SCFUnreachableOp op,
                                 PatternRewriter &rewriter) const override {
@@ -960,8 +970,7 @@ void SCFUnreachableOp::getCanonicalizationPatterns(RewritePatternSet &results,
 
 namespace {
 
-struct ExpandUnfoldableConstantOp
-    : public OpRewritePattern<UnfoldableConstantOp> {
+struct ExpandUnfoldableConstantOp : OpRewritePattern<UnfoldableConstantOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(UnfoldableConstantOp op,
                                 PatternRewriter &rewriter) const override {
@@ -987,13 +996,14 @@ void UnfoldableConstantOp::getCanonicalizationPatterns(
 namespace {
 
 // Deletes empty vm.initializer ops.
-struct DropEmptyInitializerOp : public OpRewritePattern<InitializerOp> {
+struct DropEmptyInitializerOp : OpRewritePattern<InitializerOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(InitializerOp op,
                                 PatternRewriter &rewriter) const override {
-    if (op.getBody().getBlocks().size() != 1)
+    if (op.getBody().getBlocks().size() != 1) {
       return failure();
+    }
     auto &block = op.getBody().front();
     // Empty block or block with only a ReturnLike terminator.
     if (block.empty() || (block.getOperations().size() == 1 &&
@@ -1019,7 +1029,7 @@ namespace {
 
 /// Turns util.global.address -> util.global.load.indirect into a direct load.
 template <typename IndirectOpT, typename DirectOpT>
-struct PropagateGlobalLoadAddress : public OpRewritePattern<IndirectOpT> {
+struct PropagateGlobalLoadAddress : OpRewritePattern<IndirectOpT> {
   using OpRewritePattern<IndirectOpT>::OpRewritePattern;
   LogicalResult matchAndRewrite(IndirectOpT op,
                                 PatternRewriter &rewriter) const override {
@@ -1048,7 +1058,7 @@ namespace {
 /// This can happen if there was a global load, some DCE'd usage, and a
 /// store back to the same global: we want to be able to elide the entire load
 /// and store.
-struct EraseUnusedGlobalStoreOp : public OpRewritePattern<GlobalStoreOp> {
+struct EraseUnusedGlobalStoreOp : OpRewritePattern<GlobalStoreOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(GlobalStoreOp op,
@@ -1123,13 +1133,14 @@ namespace {
 
 // Folds subspan -> subspan to point at the original source buffer with an
 // updated range.
-struct FoldBufferSubspanOps : public OpRewritePattern<BufferSubspanOp> {
+struct FoldBufferSubspanOps : OpRewritePattern<BufferSubspanOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(BufferSubspanOp op,
                                 PatternRewriter &rewriter) const override {
     auto parentOp = BufferSubspanOp::findSubspanOp(op.getSource());
-    if (!parentOp)
+    if (!parentOp) {
       return failure();
+    }
     auto fusedLoc = rewriter.getFusedLoc({parentOp.getLoc(), op.getLoc()});
     auto newOffset = rewriter.createOrFold<arith::AddIOp>(
         fusedLoc, parentOp.getSourceOffset(), op.getSourceOffset());
@@ -1150,8 +1161,7 @@ struct FoldBufferSubspanOps : public OpRewritePattern<BufferSubspanOp> {
 // ->
 //  %new_offset = arith.addi %offset, %subspan_offset
 //  util.buffer.copy %src[%new_offset], %dst[%new_offset], %subspan_length
-struct FoldBufferSubspanOpsIntoConsumers
-    : public OpRewritePattern<BufferSubspanOp> {
+struct FoldBufferSubspanOpsIntoConsumers : OpRewritePattern<BufferSubspanOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(BufferSubspanOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1159,8 +1169,9 @@ struct FoldBufferSubspanOpsIntoConsumers
     for (auto &use : llvm::make_early_inc_range(op.getResult().getUses())) {
       auto subrangeOp =
           dyn_cast<IREE::Util::SubrangeOperandOpInterface>(use.getOwner());
-      if (!subrangeOp)
+      if (!subrangeOp) {
         continue;
+      }
       didUpdateAny = true;
       rewriter.setInsertionPoint(subrangeOp);
       auto oldRange = subrangeOp.getSubrangeOperand(use.getOperandNumber());
@@ -1188,19 +1199,20 @@ struct FoldBufferSubspanOpsIntoConsumers
 // ->
 //  %offset = select %cond, %offset0, %offset1 : index
 //  %subspan = util.buffer.subspan %src[%offset]
-struct SinkSubspanAcrossSelectOps
-    : public OpRewritePattern<mlir::arith::SelectOp> {
+struct SinkSubspanAcrossSelectOps : OpRewritePattern<mlir::arith::SelectOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(mlir::arith::SelectOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!isa<IREE::Util::BufferType>(op.getType()))
+    if (!isa<IREE::Util::BufferType>(op.getType())) {
       return failure();
+    }
     auto trueSubspan = dyn_cast_if_present<IREE::Util::BufferSubspanOp>(
         op.getTrueValue().getDefiningOp());
     auto falseSubspan = dyn_cast_if_present<IREE::Util::BufferSubspanOp>(
         op.getFalseValue().getDefiningOp());
-    if (!trueSubspan || !falseSubspan)
+    if (!trueSubspan || !falseSubspan) {
       return failure();
+    }
     if (trueSubspan.getSource() != falseSubspan.getSource() ||
         trueSubspan.getResultSize() != falseSubspan.getResultSize()) {
       return failure();
@@ -1270,13 +1282,14 @@ namespace {
 // ->
 //  %c = select %cond, %a, %b : !util.buffer
 //  %c_sz = select %cond, %a_sz, %b_sz : index
-struct SelectBufferSizeOp : public OpRewritePattern<BufferSizeOp> {
+struct SelectBufferSizeOp : OpRewritePattern<BufferSizeOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(BufferSizeOp op,
                                 PatternRewriter &rewriter) const override {
     auto selectOp = op.getOperand().getDefiningOp<mlir::arith::SelectOp>();
-    if (!selectOp)
+    if (!selectOp) {
       return failure();
+    }
     auto trueSize = rewriter.createOrFold<IREE::Util::BufferSizeOp>(
         op.getLoc(), selectOp.getTrueValue());
     auto falseSize = rewriter.createOrFold<IREE::Util::BufferSizeOp>(
@@ -1308,13 +1321,14 @@ namespace {
 // ->
 //  %storage, %raw_offset = util.buffer.storage %src
 //  %offset = arith.addi %raw_offset, %subspan_offset
-struct FoldSubspansIntoStorageOp : public OpRewritePattern<BufferStorageOp> {
+struct FoldSubspansIntoStorageOp : OpRewritePattern<BufferStorageOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(BufferStorageOp op,
                                 PatternRewriter &rewriter) const override {
     auto subspanOp = BufferSubspanOp::findSubspanOp(op.getOperand());
-    if (!subspanOp)
+    if (!subspanOp) {
       return failure();
+    }
     auto fusedLoc = rewriter.getFusedLoc({subspanOp.getLoc(), op.getLoc()});
     rewriter.setInsertionPointAfter(op);
     auto newOffset = rewriter.createOrFold<arith::AddIOp>(
@@ -1347,6 +1361,497 @@ void BufferStorageOp::getCanonicalizationPatterns(RewritePatternSet &results,
 OpFoldResult BufferLoadOp::fold(FoldAdaptor operands) {
   // TODO(benvanik): if source is a constant then perform the load.
   return {};
+}
+
+//===----------------------------------------------------------------------===//
+// String formatting helpers (mirrored from UtilOps.cpp for fold/canonicalize)
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+struct FormatSegment {
+  enum Kind { Literal, Arg };
+  Kind kind;
+  std::string literal;
+  unsigned argIndex;
+};
+
+} // namespace
+
+static FailureOr<SmallVector<FormatSegment>>
+parseFormatString(StringRef format, unsigned argCount) {
+  SmallVector<FormatSegment> segments;
+  bool hasSequential = false;
+  bool hasExplicit = false;
+  unsigned nextSequentialIndex = 0;
+  unsigned maxArgIndex = 0;
+  bool hasAnyArg = false;
+
+  std::string currentLiteral;
+  size_t i = 0;
+  while (i < format.size()) {
+    char c = format[i];
+    if (c == '{') {
+      if (i + 1 < format.size() && format[i + 1] == '{') {
+        currentLiteral += '{';
+        i += 2;
+        continue;
+      }
+      if (!currentLiteral.empty()) {
+        segments.push_back({FormatSegment::Literal, currentLiteral, 0});
+        currentLiteral.clear();
+      }
+      size_t closePosition = format.find('}', i + 1);
+      if (closePosition == StringRef::npos) {
+        return failure();
+      }
+      StringRef content = format.slice(i + 1, closePosition);
+      if (content.empty()) {
+        hasSequential = true;
+        hasAnyArg = true;
+        if (nextSequentialIndex > 0) {
+          maxArgIndex = std::max(maxArgIndex, nextSequentialIndex);
+        }
+        segments.push_back({FormatSegment::Arg, {}, nextSequentialIndex});
+        ++nextSequentialIndex;
+      } else {
+        unsigned index;
+        if (content.getAsInteger(10, index)) {
+          return failure();
+        }
+        hasExplicit = true;
+        hasAnyArg = true;
+        maxArgIndex = std::max(maxArgIndex, index);
+        segments.push_back({FormatSegment::Arg, {}, index});
+      }
+      i = closePosition + 1;
+    } else if (c == '}') {
+      if (i + 1 < format.size() && format[i + 1] == '}') {
+        currentLiteral += '}';
+        i += 2;
+        continue;
+      }
+      return failure();
+    } else {
+      currentLiteral += c;
+      ++i;
+    }
+  }
+  if (!currentLiteral.empty()) {
+    segments.push_back({FormatSegment::Literal, currentLiteral, 0});
+  }
+
+  if (hasSequential && hasExplicit) {
+    return failure();
+  }
+
+  unsigned expectedArgCount =
+      hasAnyArg ? (hasExplicit ? (maxArgIndex + 1) : nextSequentialIndex) : 0;
+  if (expectedArgCount != argCount) {
+    return failure();
+  }
+
+  return segments;
+}
+
+//===----------------------------------------------------------------------===//
+// util.string.format
+//===----------------------------------------------------------------------===//
+
+OpFoldResult StringFormatOp::fold(FoldAdaptor operands) {
+  // Fold when all arguments are constant: evaluate the format string and
+  // return a StringAttr (materialized as util.buffer.constant).
+  SmallVector<std::string> argStrings;
+  for (auto [index, arg] : llvm::enumerate(getArgs())) {
+    if (isa<IREE::Util::BufferType>(arg.getType())) {
+      // Buffer arg: look through to a buffer constant with a string value.
+      auto definingOp = arg.getDefiningOp<IREE::Util::BufferConstantOp>();
+      if (!definingOp) {
+        return {};
+      }
+      auto stringAttr = dyn_cast<StringAttr>(definingOp.getValue());
+      if (!stringAttr) {
+        return {};
+      }
+      argStrings.push_back(stringAttr.getValue().str());
+    } else {
+      // Integer arg: check the fold adaptor for a constant attribute.
+      auto constantAttr =
+          dyn_cast_or_null<IntegerAttr>(operands.getArgs()[index]);
+      if (!constantAttr) {
+        return {};
+      }
+      argStrings.push_back(
+          std::to_string(constantAttr.getValue().getZExtValue()));
+    }
+  }
+
+  // All args are constant. Parse and evaluate.
+  auto segmentsOr = parseFormatString(getFormat(), getArgs().size());
+  if (failed(segmentsOr)) {
+    return {};
+  }
+
+  std::string result;
+  for (const auto &segment : *segmentsOr) {
+    if (segment.kind == FormatSegment::Literal) {
+      result += segment.literal;
+    } else {
+      result += argStrings[segment.argIndex];
+    }
+  }
+
+  return StringAttr::get(getContext(), result);
+}
+
+namespace {
+
+// Partially folds constant arguments into the format string literal segments.
+// When all arguments are constant, replaces the op with a buffer constant.
+// When some arguments are constant, merges them into the format string and
+// produces a new format op with fewer arguments.
+struct PartialFoldStringFormat : OpRewritePattern<StringFormatOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(StringFormatOp op,
+                                PatternRewriter &rewriter) const override {
+    auto segmentsOr = parseFormatString(op.getFormat(), op.getArgs().size());
+    if (failed(segmentsOr)) {
+      return failure();
+    }
+    auto &segments = *segmentsOr;
+
+    // Determine which arguments are constant.
+    SmallVector<std::optional<std::string>> constantArgValues(
+        op.getArgs().size());
+    bool anyConstant = false;
+    for (auto [index, arg] : llvm::enumerate(op.getArgs())) {
+      if (isa<IREE::Util::BufferType>(arg.getType())) {
+        auto definingOp = arg.getDefiningOp<BufferConstantOp>();
+        if (definingOp) {
+          if (auto stringAttr = dyn_cast<StringAttr>(definingOp.getValue())) {
+            constantArgValues[index] = stringAttr.getValue().str();
+            anyConstant = true;
+          }
+        }
+      } else {
+        APInt value;
+        if (matchPattern(arg, m_ConstantInt(&value))) {
+          constantArgValues[index] = std::to_string(value.getZExtValue());
+          anyConstant = true;
+        }
+      }
+    }
+    if (!anyConstant) {
+      return failure();
+    }
+
+    // Check if ALL arguments are constant.
+    bool allConstant = llvm::all_of(
+        constantArgValues, [](const auto &v) { return v.has_value(); });
+
+    if (allConstant) {
+      // Evaluate fully and replace with a buffer constant.
+      std::string result;
+      for (const auto &segment : segments) {
+        if (segment.kind == FormatSegment::Literal) {
+          result += segment.literal;
+        } else {
+          result += *constantArgValues[segment.argIndex];
+        }
+      }
+      rewriter.replaceOpWithNewOp<BufferConstantOp>(
+          op, StringAttr::get(op.getContext(), result));
+      return success();
+    }
+
+    // Partial fold: inline constant args as literal text, keep dynamic args.
+    // First, build segments with constant args replaced by literals.
+    SmallVector<FormatSegment> newSegments;
+    for (const auto &segment : segments) {
+      if (segment.kind == FormatSegment::Arg &&
+          constantArgValues[segment.argIndex].has_value()) {
+        newSegments.push_back(
+            {FormatSegment::Literal, *constantArgValues[segment.argIndex], 0});
+      } else {
+        newSegments.push_back(segment);
+      }
+    }
+
+    // Merge adjacent literal segments.
+    SmallVector<FormatSegment> mergedSegments;
+    for (const auto &segment : newSegments) {
+      if (!mergedSegments.empty() &&
+          mergedSegments.back().kind == FormatSegment::Literal &&
+          segment.kind == FormatSegment::Literal) {
+        mergedSegments.back().literal += segment.literal;
+      } else {
+        mergedSegments.push_back(segment);
+      }
+    }
+
+    // Rebuild format string and args. Use sequential {} placeholders; each
+    // arg reference pushes the corresponding SSA value into the new arg list
+    // (duplicating if referenced multiple times, which is valid).
+    std::string newFormat;
+    SmallVector<Value> newArgs;
+    for (const auto &segment : mergedSegments) {
+      if (segment.kind == FormatSegment::Literal) {
+        for (char c : segment.literal) {
+          if (c == '{') {
+            newFormat += "{{";
+          } else if (c == '}') {
+            newFormat += "}}";
+          } else {
+            newFormat += c;
+          }
+        }
+      } else {
+        newFormat += "{}";
+        newArgs.push_back(op.getArgs()[segment.argIndex]);
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<StringFormatOp>(
+        op, op.getResult().getType(), rewriter.getStringAttr(newFormat),
+        newArgs);
+    return success();
+  }
+};
+
+// Eliminates identity format operations: util.string.format "{}"(%buf) -> %buf.
+// When the format string contains only a single placeholder with no surrounding
+// text and the argument is a buffer, the format is a no-op.
+struct EliminateIdentityFormat : OpRewritePattern<StringFormatOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(StringFormatOp op,
+                                PatternRewriter &rewriter) const override {
+    // Only match single-argument formats.
+    if (op.getArgs().size() != 1) {
+      return failure();
+    }
+
+    // Parse the format string.
+    auto segmentsOr = parseFormatString(op.getFormat(), op.getArgs().size());
+    if (failed(segmentsOr)) {
+      return failure();
+    }
+    auto &segments = *segmentsOr;
+
+    // Check if format is exactly "{}": single arg segment, no literal segments
+    // (or only empty literals).
+    bool hasNonEmptyLiteral = false;
+    bool hasArgSegment = false;
+    for (const auto &segment : segments) {
+      if (segment.kind == FormatSegment::Literal) {
+        if (!segment.literal.empty()) {
+          hasNonEmptyLiteral = true;
+          break;
+        }
+      } else {
+        hasArgSegment = true;
+      }
+    }
+
+    if (hasNonEmptyLiteral || !hasArgSegment) {
+      return failure();
+    }
+
+    // Only applies to buffer arguments (identity for buffer pass-through).
+    Value arg = op.getArgs()[0];
+    if (!isa<IREE::Util::BufferType>(arg.getType())) {
+      return failure();
+    }
+
+    // Replace with the buffer argument directly.
+    rewriter.replaceOp(op, arg);
+    return success();
+  }
+};
+
+// Simplifies single-integer-argument format to itoa:
+// util.string.format "{}"(%num) -> util.string.itoa %num.
+// More direct and itoa is simpler than format.
+struct SimplifySingleIntFormatToItoa : OpRewritePattern<StringFormatOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(StringFormatOp op,
+                                PatternRewriter &rewriter) const override {
+    // Only match single-argument formats.
+    if (op.getArgs().size() != 1) {
+      return failure();
+    }
+
+    // Parse the format string.
+    auto segmentsOr = parseFormatString(op.getFormat(), op.getArgs().size());
+    if (failed(segmentsOr)) {
+      return failure();
+    }
+    auto &segments = *segmentsOr;
+
+    // Check if format is exactly "{}": single arg segment, no literal segments.
+    bool hasNonEmptyLiteral = false;
+    bool hasArgSegment = false;
+    for (const auto &segment : segments) {
+      if (segment.kind == FormatSegment::Literal) {
+        if (!segment.literal.empty()) {
+          hasNonEmptyLiteral = true;
+          break;
+        }
+      } else {
+        hasArgSegment = true;
+      }
+    }
+
+    if (hasNonEmptyLiteral || !hasArgSegment) {
+      return failure();
+    }
+
+    // Only applies to integer arguments.
+    Value arg = op.getArgs()[0];
+    if (isa<IREE::Util::BufferType>(arg.getType())) {
+      return failure();
+    }
+
+    // Replace with itoa.
+    rewriter.replaceOpWithNewOp<StringItoaOp>(op, op.getResult().getType(),
+                                              arg);
+    return success();
+  }
+};
+
+// Normalizes ordinals in format strings to sequential placeholders.
+// This handles explicit ordinals ("{0} {1}"), out-of-order ("{1} {0}"), and
+// duplicates ("{0} {0}") even when all arguments are dynamic (which means
+// PartialFoldStringFormat won't trigger).
+struct NormalizeFormatOrdinals : OpRewritePattern<StringFormatOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(StringFormatOp op,
+                                PatternRewriter &rewriter) const override {
+    auto segmentsOr = parseFormatString(op.getFormat(), op.getArgs().size());
+    if (failed(segmentsOr)) {
+      return failure();
+    }
+    auto &segments = *segmentsOr;
+
+    // Check if the format string uses sequential implicit "{}" placeholders
+    // already. If so, no normalization needed.
+    std::string currentFormat = op.getFormat().str();
+    bool needsNormalization = false;
+
+    // Simple heuristic: if we see any digits after '{', we have explicit
+    // ordinals.
+    for (size_t i = 0; i < currentFormat.size(); ++i) {
+      if (currentFormat[i] == '{' && i + 1 < currentFormat.size() &&
+          currentFormat[i + 1] != '{' && currentFormat[i + 1] != '}') {
+        // Check if next char is a digit
+        if (std::isdigit(currentFormat[i + 1])) {
+          needsNormalization = true;
+          break;
+        }
+      }
+    }
+
+    if (!needsNormalization) {
+      return failure();
+    }
+
+    // Rebuild format string with sequential "{}" and reorder args.
+    std::string newFormat;
+    SmallVector<Value> newArgs;
+    for (const auto &segment : segments) {
+      if (segment.kind == FormatSegment::Literal) {
+        for (char c : segment.literal) {
+          if (c == '{') {
+            newFormat += "{{";
+          } else if (c == '}') {
+            newFormat += "}}";
+          } else {
+            newFormat += c;
+          }
+        }
+      } else {
+        newFormat += "{}";
+        newArgs.push_back(op.getArgs()[segment.argIndex]);
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<StringFormatOp>(
+        op, op.getResult().getType(), rewriter.getStringAttr(newFormat),
+        newArgs);
+    return success();
+  }
+};
+
+} // namespace
+
+void StringFormatOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                 MLIRContext *context) {
+  results.insert<PartialFoldStringFormat, EliminateIdentityFormat,
+                 SimplifySingleIntFormatToItoa, NormalizeFormatOrdinals>(
+      context);
+}
+
+//===----------------------------------------------------------------------===//
+// util.string.itoa
+//===----------------------------------------------------------------------===//
+
+OpFoldResult StringItoaOp::fold(FoldAdaptor operands) {
+  auto constantAttr = dyn_cast_or_null<IntegerAttr>(operands.getValue());
+  if (!constantAttr) {
+    return {};
+  }
+  uint64_t value = constantAttr.getValue().getZExtValue();
+  return StringAttr::get(getContext(), std::to_string(value));
+}
+
+namespace {
+
+// Folds itoa through zero-extending casts (extui, index_cast to wider type).
+// Since itoa produces unsigned decimal representation, zero-extension doesn't
+// change the string output, so we can fold through the cast.
+struct FoldItoaThroughZeroExtend : OpRewritePattern<StringItoaOp> {
+  using Base::Base;
+  LogicalResult matchAndRewrite(StringItoaOp op,
+                                PatternRewriter &rewriter) const override {
+    Value value = op.getValue();
+
+    // Look through arith.extui (zero-extend).
+    if (auto extui = value.getDefiningOp<mlir::arith::ExtUIOp>()) {
+      // If the input is constant, fold completely.
+      APInt constantValue;
+      if (matchPattern(extui.getIn(), m_ConstantInt(&constantValue))) {
+        rewriter.replaceOpWithNewOp<BufferConstantOp>(
+            op, StringAttr::get(op.getContext(),
+                                std::to_string(constantValue.getZExtValue())));
+        return success();
+      }
+      // Otherwise, apply itoa to the narrow value directly.
+      rewriter.replaceOpWithNewOp<StringItoaOp>(op, op.getResult().getType(),
+                                                extui.getIn());
+      return success();
+    }
+
+    // Look through arith.index_cast when the source is constant.
+    // We can only fold if the input is constant because index_cast could be
+    // widening or narrowing, and we don't know the bit width at compile time.
+    if (auto indexCast = value.getDefiningOp<mlir::arith::IndexCastOp>()) {
+      APInt constantValue;
+      if (matchPattern(indexCast.getIn(), m_ConstantInt(&constantValue))) {
+        rewriter.replaceOpWithNewOp<BufferConstantOp>(
+            op, StringAttr::get(op.getContext(),
+                                std::to_string(constantValue.getZExtValue())));
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+} // namespace
+
+void StringItoaOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                               MLIRContext *context) {
+  results.insert<FoldItoaThroughZeroExtend>(context);
 }
 
 } // namespace mlir::iree_compiler::IREE::Util

@@ -6,8 +6,7 @@
 func.func @matmul_256x1024x128_div_add(%5: tensor<256x1024xf16>, %6: tensor<256x1024xf16>, %8: tensor<256x128xf16>, %9: tensor<128x1024xf16>) -> tensor<256x1024xf16> {
   %cst = arith.constant 0.000000e+00 : f16
   %7 = tensor.empty() : tensor<256x1024xf16>
-  %10 = tensor.empty() : tensor<256x1024xf16>
-  %11 = linalg.fill ins(%cst : f16) outs(%10 : tensor<256x1024xf16>) -> tensor<256x1024xf16>
+  %11 = linalg.fill ins(%cst : f16) outs(%7 : tensor<256x1024xf16>) -> tensor<256x1024xf16>
   %12 = linalg.matmul ins(%8, %9 : tensor<256x128xf16>, tensor<128x1024xf16>) outs(%11 : tensor<256x1024xf16>) -> tensor<256x1024xf16>
   %13 = linalg.generic {indexing_maps = [#map, #map, #map, #map], iterator_types = ["parallel", "parallel"]} ins(%12, %5, %6 : tensor<256x1024xf16>, tensor<256x1024xf16>, tensor<256x1024xf16>) outs(%7 : tensor<256x1024xf16>) {
   ^bb0(%in: f16, %in_0: f16, %in_1: f16, %out: f16):
@@ -80,7 +79,7 @@ func.func @generic_batch_matmul_32x8x512x64(%3: tensor<128x32x64xf16>, %4: tenso
 
 // -----
 
-// K dim size not divisble by 32.
+// K dim size not divisible by 32.
 
 func.func @batch_matmul_16x1024x1024x80(%3: tensor<16x1024x80xf16>, %4: tensor<16x80x1024xf16>) -> tensor<16x1024x1024xf16> {
   %cst = arith.constant 0.000000e+00 : f16

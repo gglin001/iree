@@ -133,7 +133,7 @@ static void permute(SmallVectorImpl<T> &vector) {
   }
 }
 
-/// Return dim expresssions that can be used as replacements in map that
+/// Return dim expressions that can be used as replacements in map that
 /// contains `numSymbols` symbols. The new dim expressions have positions
 /// `numDims, numDims + 1, numDims + 2, ...., numDims + numSymbols - 1`.
 SmallVector<AffineExpr> getDimExprsForSymbols(MLIRContext *context,
@@ -251,6 +251,9 @@ bool isPureMatmul(Operation *op);
 /// Returns true if the operation is a pure BatchMatmulOp (no
 /// transpose/broadcast).
 bool isPureBatchMatmul(Operation *op);
+
+/// Returns true if the given linalg op represents a transpose.
+bool isaTransposeOpInterface(linalg::LinalgOp linalgOp);
 
 } // namespace mlir::iree_compiler::IREE::LinalgExt
 #endif // IREE_COMPILER_DIALECT_LINALGEXT_UTILS_UTILS_H_

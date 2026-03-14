@@ -87,6 +87,18 @@ static bool inlineConstantGlobalStores(GlobalTable &globalTable) {
       return GlobalAction::PRESERVE;
     }
 
+    // Check if the constant value type is compatible with the global type.
+    // util.buffer.constant operations have tensor-typed attributes but produce
+    // !util.buffer results. We can't fold the tensor attribute into a buffer-
+    // typed global's initial_value.
+    if (auto typedAttr = dyn_cast<TypedAttr>(constantValue)) {
+      if (typedAttr.getType() != global.op.getGlobalType()) {
+        // Type mismatch - don't fold. The value will be stored in an
+        // initializer instead.
+        return GlobalAction::PRESERVE;
+      }
+    }
+
     // Propagate constant into the initial value. Note that there may have been
     // a previous initial value that is being replaced.
     global.op.setGlobalInitialValue(constantValue);
@@ -307,6 +319,7 @@ static bool deduplicateConstantGlobals(GlobalTable &globalTable) {
             context,
             {
                 global.op.getGlobalInitialValue(),
+                TypeAttr::get(global.op.getGlobalType()),
                 DictionaryAttr::get(
                     context, llvm::to_vector(global.op->getDialectAttrs())),
             }),
@@ -367,7 +380,7 @@ static bool deduplicateConstantGlobals(GlobalTable &globalTable) {
   return true; // did change
 }
 
-struct FoldGlobalsPass : public impl::FoldGlobalsPassBase<FoldGlobalsPass> {
+struct FoldGlobalsPass : impl::FoldGlobalsPassBase<FoldGlobalsPass> {
   void runOnOperation() override {
     auto *context = &getContext();
     RewritePatternSet patterns(context);
@@ -379,13 +392,16 @@ struct FoldGlobalsPass : public impl::FoldGlobalsPassBase<FoldGlobalsPass> {
     }
     FrozenRewritePatternSet frozenPatterns(std::move(patterns));
 
+    GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+
     mlir::ModuleOp moduleOp = getOperation();
     GlobalTable globalTable(moduleOp);
     beforeFoldingGlobals = globalTable.size();
     bool didChangeAny = false;
     for (int i = 0; i < 10; ++i) {
       // TODO(benvanik): determine if we need this expensive folding.
-      if (failed(applyPatternsGreedily(moduleOp, frozenPatterns))) {
+      if (failed(applyPatternsGreedily(moduleOp, frozenPatterns, config))) {
         signalPassFailure();
         return;
       }

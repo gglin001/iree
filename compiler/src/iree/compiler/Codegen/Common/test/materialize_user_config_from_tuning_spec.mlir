@@ -1,10 +1,8 @@
-// RUN: iree-opt --pass-pipeline='builtin.module(builtin.module(iree-codegen-materialize-tuning-specs,iree-codegen-materialize-user-configs))' \
-// RUN:   --iree-codegen-tuning-spec-path=%p/tuning_spec.mlir \
+// RUN: iree-opt --pass-pipeline='builtin.module(builtin.module(iree-codegen-materialize-tuning-specs{tuning-spec-path=%p/tuning_spec.mlir},iree-codegen-materialize-user-configs))' \
 // RUN:   --iree-codegen-test-notify-transform-strategy-application \
 // RUN:   --no-implicit-module --verify-diagnostics %s | FileCheck %s
 
-// RUN: iree-opt --pass-pipeline='builtin.module(iree-codegen-materialize-tuning-specs,builtin.module(iree-codegen-materialize-user-configs))' \
-// RUN:   --iree-codegen-tuning-spec-path=%p/tuning_spec.mlir \
+// RUN: iree-opt --pass-pipeline='builtin.module(iree-codegen-materialize-tuning-specs{tuning-spec-path=%p/tuning_spec.mlir},builtin.module(iree-codegen-materialize-user-configs))' \
 // RUN:   --iree-codegen-test-notify-transform-strategy-application \
 // RUN:   --no-implicit-module --verify-diagnostics %s | FileCheck %s --check-prefix=PARENT
 
@@ -15,19 +13,20 @@
 // Check that the transform spec gets executed and that it does not remain as
 // a module attribute after `Materialize User Configs`.
 
-// CHECK-LABEL:  module @parent {
-// CHECK-LABEL:    module @child {
-// CHECK:            func.func @main_0
+// CHECK-LABEL: module @parent {
+// CHECK-NOT:     iree_codegen.tuning_spec_mlirbc
+// CHECK:         module @child {
+// CHECK:           func.func @main_0
 
 // (2) Check that the transform spec gets picked up from the **parent** module.
 // The tuning spec attribute should remain on the parent module as we
 // (conservatively) only remove tuning spec from the module passed
 // to the `materialize-user-configs` pass.
 
-// PARENT-LABEL:  module @parent attributes {
-// PARENT-SAME:     iree_codegen.tuning_spec_mlirbc = dense<
-// PARENT-LABEL:    module @child {
-// PARENT:            func.func @main_0
+// PARENT-LABEL: module @parent attributes {
+// PARENT-SAME:    iree_codegen.tuning_spec_mlirbc = dense<
+// PARENT:         module @child {
+// PARENT:           func.func @main_0
 
 module @parent {
   module @child {

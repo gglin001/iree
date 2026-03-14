@@ -66,7 +66,7 @@ static void processOp(IREE::HAL::CommandBufferExecutionBarrierOp op,
 //===----------------------------------------------------------------------===//
 
 struct ElideRedundantCommandsPass
-    : public IREE::HAL::impl::ElideRedundantCommandsPassBase<
+    : IREE::HAL::impl::ElideRedundantCommandsPassBase<
           ElideRedundantCommandsPass> {
   void runOnOperation() override {
     auto parentOp = getOperation();
@@ -91,8 +91,9 @@ struct ElideRedundantCommandsPass
           stateMap[commandBuffer].previousFullBarrier = {};
         };
         for (auto &op : llvm::make_early_inc_range(block.getOperations())) {
-          if (!op.getDialect())
+          if (!op.getDialect()) {
             continue;
+          }
           TypeSwitch<Operation *>(&op)
               .Case([&](IREE::HAL::CommandBufferFinalizeOp op) {
                 invalidateState(op.getCommandBuffer());

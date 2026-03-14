@@ -6,6 +6,7 @@
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenInterfaces.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUDialect.h"
 #include "iree/compiler/Codegen/SPIRV/KernelConfig.h"
 #include "iree/compiler/Codegen/SPIRV/Passes.h"
@@ -50,8 +51,9 @@ verifyLoweringConfiguration(FunctionOpInterface funcOp,
   auto walkResult = funcOp.walk([&](Operation *op) -> WalkResult {
     auto loweringConfig =
         getLoweringConfig<IREE::Codegen::LoweringConfigAttr>(op);
-    if (!loweringConfig)
+    if (!loweringConfig) {
       return WalkResult::advance();
+    }
     return verificationFn(op, loweringConfig, translationInfo, workgroupSize);
   });
   return failure(walkResult.wasInterrupted());
@@ -94,8 +96,15 @@ void SPIRVSelectLoweringStrategyPass::runOnOperation() {
       return signalPassFailure();
     }
 
-    auto translationInfo = getTranslationInfo(funcOp);
+    IREE::Codegen::TranslationInfoAttr translationInfo =
+        getTranslationInfo(funcOp);
     if (!translationInfo) {
+      continue;
+    }
+
+    // Custom pipelines via PipelineAttrInterface skip enum-based verification.
+    if (isa<IREE::Codegen::PipelineAttrInterface>(
+            translationInfo.getPassPipeline())) {
       continue;
     }
 

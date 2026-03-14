@@ -11,13 +11,14 @@
 #include "iree/compiler/Codegen/Utils/MarkerUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/PatternMatch.h"
 
 namespace mlir::iree_compiler {
 
 namespace {
-/// Applies tranformation to drop unit dims in destination vector.transfer_read
+/// Applies transformation to drop unit dims in destination vector.transfer_read
 /// destination so that the resulting vector is 2D.
 //
 /// Example:
@@ -43,7 +44,7 @@ namespace {
 /// %3 = vector.transpose %2, [1, 0, 2]
 ///      : vector<1x16x8xf32> to vector<16x1x8xf32>
 /// ```
-struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
+struct FlattenTransferReadOp : OpRewritePattern<vector::TransferReadOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(vector::TransferReadOp transferReadOp,
@@ -54,11 +55,13 @@ struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
     Value source = transferReadOp.getBase();
     MemRefType sourceType = dyn_cast<MemRefType>(source.getType());
     // Contiguity check is valid on tensors only.
-    if (!sourceType)
+    if (!sourceType) {
       return failure();
+    }
     // Already 2D or lower nothing to do.
-    if (vectorType.getRank() < 3)
+    if (vectorType.getRank() < 3) {
       return failure();
+    }
     // The innermost dim is always considered non-unit as it wont be dropped
     // Therefore, we initialize `numberOfNonUnitDims` to 1 and not 0
     int numberOfNonUnitDims = 1;
@@ -86,12 +89,15 @@ struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
     }
     int rankOfCollapsedVector = 2;
     // TODO: generalize this pattern, relax the requirements here.
-    if (transferReadOp.hasOutOfBoundsDim())
+    if (transferReadOp.hasOutOfBoundsDim()) {
       return failure();
-    if (!transferReadOp.getPermutationMap().isMinorIdentity())
+    }
+    if (!transferReadOp.getPermutationMap().isMinorIdentity()) {
       return failure();
-    if (transferReadOp.getMask())
+    }
+    if (transferReadOp.getMask()) {
       return failure();
+    }
     ArrayAttr newInBoundsAttr = rewriter.getBoolArrayAttr(
         SmallVector<bool>(rankOfCollapsedVector, true));
     auto newidentityMap =
@@ -113,8 +119,9 @@ struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
     SmallVector<OpFoldResult> subViewOffsets, subViewSizes, subViewStrides;
     subViewSizes.append(sourceType.getRank() - vectorType.getRank(),
                         rewriter.getIndexAttr(1));
-    for (int64_t dim : vectorType.getShape())
+    for (int64_t dim : vectorType.getShape()) {
       subViewSizes.push_back(rewriter.getIndexAttr(dim));
+    }
     for (int i = 0; i < sourceType.getRank(); i++) {
       subViewOffsets.push_back(transferReadOp.getIndices()[i]);
       subViewStrides.push_back(rewriter.getIndexAttr(1));
@@ -136,8 +143,9 @@ struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
         rewriter, loc, vectorTypeBroadcast, readCollapse);
     SmallVector<int64_t> transposePermutation;
     for (int i = 0; i < vectorType.getRank(); i++) {
-      if (i == vectorType.getRank() - 2)
+      if (i == vectorType.getRank() - 2) {
         continue;
+      }
       transposePermutation.push_back(i);
     }
     transposePermutation.insert(transposePermutation.begin() +
@@ -152,7 +160,7 @@ struct FlattenTransferReadOp : public OpRewritePattern<vector::TransferReadOp> {
 // Merges transpose op into the transfer read op. Transpose are not supported on
 // MMA types but MMA load can transpose the matrix when loading.
 struct CombineTransferReadOpBroadcast final
-    : public OpRewritePattern<vector::BroadcastOp> {
+    : OpRewritePattern<vector::BroadcastOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(vector::BroadcastOp op,
@@ -186,8 +194,9 @@ struct CombineTransferReadOpBroadcast final
 /// Returns true if op is appropriate contract for promotion.
 static LogicalResult contractOpFilter(Operation *op) {
   auto linalgOp = dyn_cast<linalg::LinalgOp>(op);
-  if (!linalgOp)
+  if (!linalgOp) {
     return failure();
+  }
   // Limit promotion to matmul and batch matmul, there may be generic
   // ops with more batch dimensions we didn't distribute and therefore
   // cannot find a higher bound.
@@ -197,17 +206,64 @@ static LogicalResult contractOpFilter(Operation *op) {
       linalgOp.getNumParallelLoops() <= 3);
 }
 
+/// Convert stretching broadcasts (broadcasting a non-unit dim from 1) into
+/// broadcast + transpose so the layout analysis can handle them.
+struct RemoveUnitDimStretchingBroadcast final
+    : OpRewritePattern<vector::BroadcastOp> {
+  using Base::Base;
+
+  LogicalResult matchAndRewrite(vector::BroadcastOp broadcastOp,
+                                PatternRewriter &rewriter) const override {
+    SetVector<int64_t> stretchedDims = broadcastOp.computeBroadcastedUnitDims();
+    if (stretchedDims.empty()) {
+      return failure();
+    }
+    VectorType srcTy = cast<VectorType>(broadcastOp.getSource().getType());
+    VectorType dstTy = broadcastOp.getResultVectorType();
+    int64_t numLeadingBroadcastDims = dstTy.getRank() - srcTy.getRank();
+    SmallVector<int64_t> broadcastedUnitDims;
+    for (auto i : llvm::seq<int64_t>(numLeadingBroadcastDims)) {
+      if (dstTy.getShape()[i] == 1) {
+        broadcastedUnitDims.push_back(i);
+      }
+    }
+    if (stretchedDims.size() > broadcastedUnitDims.size()) {
+      return failure();
+    }
+    // Build a permutation that swaps the broadcasted unit dims with a leading
+    // unit dim.
+    // Note that the way this permutation is built, makes it involutory, i.e.,
+    // P = P^{-1}.
+    auto perm = llvm::to_vector(llvm::seq<int64_t>(dstTy.getRank()));
+    // We use zip instead of zip_equal because stretchedDims.size() <=
+    // broadcastedUnitDims.size().
+    for (auto [stretchedDim, broadcastedUnitDim] :
+         llvm::zip(stretchedDims.getArrayRef(), broadcastedUnitDims)) {
+      std::swap(perm[stretchedDim], perm[broadcastedUnitDim]);
+    }
+    VectorType permutedBroadcastTy = VectorType::get(
+        applyPermutation(dstTy.getShape(), perm), dstTy.getElementType());
+    Value permutedBroadcast = vector::BroadcastOp::create(
+        rewriter, broadcastOp.getLoc(), permutedBroadcastTy,
+        broadcastOp.getSource());
+    rewriter.replaceOpWithNewOp<vector::TransposeOp>(broadcastOp,
+                                                     permutedBroadcast, perm);
+    return success();
+  }
+};
+
 // A `dealloc` is converted into a call to `free` on the underlying data buffer.
 // The memref descriptor being an SSA value, there is no need to clean it up
 // in any way.
-struct DropSharedMemoryDeallocOp : public OpRewritePattern<memref::DeallocOp> {
+struct DropSharedMemoryDeallocOp : OpRewritePattern<memref::DeallocOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(memref::DeallocOp op,
                                 PatternRewriter &rewriter) const override {
     if (!hasSharedMemoryAddressSpace(
-            cast<MemRefType>(op.getMemref().getType())))
+            cast<MemRefType>(op.getMemref().getType()))) {
       return failure();
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -243,6 +299,10 @@ void populateContractPromotionPatterns(RewritePatternSet &patterns,
           StringAttr::get(context, getWorkgroupMemoryMarker()))
           .setMatchByDefault()
           .addFilter(contractOpFilter));
+}
+
+void populateVectorLayoutCanonicalizations(RewritePatternSet &patterns) {
+  patterns.add<RemoveUnitDimStretchingBroadcast>(patterns.getContext());
 }
 
 void populateDropSharedMemoryDeallocOpPatterns(RewritePatternSet &patterns) {

@@ -34,7 +34,7 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 struct SerializeTargetExecutablesPass
-    : public IREE::HAL::impl::SerializeTargetExecutablesPassBase<
+    : IREE::HAL::impl::SerializeTargetExecutablesPassBase<
           SerializeTargetExecutablesPass> {
   using IREE::HAL::impl::SerializeTargetExecutablesPassBase<
       SerializeTargetExecutablesPass>::SerializeTargetExecutablesPassBase;
@@ -78,8 +78,9 @@ struct SerializeTargetExecutablesPass
     auto variantOps = llvm::to_vector(
         executableOp.getBlock().getOps<IREE::HAL::ExecutableVariantOp>());
     for (auto variantOp : variantOps) {
-      if (variantOp.getTarget().getBackend().getValue() != target)
+      if (variantOp.getTarget().getBackend().getValue() != target) {
         continue;
+      }
       OpBuilder executableBuilder(variantOp);
       // Ask the target backend to serialize the executable. Note that it
       // may create one or more hal.executable.binary ops in the case of
@@ -100,7 +101,7 @@ struct SerializeTargetExecutablesPass
 //===----------------------------------------------------------------------===//
 
 struct SerializeAllExecutablesPass
-    : public IREE::HAL::impl::SerializeAllExecutablesPassBase<
+    : IREE::HAL::impl::SerializeAllExecutablesPassBase<
           SerializeAllExecutablesPass> {
   using IREE::HAL::impl::SerializeAllExecutablesPassBase<
       SerializeAllExecutablesPass>::SerializeAllExecutablesPassBase;

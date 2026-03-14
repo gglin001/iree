@@ -9,7 +9,9 @@
 #include "iree/compiler/Codegen/Dialect/CPU/IR/IREECPUTypes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenTypes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/Utils/Utils.h"
+#include "iree/compiler/Codegen/Utils/CPUUtils.h"
 #include "iree/compiler/Codegen/Utils/Utils.h"
+#include "iree/compiler/Dialect/Encoding/IR/EncodingOps.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h"
 #include "iree/compiler/Dialect/Encoding/Utils/Utils.h"
 #include "llvm/Support/Casting.h"
@@ -23,6 +25,176 @@
 namespace mlir::iree_compiler::IREE {
 using IREE::Codegen::MaterializeEncodingInfo;
 
+/// Computes the original index value for a given dimension after packing.
+///
+/// After packing, the original indices need to be computed from the packed
+/// dimensions. For a dimension that is tiled:
+///   original_index = outer_dim * tile_size + inner_dim
+/// For a dimension that is not tiled:
+///   original_index = outer_dim
+///
+/// The packed generic has identity output map, so dimensions are:
+///   d0..d(outerRank-1): outer dimensions (permuted by outerDimsPerm)
+///   d(outerRank)..d(outerRank+innerRank-1): inner dimensions
+///
+/// With swizzle, inner dimensions are further expanded and permuted.
+static Value computePackedIndex(OpBuilder &builder, Location loc,
+                                int64_t origDim, int64_t origRank,
+                                const MaterializeEncodingInfo &encodingInfo,
+                                ArrayRef<int64_t> outOffsetForDimsPos,
+                                ArrayRef<int64_t> invOutSwizzlePerm) {
+  ArrayRef<int64_t> outerDimsPerm = encodingInfo.outerDimsPerm;
+  ArrayRef<int64_t> innerDimsPos = encodingInfo.innerDimsPos;
+  ArrayRef<int64_t> innerTileSizes = encodingInfo.innerTileSizes;
+
+  // Build inverse outer dims permutation for mapping original dims to packed
+  // outer dims.
+  SmallVector<int64_t> invOuterDimsPerm =
+      invertPermutationVector(outerDimsPerm);
+
+  // Find the outer packed dimension corresponding to this original dimension.
+  int64_t outerPackedDim = invOuterDimsPerm[origDim];
+  Value outerIdx =
+      linalg::IndexOp::create(builder, loc, outerPackedDim).getResult();
+
+  // Check if this dimension is tiled (in innerDimsPos).
+  auto it = llvm::find(innerDimsPos, origDim);
+  if (it == innerDimsPos.end()) {
+    // Not tiled: original_index = outer_dim.
+    return outerIdx;
+  }
+
+  // Tiled: original_index = outer_dim * tile_size + inner_dim.
+  int64_t innerIdx = std::distance(innerDimsPos.begin(), it);
+  int64_t tileSize = innerTileSizes[innerIdx];
+  Value innerIdxVal;
+  if (!encodingInfo.swizzle.has_value()) {
+    // No swizzle: inner packed dim = outerRank + innerIdx.
+    int64_t innerPackedDim = origRank + innerIdx;
+    innerIdxVal =
+        linalg::IndexOp::create(builder, loc, innerPackedDim).getResult();
+  } else {
+    // With swizzle: inner dimensions are expanded and permuted.
+    // We need to compute the inner index from the expanded dimensions.
+    const IREE::Codegen::TileSwizzle &swizzle = *encodingInfo.swizzle;
+    ArrayRef<IREE::Codegen::TileSwizzle::Dim> expandDims =
+        swizzle.expandShape()[innerIdx];
+
+    // Compute the starting offset for this inner tile's expanded dims.
+    // The inner index is computed by combining the expanded dimensions
+    // according to their sizes, but we need to account for the swizzle
+    // permutation.
+    int64_t expandedDimOffset = origRank + outOffsetForDimsPos[innerIdx];
+    innerIdxVal = arith::ConstantIndexOp::create(builder, loc, 0).getResult();
+    int64_t stride = 1;
+
+    // Process expanded dimensions in reverse order to build the index.
+    for (int64_t i = expandDims.size() - 1; i >= 0; --i) {
+      int64_t expandedDim = expandedDimOffset + i;
+      // Find where this expanded dimension ended up after swizzle.
+      int64_t permutedDim = invOutSwizzlePerm[expandedDim];
+      Value dimIdx =
+          linalg::IndexOp::create(builder, loc, permutedDim).getResult();
+
+      if (stride > 1) {
+        Value strideVal =
+            arith::ConstantIndexOp::create(builder, loc, stride).getResult();
+        dimIdx =
+            arith::MulIOp::create(builder, loc, dimIdx, strideVal).getResult();
+      }
+      innerIdxVal =
+          arith::AddIOp::create(builder, loc, innerIdxVal, dimIdx).getResult();
+      stride *= expandDims[i].size();
+    }
+  }
+
+  // Compute outer_dim * tile_size + inner_dim.
+  Value tileSizeVal =
+      arith::ConstantIndexOp::create(builder, loc, tileSize).getResult();
+  Value outerScaled =
+      arith::MulIOp::create(builder, loc, outerIdx, tileSizeVal).getResult();
+  return arith::AddIOp::create(builder, loc, outerScaled, innerIdxVal)
+      .getResult();
+}
+
+void adjustTileSizesForBitcast(RankedTensorType type,
+                               MaterializeEncodingInfo &info) {
+  auto encoding =
+      dyn_cast_if_present<Encoding::EncodingAttr>(type.getEncoding());
+  if (!encoding) {
+    return;
+  }
+
+  // Only adjust if the encoding has an original_element_type, indicating a
+  // bitcast occurred.
+  auto originalElementTypeAttr = encoding.getOriginalElementType();
+  if (!originalElementTypeAttr) {
+    return;
+  }
+
+  Type originalType = originalElementTypeAttr.getValue();
+  Type storageType = type.getElementType();
+
+  // No adjustment needed if types are the same.
+  if (originalType == storageType) {
+    return;
+  }
+
+  unsigned originalBits = originalType.getIntOrFloatBitWidth();
+  unsigned storageBits = storageType.getIntOrFloatBitWidth();
+
+  // One bit width must be a multiple of the other.
+  assert((storageBits >= originalBits ? storageBits % originalBits
+                                      : originalBits % storageBits) == 0 &&
+         "bit widths must be multiples of each other");
+
+  // Adjust the innermost tile size based on the bit width ratio between
+  // original and storage types. The innermost dimension is where packing
+  // occurs.
+  if (info.innerTileSizes.empty()) {
+    return;
+  }
+  int64_t &innermostTileSize = info.innerTileSizes.back();
+  if (ShapedType::isDynamic(innermostTileSize)) {
+    return;
+  }
+
+  // Scale the tile size: multiply by originalBits and divide by storageBits.
+  // This scales down when storage > original (e.g., i4→i8 packing).
+  int64_t scaledSize = innermostTileSize * originalBits;
+  assert(scaledSize % storageBits == 0 &&
+         "scaled tile size must be divisible by storage bits");
+  innermostTileSize = scaledSize / storageBits;
+
+  // Also adjust the swizzle's expandShape innermost dimension if present.
+  // The expandShape describes how each inner tile dimension is further split,
+  // and the innermost dimension's size must be scaled by the same ratio.
+  if (info.swizzle && !info.swizzle->expandShape().empty()) {
+    Codegen::TileSwizzle::ExpandShapeDimVectorType &innermostExpandDims =
+        info.swizzle->expandShape().back();
+    assert(!innermostExpandDims.empty() && "expand shape must be non-empty");
+    Codegen::TileSwizzle::Dim &innermostDim = innermostExpandDims.back();
+    int64_t scaledExpandSize = innermostDim.size() * originalBits;
+    assert(scaledExpandSize % storageBits == 0 &&
+           "scaled expand size must be divisible by storage bits");
+    int64_t newSize = scaledExpandSize / storageBits;
+    switch (innermostDim.kind()) {
+    case Codegen::TileSwizzle::Dim::Kind::Internal:
+      innermostExpandDims.back() = Codegen::TileSwizzle::Dim::internal(
+          newSize, innermostDim.symbolicMultiplier());
+      break;
+    case Codegen::TileSwizzle::Dim::Kind::CrossIntrinsic:
+      innermostExpandDims.back() =
+          Codegen::TileSwizzle::Dim::crossIntrinsic(newSize);
+      break;
+    case Codegen::TileSwizzle::Dim::Kind::CrossThread:
+      innermostExpandDims.back() = Codegen::TileSwizzle::Dim::crossThread(
+          newSize, innermostDim.distributionFactor());
+      break;
+    }
+  }
+}
+
 Value calculatePackedStorageSizeInBytesImpl(Attribute attr, Location loc,
                                             OpBuilder &builder,
                                             RankedTensorType type,
@@ -32,8 +204,11 @@ Value calculatePackedStorageSizeInBytesImpl(Attribute attr, Location loc,
   MaterializeEncodingInfo encodingInfo = deviceLayoutAttr.getEncodingInfo(type);
   SmallVector<int64_t> paddedShape(type.getShape());
   SmallVector<Value> paddedDynamicDims(dynamicDims);
-  for (auto [dim, size] : llvm::zip_equal(encodingInfo.innerDimsPos,
-                                          encodingInfo.innerTileSizes)) {
+  auto scalableFlags = encodingInfo.scalableTiles.value_or(
+      Codegen::ScalableTileFlags(encodingInfo.innerTileSizes.size(), false));
+  for (auto [dim, size, scalable] :
+       llvm::zip_equal(encodingInfo.innerDimsPos, encodingInfo.innerTileSizes,
+                       scalableFlags)) {
     // Only VMVX backend has dynamic inner tile sizes when ukernel is enabled.
     // It assumes that the padding size is 16. Ideally, the logic should be
     // moved to VMVX implementation details. However, we cook the logic here to
@@ -44,6 +219,11 @@ Value calculatePackedStorageSizeInBytesImpl(Attribute attr, Location loc,
       size = 16;
     }
 
+    // Host-side code does not support vscale ops yet - so we cannot create the
+    // runtime SSA value properly as of now. #21317
+    if (scalable) {
+      size *= getUserVscaleValue();
+    }
     // Do not create additional operations in the first place if the padding is
     // not needed.
     if (size == 1) {
@@ -55,8 +235,9 @@ Value calculatePackedStorageSizeInBytesImpl(Attribute attr, Location loc,
       auto alignment = arith::ConstantIndexOp::create(builder, loc, size);
       paddedDynamicDims[dim] = arith::CeilDivSIOp::create(
           builder, loc, paddedDynamicDims[dim], alignment);
-      paddedDynamicDims[dim] = arith::MulIOp::create(
-          builder, loc, paddedDynamicDims[dim], alignment);
+      paddedDynamicDims[dim] =
+          arith::MulIOp::create(builder, loc, paddedDynamicDims[dim], alignment,
+                                arith::IntegerOverflowFlags::nsw);
     } else {
       paddedShape[dim] = llvm::alignTo(paddedShape[dim], size);
     }
@@ -79,7 +260,8 @@ Value calculatePackedStorageSizeInBytesImpl(Attribute attr, Location loc,
   Value result =
       arith::ConstantIndexOp::create(builder, loc, staticCount).getResult();
   for (auto dim : paddedDynamicDims) {
-    result = arith::MulIOp::create(builder, loc, result, dim);
+    result = arith::MulIOp::create(builder, loc, result, dim,
+                                   arith::IntegerOverflowFlags::nsw);
   }
 
   // Always pack the elements back-to-back for subtypes.
@@ -226,7 +408,7 @@ Operation *lowerGenericOpWithResolvedLayouts(
         cast<RankedTensorType>(outputOperand->get().getType()).getRank();
     SmallVector<int64_t> transposePerm =
         llvm::to_vector(llvm::seq<int64_t>(0, outRank));
-    for (auto perm : outMaterializeEncodingInfo.swizzle->permutation) {
+    for (auto perm : outMaterializeEncodingInfo.swizzle->permutation()) {
       transposePerm.push_back(outRank + perm);
     }
     applyPermutationToVector(outSwizzlePerm, transposePerm);
@@ -249,7 +431,8 @@ Operation *lowerGenericOpWithResolvedLayouts(
     int64_t runningSize = 0;
     for (size_t i = 0; i < outInnerDimsPos.size(); i++) {
       outOffsetForDimsPos[i] = runningSize;
-      runningSize += outMaterializeEncodingInfo.swizzle->expandShape[i].size();
+      runningSize +=
+          outMaterializeEncodingInfo.swizzle->expandShape()[i].size();
     }
   }
 
@@ -331,11 +514,11 @@ Operation *lowerGenericOpWithResolvedLayouts(
         // transformed into an expanded sequence of indices and the correct
         // dimension index is:
         //   outOffsetForDimsPos[tileIdx] + innerIndex
-        assert(idx < materializeEncodingInfo.swizzle->expandShape.size() &&
+        assert(idx < materializeEncodingInfo.swizzle->expandShape().size() &&
                "`innerDimsPos` index should not exceed the swizzle's "
                "`expandShape` size");
         const size_t dimSize =
-            materializeEncodingInfo.swizzle->expandShape[idx].size();
+            materializeEncodingInfo.swizzle->expandShape()[idx].size();
         const int64_t outIdxOffset =
             outputMap.getNumDims() + outOffsetForDimsPos[tileIdx];
         for (size_t i = 0; i < dimSize; i++) {
@@ -350,7 +533,7 @@ Operation *lowerGenericOpWithResolvedLayouts(
           cast<RankedTensorType>(inputOperand->get().getType()).getRank();
       SmallVector<int64_t> transposePerm =
           llvm::to_vector(llvm::seq<int64_t>(0, inRank));
-      for (auto perm : materializeEncodingInfo.swizzle->permutation) {
+      for (auto perm : materializeEncodingInfo.swizzle->permutation()) {
         transposePerm.push_back(inRank + perm);
       }
       applyPermutationToVector(packedResultDims, transposePerm);
@@ -404,8 +587,36 @@ Operation *lowerGenericOpWithResolvedLayouts(
       builder, genericOp.getLoc(), convertedResultTypes, convertedInputOperands,
       convertedOutputOperands, packedIndexingMaps, iteratorTypes,
       /*bodyBuild=*/nullptr, linalg::getPrunedAttributeList(genericOp));
+
+  // Clone the region with proper remapping of linalg.index operations.
+  // After packing, linalg.index ops need to compute the original index from
+  // the packed dimensions.
+  Block *origBlock = genericOp.getBlock();
+  int64_t origRank =
+      cast<RankedTensorType>(outputOperand->get().getType()).getRank();
+
+  // Create the entry block for the new generic op with matching argument types.
+  Region &newRegion = materializedGenericOp.getRegion();
+  Block *newBlock = builder.createBlock(
+      &newRegion, newRegion.begin(),
+      llvm::to_vector(origBlock->getArgumentTypes()),
+      SmallVector<Location>(origBlock->getNumArguments(), genericOp.getLoc()));
+
   IRMapping mapping;
-  genericOp.getRegion().cloneInto(&materializedGenericOp.getRegion(), mapping);
+  mapping.map(origBlock->getArguments(), newBlock->getArguments());
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(newBlock);
+  for (Operation &op : *origBlock) {
+    if (auto indexOp = dyn_cast<linalg::IndexOp>(&op)) {
+      Value newIndex = computePackedIndex(
+          builder, indexOp.getLoc(), indexOp.getDim(), origRank,
+          outMaterializeEncodingInfo, outOffsetForDimsPos, invOutSwizzlePerm);
+      mapping.map(indexOp.getResult(), newIndex);
+      continue;
+    }
+    builder.clone(op, mapping);
+  }
+
   return materializedGenericOp.getOperation();
 }
 

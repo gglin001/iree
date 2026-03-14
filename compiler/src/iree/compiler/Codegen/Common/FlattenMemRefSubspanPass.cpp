@@ -89,7 +89,7 @@ static bool isRankZeroOrOneMemRef(Type type) {
 }
 
 /// Flattens n-D MemRef to 1-D MemRef and allows other types.
-struct FlattenMemRefTypeConverter final : public TypeConverter {
+struct FlattenMemRefTypeConverter final : TypeConverter {
   FlattenMemRefTypeConverter() {
     // Allow all other types.
     addConversion([](Type type) -> std::optional<Type> { return type; });
@@ -150,15 +150,16 @@ static Value createTotalElementCountValue(ShapedType type,
 
 // Flattens memref allocation ops with more than 1 dimensions to 1 dimension.
 template <typename AllocOpTy>
-struct FlattenAlloc final : public OpConversionPattern<AllocOpTy> {
+struct FlattenAlloc final : OpConversionPattern<AllocOpTy> {
   using OpConversionPattern<AllocOpTy>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(AllocOpTy allocOp, typename AllocOpTy::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto oldType = dyn_cast<MemRefType>(allocOp.getType());
-    if (!oldType || !oldType.getLayout().isIdentity())
+    if (!oldType || !oldType.getLayout().isIdentity()) {
       return failure();
+    }
 
     Value dynamicDim = createTotalElementCountValue(
         oldType, allocOp.getDynamicSizes(), allocOp.getLoc(), rewriter);
@@ -172,12 +173,13 @@ struct FlattenAlloc final : public OpConversionPattern<AllocOpTy> {
 };
 
 /// Flattens memref global ops with more than 1 dimensions to 1 dimension.
-struct FlattenGlobal final : public OpConversionPattern<memref::GlobalOp> {
+struct FlattenGlobal final : OpConversionPattern<memref::GlobalOp> {
   using Base::Base;
 
   static Attribute flattenAttribute(Attribute value, ShapedType newType) {
-    if (!value)
+    if (!value) {
       return value;
+    }
     if (auto splatAttr = dyn_cast<SplatElementsAttr>(value)) {
       return splatAttr.reshape(newType);
     } else if (auto denseAttr = dyn_cast<DenseElementsAttr>(value)) {
@@ -194,8 +196,9 @@ struct FlattenGlobal final : public OpConversionPattern<memref::GlobalOp> {
   matchAndRewrite(memref::GlobalOp globalOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto oldType = dyn_cast<MemRefType>(globalOp.getType());
-    if (!oldType || !oldType.getLayout().isIdentity())
+    if (!oldType || !oldType.getLayout().isIdentity()) {
       return failure();
+    }
 
     auto tensorType = RankedTensorType::get({oldType.getNumElements()},
                                             oldType.getElementType());
@@ -213,21 +216,22 @@ struct FlattenGlobal final : public OpConversionPattern<memref::GlobalOp> {
 };
 
 /// Flattens memref global load ops with more than 1 dimensions to 1 dimension.
-struct FlattenGetGlobal final
-    : public OpConversionPattern<memref::GetGlobalOp> {
+struct FlattenGetGlobal final : OpConversionPattern<memref::GetGlobalOp> {
   using Base::Base;
 
   LogicalResult
   matchAndRewrite(memref::GetGlobalOp getOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto oldType = dyn_cast<MemRefType>(getOp.getType());
-    if (!oldType || !oldType.getLayout().isIdentity())
+    if (!oldType || !oldType.getLayout().isIdentity()) {
       return failure();
+    }
 
     auto globalOp = dyn_cast_if_present<memref::GlobalOp>(
         SymbolTable::lookupNearestSymbolFrom(getOp, getOp.getNameAttr()));
-    if (!globalOp)
+    if (!globalOp) {
       return failure();
+    }
 
     auto loadedValue = rewriter.createOrFold<memref::GetGlobalOp>(
         getOp.getLoc(), globalOp.getType(), getOp.getNameAttr());
@@ -240,7 +244,7 @@ struct FlattenGetGlobal final
 
 /// Flattens memref subspan ops with more than 1 dimensions to 1 dimension.
 struct FlattenBindingSubspan final
-    : public OpConversionPattern<IREE::HAL::InterfaceBindingSubspanOp> {
+    : OpConversionPattern<IREE::HAL::InterfaceBindingSubspanOp> {
   using Base::Base;
 
   LogicalResult
@@ -250,8 +254,9 @@ struct FlattenBindingSubspan final
     auto oldType = dyn_cast<MemRefType>(subspanOp.getType());
     // IREE subspan ops only use memref types with the default identity
     // layout maps.
-    if (!oldType)
+    if (!oldType) {
       return failure();
+    }
 
     OpFoldResult linearShape;
     if (oldType.hasStaticShape()) {
@@ -316,8 +321,7 @@ struct FlattenBindingSubspan final
 // TODO(ravishankarm): For now just handle the case where the result is 0D
 // memref, and offset is 0. This is how void pointers are modeled. Generalize if
 // necessary.
-struct FlattenReinterpretCast
-    : public OpConversionPattern<memref::ReinterpretCastOp> {
+struct FlattenReinterpretCast : OpConversionPattern<memref::ReinterpretCastOp> {
   using Base::Base;
 
   LogicalResult
@@ -369,10 +373,10 @@ static Value linearizeIndices(Value sourceValue, ValueRange indices,
         makeStridedLinearLayoutMap(strides, 0, builder.getContext());
     // Dynamic strides/offset will create symbols. There should be none for the
     // static case.
-    SmallVector<OpFoldResult> opFoldIndicies = getAsOpFoldResult(indices);
+    SmallVector<OpFoldResult> opFoldIndices = getAsOpFoldResult(indices);
     if (linearLayoutMap.getNumSymbols() == 0) {
       return affine::makeComposedAffineApply(builder, loc, linearLayoutMap,
-                                             opFoldIndicies);
+                                             opFoldIndices);
     }
   }
 
@@ -429,7 +433,7 @@ static Value linearizeIndices(Value sourceValue, ValueRange indices,
 }
 
 /// Flattens memref subspan ops with more than 1 dimensions to 1 dimension.
-struct FlattenSubView final : public OpConversionPattern<memref::SubViewOp> {
+struct FlattenSubView final : OpConversionPattern<memref::SubViewOp> {
   using Base::Base;
 
   LogicalResult
@@ -441,8 +445,9 @@ struct FlattenSubView final : public OpConversionPattern<memref::SubViewOp> {
     }
     Type neededResultType =
         getTypeConverter()->convertType(op.getResult().getType());
-    if (!neededResultType || !isRankZeroOrOneMemRef(neededResultType))
+    if (!neededResultType || !isRankZeroOrOneMemRef(neededResultType)) {
       return failure();
+    }
     Value size = createTotalElementCountValue(op.getType(), op.getSizes(),
                                               op.getLoc(), rewriter);
     SmallVector<Value> offsets = mlir::getValueOrCreateConstantIndexOp(
@@ -460,7 +465,7 @@ struct FlattenSubView final : public OpConversionPattern<memref::SubViewOp> {
 };
 
 /// Linearizes indices in memref.load ops.
-struct LinearizeLoadIndices final : public OpConversionPattern<memref::LoadOp> {
+struct LinearizeLoadIndices final : OpConversionPattern<memref::LoadOp> {
   using Base::Base;
 
   LogicalResult
@@ -485,7 +490,7 @@ struct LinearizeLoadIndices final : public OpConversionPattern<memref::LoadOp> {
 
 /// Linearizes indices in gpu.subgroup_mma_load_matrix ops.
 struct LinearizeMMALoadIndices final
-    : public OpConversionPattern<gpu::SubgroupMmaLoadMatrixOp> {
+    : OpConversionPattern<gpu::SubgroupMmaLoadMatrixOp> {
   using Base::Base;
 
   LogicalResult
@@ -510,8 +515,7 @@ struct LinearizeMMALoadIndices final
 };
 
 /// Linearizes indices in memref.store ops.
-struct LinearizeStoreIndices final
-    : public OpConversionPattern<memref::StoreOp> {
+struct LinearizeStoreIndices final : OpConversionPattern<memref::StoreOp> {
   using Base::Base;
 
   LogicalResult
@@ -536,7 +540,7 @@ struct LinearizeStoreIndices final
 
 /// Linearizes indices in gpu.subgroup_mma_store_matrix ops.
 struct LinearizeMMAStoreIndices final
-    : public OpConversionPattern<gpu::SubgroupMmaStoreMatrixOp> {
+    : OpConversionPattern<gpu::SubgroupMmaStoreMatrixOp> {
   using Base::Base;
 
   LogicalResult
@@ -563,7 +567,7 @@ struct LinearizeMMAStoreIndices final
 
 /// Linearizes indices in vector.transfer_read ops.
 struct LinearizeTransferReadIndices final
-    : public OpConversionPattern<vector::TransferReadOp> {
+    : OpConversionPattern<vector::TransferReadOp> {
   using Base::Base;
 
   LogicalResult
@@ -596,7 +600,7 @@ struct LinearizeTransferReadIndices final
 
 /// Linearizes indices in vector.transfer_write ops.
 struct LinearizeTransferWriteIndices final
-    : public OpConversionPattern<vector::TransferWriteOp> {
+    : OpConversionPattern<vector::TransferWriteOp> {
   using Base::Base;
 
   LogicalResult
@@ -627,7 +631,7 @@ struct LinearizeTransferWriteIndices final
 };
 
 /// Updates deallocations to the flattened allocation.
-struct FlattenDealloc final : public OpConversionPattern<memref::DeallocOp> {
+struct FlattenDealloc final : OpConversionPattern<memref::DeallocOp> {
   using Base::Base;
 
   LogicalResult
@@ -645,19 +649,21 @@ struct FlattenDealloc final : public OpConversionPattern<memref::DeallocOp> {
 
 /// Adjusts unrealized_conversion_cast ops' inputs to flattened memref values.
 struct AdjustConversionCast final
-    : public OpConversionPattern<UnrealizedConversionCastOp> {
+    : OpConversionPattern<UnrealizedConversionCastOp> {
   using Base::Base;
 
   LogicalResult
   matchAndRewrite(UnrealizedConversionCastOp castOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (castOp->getNumOperands() != 1)
+    if (castOp->getNumOperands() != 1) {
       return failure();
+    }
 
     Value input = adaptor.getOperands().front();
     // We only want to handle cases where the cast op handles memref types.
-    if (!isa<BaseMemRefType>(input.getType()))
+    if (!isa<BaseMemRefType>(input.getType())) {
       return failure();
+    }
 
     if (!isRankZeroOrOneMemRef(input.getType())) {
       return rewriter.notifyMatchFailure(
@@ -676,7 +682,7 @@ struct AdjustConversionCast final
 /// Removes MemRef reshape ops given that we'll linearize both the source and
 /// target type to the same one.
 template <typename ReshapeOpTy>
-struct FoldMemRefReshape final : public OpConversionPattern<ReshapeOpTy> {
+struct FoldMemRefReshape final : OpConversionPattern<ReshapeOpTy> {
   using OpConversionPattern<ReshapeOpTy>::OpConversionPattern;
 
   LogicalResult
@@ -695,8 +701,9 @@ struct FoldMemRefReshape final : public OpConversionPattern<ReshapeOpTy> {
     Type newSourceType = adaptor.getSrc().getType();
     Type neededResultType =
         typeConverter->convertType(op.getResult().getType());
-    if (!neededResultType)
+    if (!neededResultType) {
       return failure();
+    }
     if (newSourceType == neededResultType) {
       rewriter.replaceOp(op, adaptor.getSrc());
       return success();
@@ -713,8 +720,7 @@ struct FoldMemRefReshape final : public OpConversionPattern<ReshapeOpTy> {
 };
 
 /// Fold alignment hints.
-struct FoldAssumeAlignOp
-    : public OpConversionPattern<memref::AssumeAlignmentOp> {
+struct FoldAssumeAlignOp : OpConversionPattern<memref::AssumeAlignmentOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(memref::AssumeAlignmentOp op, OpAdaptor adaptor,
@@ -725,7 +731,7 @@ struct FoldAssumeAlignOp
 };
 
 /// Removes memref.cast that turns static shapes into dynamic shapes.
-struct RemoveDynamicCastOp final : public OpRewritePattern<memref::CastOp> {
+struct RemoveDynamicCastOp final : OpRewritePattern<memref::CastOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(memref::CastOp castOp,
@@ -769,8 +775,9 @@ struct FlattenMemRefSubspanPass final
         [](MemRefType type) -> std::optional<Type> {
           // 0-D MemRef types can be used to represent raw pointers for
           // micro-kernel ABI purposes. Specially allow it.
-          if (isRankZeroMemRef(type))
+          if (isRankZeroMemRef(type)) {
             return type;
+          }
 
           // Fall back to the default conversion flow.
           return std::nullopt;
@@ -786,8 +793,9 @@ struct FlattenMemRefSubspanPass final
     internalTypeConverter.addConversion(
         [](MemRefType type) -> std::optional<Type> {
           // 0-D or 1-D MemRef types are okay.
-          if (isRankZeroOrOneMemRef(type))
+          if (isRankZeroOrOneMemRef(type)) {
             return type;
+          }
 
           // Fall back to the default conversion flow.
           return std::nullopt;
@@ -857,8 +865,9 @@ struct FlattenMemRefSubspanPass final
         });
     target.addDynamicallyLegalOp<UnrealizedConversionCastOp>(
         [](UnrealizedConversionCastOp castOp) {
-          if (castOp->getNumOperands() != 1)
+          if (castOp->getNumOperands() != 1) {
             return false;
+          }
 
           Type inputType = castOp->getOperandTypes().front();
           return !isa<BaseMemRefType>(inputType) ||

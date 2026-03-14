@@ -12,7 +12,6 @@
 #include "iree/compiler/Dialect/Util/Transforms/Passes.h"
 #include "iree/compiler/Utils/PassUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Pass/PassOptions.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/Passes.h"
@@ -21,12 +20,6 @@ namespace mlir::iree_compiler::DispatchCreation {
 //===----------------------------------------------------------------------===//
 // Command Line Options
 //===----------------------------------------------------------------------===//
-
-static llvm::cl::opt<bool> clDetensoring(
-    "iree-dispatch-creation-enable-detensoring",
-    llvm::cl::desc(
-        "Enable changing of tensor operations into scalar operations."),
-    llvm::cl::init(false));
 
 static llvm::cl::opt<bool> clEnableElementWiseFuseMultiReduction(
     "iree-dispatch-creation-element-wise-fuse-multi-reduction",
@@ -40,19 +33,9 @@ static llvm::cl::opt<bool> clEnableEarlyTruncFusion(
         "consumers before forming dispatch regions"),
     llvm::cl::init(false));
 
-static llvm::cl::opt<bool> clEnableFusePaddingIntoLinalgConsumerOps(
-    "iree-dispatch-creation-enable-fuse-padding-into-linalg-consumer-ops",
-    llvm::cl::desc("Enable fusing tensor.pad ops into Linalg consumer ops."),
-    llvm::cl::init(false));
-
 static llvm::cl::opt<bool> clEnableFusePaddingIntoLinalgProducerOps(
     "iree-dispatch-creation-enable-fuse-padding-into-linalg-producer-ops",
     llvm::cl::desc("Enable fusing tensor.pad ops into Linalg consumer ops."),
-    llvm::cl::init(false));
-
-static llvm::cl::opt<bool> clEnablePadHandling(
-    "iree-flow-enable-pad-handling",
-    llvm::cl::desc("Enable native handling of tensor.pad operations."),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> clEnableFuseHorizontalContractions(
@@ -131,7 +114,13 @@ static void addDispatchRegionCreationPreprocessingPasses(
       // 2. Bubble up expand_shape ops (or sink collapse_shape ops) to get
       //    elementwise operation into higher dimensions for more fusion
       //    opportunities.
-      .addPass(DispatchCreation::createBubbleUpExpandShapesPass)
+      .addPass(DispatchCreation::createFoldReshapesIntoTensorBarriersPass)
+      .addPass([&]() {
+        return DispatchCreation::createBubbleUpExpandShapesPass(
+            DispatchCreation::BubbleUpExpandShapesPassOptions{
+                /*enableReshapeMovementAcrossReductions=*/
+                dispatchOptions.enableAggressiveReshapeMovement});
+      })
       .addPass(IREE::Flow::createCanonicalizePass)
       .addPass(mlir::createCSEPass)
 
@@ -152,11 +141,6 @@ static void addDispatchRegionCreationPreprocessingPasses(
       //    producer-consumer fusion.
       .addPass(DispatchCreation::createSinkReshapesPass)
       .addPass(IREE::Flow::createCanonicalizePass)
-      .addPass(mlir::createCSEPass)
-
-      // 5. Remove tensor barriers after the preprocessing passes.
-      .addPass(DispatchCreation::createRemoveTensorBarriersPass)
-      .addPass(IREE::Flow::createCanonicalizePass)
       .addPass(mlir::createCSEPass);
 
   if (clEnableFuseHorizontalContractions) {
@@ -174,9 +158,6 @@ static void addDispatchRegionCreationPreprocessingPasses(
           DispatchCreation::createFuseMultiUseElementwiseProducerPass)
 
       // 6. Some more "post elementwise fusion passes".
-      //    a. Detensorize.
-      //       TODO: This is probably not in the right place.
-      .addPredicatedPass(clDetensoring, mlir::createLinalgDetensorizePass)
       .addPass(IREE::Flow::createCanonicalizePass)
       .addPass(mlir::createCSEPass)
 
@@ -186,9 +167,10 @@ static void addDispatchRegionCreationPreprocessingPasses(
       //        - Split reduction using partial reduction tiling.
       .addPredicatedPass(dispatchOptions.enableSplitReduction,
                          DispatchCreation::createSetSplitReductionSizesPass)
-      .addPass([]() {
+      .addPass([&]() {
         FormSplitReductionDispatchesPassOptions options;
-        options.enableFusePad = clEnableFusePaddingIntoLinalgConsumerOps;
+        options.enableFusePad =
+            dispatchOptions.enableFusePaddingIntoLinalgConsumerOps;
         return DispatchCreation::createFormSplitReductionDispatchesPass(
             options);
       })
@@ -231,7 +213,7 @@ static void addDispatchRegionCreationPasses(OpPassManager &passManager,
         return DispatchCreation::createFormDispatchRegionsPass(
             FormDispatchRegionsPassOptions{
                 options.enableAggressiveFusion,
-                clEnableFusePaddingIntoLinalgConsumerOps,
+                options.enableFusePaddingIntoLinalgConsumerOps,
                 clEnableFusePaddingIntoLinalgProducerOps});
       })
       // Elementwise fuse operations that are iside a dispatch if possible.
@@ -247,11 +229,12 @@ static void addDispatchRegionCreationPasses(OpPassManager &passManager,
       .addPass([] {
         FuseMultiUseElementwiseProducerPassOptions options;
         options.intraDispatch = true;
+        options.numIterations = 32;
         return DispatchCreation::createFuseMultiUseElementwiseProducerPass(
             options);
       })
 
-      // Clone all producers into the dispatch region to perpare for being
+      // Clone all producers into the dispatch region to prepare for being
       // isolated from above. This enables running additional transformations
       // afterwards that would need the full dispatch content but don't want to
       // handle explicit captures as materialized as dispatch workgroup operands
@@ -313,6 +296,10 @@ static void addDispatchRegionCreationPasses(OpPassManager &passManager,
     passManager.addPass(
         IREE::Util::createHoistIntoGlobalsPass(hoistingOptions));
   }
+
+  // Remove tensor compute_barriers at the end of dispatch region creation.
+  FunctionLikeNest(passManager)
+      .addPass(DispatchCreation::createRemoveTensorBarriersPass);
 }
 
 // Apply preprocessing and form dispatch regions
@@ -326,12 +313,13 @@ void buildDispatchCreationPassPipeline(
 
   // Transform pad operations into linalg.fill + tensor.insert_slice.
   // This is a WAR for not having native pad handling.
-  if (!clEnablePadHandling && !clEnableFusePaddingIntoLinalgProducerOps) {
+  if (!transformOptions.enablePadHandling &&
+      !clEnableFusePaddingIntoLinalgProducerOps) {
     passManager.addPass(
         DispatchCreation::createTensorPadToTensorInsertSlicePass(
             TensorPadToTensorInsertSlicePassOptions{
                 /*skipSingleLinalgOpUses=*/
-                clEnableFusePaddingIntoLinalgConsumerOps}));
+                transformOptions.enableFusePaddingIntoLinalgConsumerOps}));
   }
 
   {

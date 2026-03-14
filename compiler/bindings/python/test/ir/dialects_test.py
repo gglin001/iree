@@ -39,6 +39,7 @@ from iree.compiler.dialects import (
     rocdl,
     scf,
     shape,
+    smt,
     tensor,
     tosa,
     transform,
@@ -58,6 +59,7 @@ from iree.compiler.dialects import (
     util,
     iree_codegen,
     iree_gpu,
+    iree_tensor_ext,
     preprocessing_transform,
 )
 
@@ -162,51 +164,51 @@ def gpu_pipeline_options_attr():
     assert reorder_attr.value == iree_gpu.ReorderWorkgroupsStrategy.Transpose
 
     gpu_attr = iree_gpu.PipelineOptionsAttr.get(
-        True,
+        2,
         False,
         False,
         reorder_attr,
     )
     assert type(gpu_attr) is iree_gpu.PipelineOptionsAttr
-    assert gpu_attr.prefetch_shared_memory
+    assert gpu_attr.prefetch_num_stages == 2
     assert not gpu_attr.no_reduce_shared_memory_bank_conflicts
     assert not gpu_attr.use_igemm_convolution
 
     gpu_attr = iree_gpu.PipelineOptionsAttr.get(
-        False,
+        0,
         True,
         True,
         iree_gpu.ReorderWorkgroupsStrategyAttr.get(
             iree_gpu.ReorderWorkgroupsStrategy.Transpose
         ),
     )
-    assert not gpu_attr.prefetch_shared_memory
+    assert gpu_attr.prefetch_num_stages == 0
     assert gpu_attr.no_reduce_shared_memory_bank_conflicts
     assert gpu_attr.use_igemm_convolution
 
     gpu_attr = iree_gpu.PipelineOptionsAttr.get()
     assert (
-        gpu_attr.prefetch_shared_memory is None
+        gpu_attr.prefetch_num_stages is None
         and gpu_attr.no_reduce_shared_memory_bank_conflicts is None
         and gpu_attr.use_igemm_convolution is None
         and gpu_attr.reorder_workgroups_strategy is None
     )
 
-    gpu_attr = iree_gpu.PipelineOptionsAttr.get(True)
-    assert gpu_attr.prefetch_shared_memory
+    gpu_attr = iree_gpu.PipelineOptionsAttr.get(2)
+    assert gpu_attr.prefetch_num_stages == 2
     assert (
         gpu_attr.no_reduce_shared_memory_bank_conflicts is None
         and gpu_attr.use_igemm_convolution is None
         and gpu_attr.reorder_workgroups_strategy is None
     )
 
-    gpu_attr = iree_gpu.PipelineOptionsAttr.get(True, False)
+    gpu_attr = iree_gpu.PipelineOptionsAttr.get(2, False)
     assert (
         gpu_attr.use_igemm_convolution is None
         and gpu_attr.reorder_workgroups_strategy is None
     )
 
-    gpu_attr = iree_gpu.PipelineOptionsAttr.get(True, False, False)
+    gpu_attr = iree_gpu.PipelineOptionsAttr.get(2, False, False)
     assert gpu_attr.reorder_workgroups_strategy is None
 
     gpu_attr = iree_gpu.PipelineOptionsAttr.get(
@@ -216,7 +218,7 @@ def gpu_pipeline_options_attr():
         gpu_attr.no_reduce_shared_memory_bank_conflicts is not None
         and not gpu_attr.no_reduce_shared_memory_bank_conflicts
     )
-    assert gpu_attr.prefetch_shared_memory is None
+    assert gpu_attr.prefetch_num_stages is None
     assert gpu_attr.use_igemm_convolution is None
     assert gpu_attr.reorder_workgroups_strategy is None
 
@@ -290,6 +292,27 @@ def mma_intrinsic_attr():
     virtual_mma_intrinsics = mma_attr.get_virtual_intrinsics()
     assert virtual_mma_intrinsics == []
 
+    mma_attr_col_major = iree_gpu.MMAAttr.get(
+        iree_gpu.MMAIntrinsic.MFMA_F32_32x32x8_F16, col_major=True
+    )
+    assert mma_attr_col_major is not None
+    assert "col_major = true" in str(mma_attr_col_major)
+    assert mma_attr_col_major.col_major
+
+    M, N, K = mma_attr_col_major.mnk_shape
+    assert M == 32 and N == 32 and K == 8
+
+    mma_attr_row_major = iree_gpu.MMAAttr.get(
+        iree_gpu.MMAIntrinsic.MFMA_F32_32x32x8_F16, col_major=False
+    )
+    assert mma_attr_row_major is not None
+    assert "col_major" not in str(mma_attr_row_major)
+    assert not mma_attr_row_major.col_major
+
+    mma_attr_default = iree_gpu.MMAAttr.get(iree_gpu.MMAIntrinsic.MFMA_F32_32x32x8_F16)
+    assert str(mma_attr_default) == str(mma_attr_row_major)
+    assert not mma_attr_default.col_major
+
 
 @run
 def virtual_mma_intrinsic_attr():
@@ -347,6 +370,29 @@ def virtual_mma_intrinsic_attr():
     assert K == 32
 
     assert virtual_mma_intrinsic_attr.mma == virtual_mma_attr
+
+    virtual_mma_attr_col_major = iree_gpu.VirtualMMAAttr.get(
+        iree_gpu.VirtualMMAIntrinsic.VMFMA_F32_16x16x32_F16, col_major=True
+    )
+    assert virtual_mma_attr_col_major is not None
+    assert "col_major = true" in str(virtual_mma_attr_col_major)
+    assert virtual_mma_attr_col_major.col_major
+
+    M, N, K = virtual_mma_attr_col_major.mnk_shape
+    assert M == 16 and N == 16 and K == 32
+
+    virtual_mma_attr_row_major = iree_gpu.VirtualMMAAttr.get(
+        iree_gpu.VirtualMMAIntrinsic.VMFMA_F32_16x16x32_F16, col_major=False
+    )
+    assert virtual_mma_attr_row_major is not None
+    assert "col_major" not in str(virtual_mma_attr_row_major)
+    assert not virtual_mma_attr_row_major.col_major
+
+    virtual_mma_attr_default = iree_gpu.VirtualMMAAttr.get(
+        iree_gpu.VirtualMMAIntrinsic.VMFMA_F32_16x16x32_F16
+    )
+    assert str(virtual_mma_attr_default) == str(virtual_mma_attr_row_major)
+    assert not virtual_mma_attr_default.col_major
 
 
 @run
@@ -688,6 +734,17 @@ def gpu_target_info_constructor_error_cases():
         assert False, "Expected TypeError for wrong MMA intrinsic object type"
     except TypeError:
         pass
+
+
+# ======================================================================
+# IREE TensorExt Dialect
+# ======================================================================
+
+
+@run
+def iree_tensor_ext_smoke_test():
+    # Make sure that generated op bindings are accessible.
+    assert issubclass(iree_tensor_ext.ComputeBarrierStartOp, ir.OpView)
 
 
 # ======================================================================

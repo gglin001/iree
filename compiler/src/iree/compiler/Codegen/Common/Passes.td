@@ -91,46 +91,91 @@ def ConvertBf16ArithToF32Pass : Pass<"iree-convert-bf16-arith-to-f32", ""> {
   let summary = "Convert bf16 arithmetic operations to f32";
 }
 
-def ConvertBf16ToUInt16BuffersPass :
-    Pass<"iree-codegen-convert-bf16-to-uint16-buffers", ""> {
-  let summary = "Convert BF16 buffer ops and conversions to simulated behavior with uint16.";
+def ConvertUnsupportedFloatToIntBuffersPass :
+    Pass<"iree-codegen-convert-unsupported-float-to-int-buffers", ""> {
+  let summary = "Convert unsupported float buffer types to integer types of same bit width.";
+  let description = [{
+    Converts buffer operations with unsupported float element types to use
+    integer types of the same bit width. This is used for backends that don't
+    support certain float types natively (e.g., SPIR-V without fp8 extensions).
+
+    The actual float arithmetic should already be emulated by
+    ConvertUnsupportedFloatArithPass before this pass runs.
+  }];
+  let options = [
+    Option<"includeBf16", "include-bf16", "bool", /*default=*/"true",
+           "Convert BF16 buffers to i16">,
+    Option<"includeF8E5M2", "include-f8e5m2", "bool", /*default=*/"true",
+           "Convert F8E5M2 buffers to i8">,
+    Option<"includeF8E4M3FN", "include-f8e4m3fn", "bool", /*default=*/"true",
+           "Convert F8E4M3FN buffers to i8">,
+    Option<"includeF8E5M2FNUZ", "include-f8e5m2fnuz", "bool", /*default=*/"true",
+           "Convert F8E5M2FNUZ buffers to i8">,
+    Option<"includeF8E4M3FNUZ", "include-f8e4m3fnuz", "bool", /*default=*/"true",
+           "Convert F8E4M3FNUZ buffers to i8">,
+    Option<"includeF8E8M0FNU", "include-f8e8m0fnu", "bool", /*default=*/"true",
+           "Convert F8E8M0FNU (MX scale) buffers to i8">,
+  ];
 }
 
 def ConvertUnsupportedFloatArithPass
     : InterfacePass<"iree-convert-unsupported-float-arith",
                     "mlir::FunctionOpInterface"> {
-  let summary = "Convert arith operations on unsupported(source types) float "
-                "types to the target type. Populates the source and target "
-                "based on the target architecture.";
-}
-
-def ConvertToDestinationPassingStylePass :
-    InterfacePass<"iree-codegen-convert-to-destination-passing-style", "mlir::FunctionOpInterface"> {
-  let summary =
-      "Transforms the code to make the dispatch use destination-passing style";
+  let summary = "Emulate arith operations on unsupported float types (e.g., fp8).";
   let description = [{
-    Converts entry point function within dispatch regions to use
-    destination-passing style, which is better suited for the upstream
-    comprehensive bufferization pass.
+    Emulates floating-point operations on types not natively supported by the
+    target backend. The pass:
+
+    1. Wraps unsupported float operations with extf/truncf pairs to perform
+       arithmetic in a supported type (e.g., f32).
+
+    2. Emulates extf/truncf operations using integer bit manipulation, if the
+       backend doesn't natively support fpext/fptrunc for fp4/fp8 types.
+
+    The emulation follows IREE's runtime/src/iree/base/internal/math.h, including
+    IEEE 754 round-to-nearest-even semantics and proper handling of denormals,
+    NaN, Inf, and special encodings (FNUZ types).
+
+    Note: arith.scaling_extf/truncf operations (used for MX/microscaling) are
+    preserved and handled by separate expansion patterns in later passes.
   }];
   let options = [
-    Option<"convertInputsToDestinations", "convert-inputs-to-destinations",
+    Option<"enableExtTruncEmulation", "enable-ext-trunc-emulation",
            "bool", /*default=*/"true",
-           "Controls whether to adjust consumers to convert one of its inputs to a destination">,
-    Option<"useWARForCooperativeMatrixCodegen", "use-war-for-cooperative-matrix-codegen",
-           "bool", /*default=*/"false",
-           "WAR for failure in Cooperative matrix codegen pipelines. See #10648.">
+           "Enable software emulation for extf/truncf of fp4/fp8 types "
+           "without hardware support. When disabled, types requiring emulation "
+           "will be left unconverted and may cause errors in later passes.">
   ];
 }
 
-def CombineLayoutTransformationPass :
-    InterfacePass<"iree-codegen-combine-layout-transformation", "mlir::FunctionOpInterface"> {
+def ConvertWorkgroupForallToPCFPass
+    : Pass<"iree-codegen-convert-workgroup-forall-to-pcf"> {
+  let summary = "Converts workgroup mapped scf.forall ops to pcf.loop";
+  let description = [{
+    Converts `scf.forall` ops with `#iree_codegen.workgroup_mapping` attributes
+    to `pcf.loop` ops with workgroup scope.
+
+    The input is IR containing `scf.forall` ops mapped to workgroups via
+    `#iree_codegen.workgroup_mapping<x/y/z>` attributes. The pass linearizes
+    all workgroup IDs down to a single dimension to handle cases where multiple
+    foralls have incompatible delinearization bases.
+
+    The output replaces each matching forall with a `pcf.loop` using
+    `#iree_codegen.workgroup_scope<linearize>` scope. Additionally, an
+    `iree_codegen.workgroup_count_hint` is inserted before each loop to
+    communicate the required workgroup count to the export's count region.
+  }];
+  let dependentDialects = ["iree_compiler::IREE::PCF::PCFDialect"];
+}
+
+def CombineResultLayoutTransformationPass :
+    InterfacePass<"iree-codegen-combine-result-layout-transformation", "mlir::FunctionOpInterface"> {
   let summary =
-    "Combines layout transformation operations into a single map_scatter operation.";
+    "Combines layout transformation operations into a single map_store operation.";
   let description = [{
     Starting from the specified leaf ops, iteratively combine producer
     layout/indexing transformation ops (linalg.transpose, tensor.collapse_shape,
-    etc.) into a single iree_linalg_ext.map_scatter operation. For tensor.pad
+    etc.) into a single iree_linalg_ext.map_store operation. For tensor.pad
     ops, the writing of pad values is distributed to workgroups, and then the
     padding values are written directly to the output buffer of the
     store_to_buffer op.
@@ -150,8 +195,33 @@ def CombineLayoutTransformationPass :
   ];
   let dependentDialects = [
     "iree_compiler::IREE::LinalgExt::IREELinalgExtDialect",
+    "iree_compiler::IREE::Util::UtilDialect",
     "scf::SCFDialect",
     "tensor::TensorDialect"
+  ];
+}
+
+def CombineSourceLayoutTransformationPass :
+    InterfacePass<"iree-codegen-combine-source-layout-transformation", "mlir::FunctionOpInterface"> {
+  let summary =
+    "Combines layout transformation operations into a single map_load operation.";
+  let description = [{
+    Starting from `iree_codegen.load_from_buffer` ops, iteratively combine
+    consumer layout/indexing transformation ops (linalg.transpose,
+    tensor.collapse_shape, tensor.expand_shape, tensor.extract_slice,
+    tensor.pad, etc.) into a single iree_linalg_ext.map_load operation.
+  }];
+  let options = [
+    Option<"testCombineNonComplexChains", "test-combine-non-complex-chains",
+           "bool", /*default=*/"false",
+           "For lit-testing: combine all relayout chains, not just complex ones. Not for general usage.">,
+  ];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "iree_compiler::IREE::LinalgExt::IREELinalgExtDialect",
+    "tensor::TensorDialect",
+    "ub::UBDialect"
   ];
 }
 
@@ -307,6 +377,92 @@ def ReconcileTranslationInfoPass
   ];
 }
 
+def ResolveWorkgroupCountHintsPass
+    : Pass<"iree-codegen-resolve-workgroup-count-hints", "IREE::HAL::ExecutableVariantOp"> {
+  let summary = "Materialize workgroup count hints in the workgroup count region per export.";
+  let description = [{
+    Resolves `iree_codegen.workgroup_count_hint` ops by materializing a globally
+    agreeable workgroup count per export. This pass performs a depth-first walk
+    of the target variant's call graph constructing the necessary information to
+    materialize workgroup count hints for that function.
+
+    #### Supported IR Structure
+
+    The pass expects executable variants containing exports with associated
+    entry point functions. Each entry point function (or functions it calls)
+    may contain `iree_codegen.workgroup_count_hint` ops:
+
+    ```mlir
+    hal.executable.export @entry_point
+        count(%device: !hal.device, %workload: index) -> (index, index, index) {
+      %x, %y, %z = iree_tensor_ext.dispatch.workgroup_count_from_slice %workload
+      hal.return %x, %y, %z : index, index, index
+    }
+    module {
+      func.func @entry_point(%device: !hal.device) {
+        %workload = iree_tensor_ext.dispatch.workload.ordinal %val, 0 : index
+        iree_codegen.workgroup_count_hint sizes(%workload)
+      }
+    }
+    ```
+
+    #### Supported Control Flow
+
+    The pass handles the following control flow patterns:
+
+    1. **Direct hints**: Workgroup count hints directly in entry point functions.
+
+    2. **Transitive function calls**: Hints in functions called (directly or
+       transitively) from the entry point. The backward slice of operands
+       required to compute the hint is tracked across call boundaries.
+
+    3. **Conditional hints (`scf.if`)**: When hints are wrapped in `scf.if`
+       operations, the conditions are preserved in the workgroup count region
+       if possible.
+       ```mlir
+       %o0 = iree_tensor_ext.dispatch.workload.ordinal ...
+       %o1 = iree_tensor_ext.dispatch.workload.ordinal ...
+       %cond = arith.cmpi ..., %o0, %o1
+       scf.if %cond {
+         iree_codegen.workgroup_count_hint sizes(%x, %y, %z)
+       } else {
+         iree_codegen.workgroup_count_hint sizes(%a, %b, %c)
+       }
+       ```
+       This generates an `scf.if` in the workgroup count region rather than
+       pessimistically taking the maximum.
+
+    #### Resolution of Multiple Hints
+
+    When multiple `workgroup_count_hint` ops contribute to the same export
+    (either directly or through function calls), the final workgroup count
+    is computed as the **elementwise maximum** across all hints:
+
+    ```mlir
+    // Given:
+    iree_codegen.workgroup_count_hint sizes(%x, %y, %z)
+    iree_codegen.workgroup_count_hint sizes(%a, %b, %c)
+
+    // Resolves to:
+    %wx = arith.maxsi %x, %a
+    %wy = arith.maxsi %y, %b
+    %wz = arith.maxsi %z, %c
+    hal.return %wx, %wy, %wz
+    ```
+
+    #### Backward Slice Requirements
+
+    The backward slice of hint operands must consist only of:
+    - `iree_tensor_ext.dispatch.workload.ordinal` ops (leaf values)
+    - Pure/side-effect-free operations
+    - Function arguments (for transitive call support)
+
+    Operations with memory effects or that depend on device-local values
+    (e.g., `hal.interface.*` ops, workgroup/thread IDs) result in a compiler
+    error for hint operands and omit conditionals for `scf.if` operands.
+  }];
+}
+
 def ReplaceSlowMinMaxOpsPass
     : InterfacePass<"iree-codegen-replace-slow-min-max-ops", "mlir::FunctionOpInterface"> {
   let summary =
@@ -326,6 +482,13 @@ def EmulateNarrowTypePass :
     A pass to emulate memref load operations that use narrow integer types
     with equivalent operations on supported wide integer types.
   }];
+  let options = [
+    Option<"disableAtomicRMW", "disable-atomic-rmw",
+           "bool", /*default=*/"false",
+           "Indicates that atomic ops are not allowed in the emulation. It can "
+           "be enabled if the target can guarantee no concurrent accesses to "
+           "the same memory location.">
+  ];
 }
 
 def EraseDeadAllocAndStoresPass :
@@ -388,6 +551,11 @@ def FlattenMemRefSubspanPass : Pass<"iree-codegen-flatten-memref-subspan", "Modu
     on subspan ops to the consumer load/store ops, in preparation for lowering
     to backends that require linearized access.
   }];
+}
+
+def FlattenSwizzleHintAllocsPass :
+    InterfacePass<"iree-codegen-flatten-swizzle-hint-allocs", "mlir::FunctionOpInterface"> {
+  let summary = "Flattens allocations associated with iree_codegen.swizzle_hint ops";
 }
 
 def FoldAffineMinInDistributedLoopsPass :
@@ -457,7 +625,9 @@ def GenericVectorizationPass :
       "Enable folding casting ops into vector.contract.">,
     Option<"maxVectorSize", "max-vector-size", "int64_t",
             /*default=*/"2147483647",
-           "Max vector size allowed to avoid creating large vectors.">
+           "Max vector size allowed to avoid creating large vectors.">,
+    Option<"vectorizeMapStore", "vectorize-map-store", "bool", /*default=*/"false",
+      "Enable vectorization of iree_linalg_ext.map_store operations via VectorizableOpInterface.">
   ];
   let dependentDialects = [
     "::mlir::arith::ArithDialect"
@@ -503,6 +673,11 @@ def IREEBufferizeConstantsPass :
   let summary = "Convert from arith.constant on tensors to buffers";
 }
 
+def IREECodegenAffineExpandIndexOpsPass :
+    Pass<"iree-codegen-affine-expand-index-ops", ""> {
+  let summary = "Expand affine index ops with region simplification config";
+}
+
 def IREECodegenCanonicalizerPass :
     Pass<"iree-codegen-canonicalize", ""> {
   let summary = "Codegen canonicalization pass with IREE specific patterns";
@@ -510,6 +685,16 @@ def IREECodegenCanonicalizerPass :
     Option<"testConvergence", "test-convergence", "bool",
            /*default=*/"false", "Fails if the patterns fail to converge">
   ];
+}
+
+def IREECodegenFoldMemRefAliasOpsPass :
+    Pass<"iree-codegen-fold-memref-alias-ops", ""> {
+  let summary = "Fold memref alias ops with region simplification config";
+}
+
+def IREECodegenLowerAffinePass :
+    Pass<"iree-codegen-lower-affine", ""> {
+  let summary = "Lower affine operations to standard with region simplification config";
 }
 
 def IREEComprehensiveBufferizePass :
@@ -546,6 +731,25 @@ def IREEInjectAssumeAlignmentPass :
 def InstrumentMemoryAccessesPass :
     InterfacePass<"iree-codegen-instrument-memory-accesses", "mlir::FunctionOpInterface"> {
   let summary = "Instruments memory reads and writes for address tracking when dispatch instrumentation is enabled.";
+}
+
+def InsertBatchDimForBatchlessConvPass :
+    InterfacePass<"iree-codegen-insert-batch-dim-for-batchless-conv", "mlir::FunctionOpInterface"> {
+  let summary = "Inserts batch dimension for batch-less convolutions.";
+  let description = [{
+    Detects convolution operations that have been generalized and had their
+    batch dimension (N=1) stripped by upstream IREE transformations. It
+    restores the batch dimension by inserting tensor.expand_shape and
+    tensor.collapse_shape operations, enabling downstream convolution-specific
+    patterns (like DownscaleConv and vectorization) to match and apply.
+
+    The reshape operations are propagated to the boundary and folded into
+    dispatch tensor load/store operations, resulting in zero runtime cost.
+  }];
+  let dependentDialects = [
+    "linalg::LinalgDialect",
+    "tensor::TensorDialect"
+  ];
 }
 
 def LinkTuningSpecsPass : Pass<"iree-codegen-link-tuning-specs", "ModuleOp"> {
@@ -654,12 +858,39 @@ def MaterializeTuningSpecsPass : Pass<"iree-codegen-materialize-tuning-specs", "
     This attribute is expected to be short-lived and removed by
     `iree-codegen-materialize-user-configs`.
   }];
+  let options = [
+    Option<"tuningSpecPath", "tuning-spec-path", "std::string",
+           /*default=*/"\"\"",
+           "Path to a module containing a tuning spec (transform dialect library). "
+           "Accepts both MLIR text (.mlir) and bytecode (.mlirbc) formats.">,
+  ];
 }
 
 def MaterializeUserConfigsPass : Pass<"iree-codegen-materialize-user-configs", "ModuleOp"> {
   let summary = "Sets the lowering configs and translation info from user configs";
   let dependentDialects = [
       "transform::TransformDialect"
+  ];
+}
+
+def MaterializeVectorMaskingPass :
+    InterfacePass<"iree-codegen-materialize-vector-masking", "mlir::FunctionOpInterface"> {
+  let summary = "Materialize vector masking by unwrapping and decomposing.";
+  let description = [{
+    Materialize vector masking through two main transformations:
+    - Unwrap `vector.mask { vector.X }` patterns and pad the `vector.X` operands
+      with the corresponding identity values instead.
+    - Decompose `vector.create_mask` and `vector.constant_mask` operations into
+      a combination of `vector.step` and comparison with the mask bounds.
+    This materializes masking for downstream passes by eliminating the masking operation.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect"
+  ];
+  let options = [
+    Option<"decomposeMasks", "decompose-masks", "bool",
+           /*default=*/"true",
+           "Decompose vector.create_mask and vector.constant_mask operations.">,
   ];
 }
 
@@ -760,6 +991,21 @@ def RematerializeParallelOpsPass :
   let summary = "Pass to rematerialize and merge parallel ops into consumers.";
 }
 
+def RemoveIndexHintsPass :
+    InterfacePass<"iree-codegen-remove-index-hints", "mlir::FunctionOpInterface"> {
+  let summary = "Remove iree_codegen.index_hint operations";
+  let description = [{
+    This pass removes all iree_codegen.index_hint operations by replacing
+    them with their input values (pass-through semantics).
+
+    Index hints are used to convey optimization information to downstream
+    passes and should be cleaned up once that information has been consumed.
+  }];
+  let dependentDialects = [
+    "IREE::Codegen::IREECodegenDialect"
+  ];
+}
+
 def RemoveSingleIterationLoopPass :
     InterfacePass<"iree-codegen-remove-single-iteration-loop", "mlir::FunctionOpInterface"> {
   let summary = "Remove distributed loop with single iteration.";
@@ -832,35 +1078,12 @@ def TestPartitionableLoopsInterfacePass :
   let summary = "Test the PartitionableLoopsInterface";
 }
 
-def TestVectorLayoutAnalysisPass : Pass<"iree-codegen-test-vector-layout-analysis", ""> {
+def TestVectorLayoutAnalysisPass : InterfacePass<"iree-codegen-test-vector-layout-analysis", "mlir::FunctionOpInterface"> {
   let summary = "Test the vector layout analysis.";
   let description = [{
     Run VectorLayoutAnalysis on the root operation. The analysis emits remarks
-    for the layout for each SSA value infered on it's owning operation.
+    for the layout for each SSA value inferred on it's owning operation.
   }];
-}
-
-def TileAndDistributeToWorkgroupsPass :
-    InterfacePass<"iree-codegen-tile-and-distribute-to-workgroups", "mlir::FunctionOpInterface"> {
-  let summary = "Tile and distribute operations to workgroups";
-  let options = [
-    Option<"maxWorkgroupParallelDims", "max-workgroup-parallel-dims", "int32_t",
-      /*default=*/ "kNumMaxParallelDims",
-      "Maximum number of dims to distribute workgroups across.">,
-    Option<"distributionMethod", "distribution-method", "linalg::DistributionMethod",
-      /*default=*/ "linalg::DistributionMethod::Cyclic",
-      "Pick the distribution method. See linalg::DistributionMethod for details",
-      [{::llvm::cl::values(
-            clEnumValN(linalg::DistributionMethod::Cyclic,
-                       "0", "Use Cyclic strategy"),
-            clEnumValN(linalg::DistributionMethod::CyclicNumProcsGeNumIters,
-                       "1", "Use CyclicNumProcGeNumIter strategy"),
-            clEnumValN(linalg::DistributionMethod::CyclicNumProcsEqNumIters,
-                       "2", "Use CyclicNumProcEqNumIter strategy"),
-            clEnumValN(linalg::DistributionMethod::None,
-                       "3", "Use None strategy")
-        )}]>,
-  ];
 }
 
 def TileAndDistributeToWorkgroupsUsingForallOpPass :
@@ -916,7 +1139,7 @@ def TransformDialectInterpreterPass :
 
 def TypePropagationPass :
     InterfacePass<"iree-codegen-type-propagation", "mlir::FunctionOpInterface"> {
-  let summary = "Propogate the type of tensor to avoid load/stores of illegal bit widths";
+  let summary = "Propagate the type of tensor to avoid load/stores of illegal bit widths";
 }
 
 def UnrollAnnotatedLoopsPass :

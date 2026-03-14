@@ -30,7 +30,7 @@ namespace {
 /// expected to tile most dimensions to 1, so the winograd op is only a small
 /// tile of rank 2 for decomposition.
 template <typename TransformOp>
-struct FoldWinogradOpUnitDims : public OpRewritePattern<TransformOp> {
+struct FoldWinogradOpUnitDims : OpRewritePattern<TransformOp> {
   using OpRewritePattern<TransformOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(TransformOp transformOp,
@@ -69,14 +69,14 @@ struct FoldWinogradOpUnitDims : public OpRewritePattern<TransformOp> {
     }
 
     auto newInput = tensor::createCanonicalRankReducingExtractSliceOp(
-        rewriter, loc, transformOp.getInputs()[0], newInputType);
+        rewriter, loc, transformOp.getInput(), newInputType);
     auto newInit = tensor::createCanonicalRankReducingExtractSliceOp(
-        rewriter, loc, transformOp.getOutputs()[0], newOutputType);
+        rewriter, loc, transformOp.getOutput(), newOutputType);
     auto rankReducedTransform = clone(rewriter, transformOp, newOutputType,
                                       ValueRange{newInput, newInit});
     auto insertSliceOp = tensor::createCanonicalRankReducingInsertSliceOp(
         rewriter, loc, rankReducedTransform->getResult(0),
-        transformOp.getOutputs()[0]);
+        transformOp.getOutput());
     rewriter.replaceOp(transformOp, insertSliceOp);
 
     return success();
@@ -111,7 +111,7 @@ struct FoldWinogradOpUnitDims : public OpRewritePattern<TransformOp> {
 ///     outs(%init_1 : tensor<8x8xf32>) -> tensor<8x8xf32>
 /// ````
 struct DecomposeWinogradFilterTransform
-    : public OpRewritePattern<WinogradFilterTransformOp> {
+    : OpRewritePattern<WinogradFilterTransformOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(WinogradFilterTransformOp transformOp,
@@ -193,7 +193,7 @@ struct DecomposeWinogradFilterTransform
 ///     outs(%init_1 : tensor<8x8xf32>) -> tensor<8x8xf32>
 /// ````
 struct DecomposeWinogradInputTransform
-    : public OpRewritePattern<WinogradInputTransformOp> {
+    : OpRewritePattern<WinogradInputTransformOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(WinogradInputTransformOp transformOp,
@@ -276,7 +276,7 @@ struct DecomposeWinogradInputTransform
 ///     outs(%init_1 : tensor<6x6xf32>) -> tensor<6x6xf32>
 /// ````
 struct DecomposeWinogradOutputTransform
-    : public OpRewritePattern<WinogradOutputTransformOp> {
+    : OpRewritePattern<WinogradOutputTransformOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(WinogradOutputTransformOp transformOp,

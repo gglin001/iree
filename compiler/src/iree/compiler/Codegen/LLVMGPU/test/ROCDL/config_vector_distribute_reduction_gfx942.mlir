@@ -61,10 +61,6 @@ func.func @attention_20x1x64x4096x64() {
 func.func @reduction_with_no_consumer() {
     %c0 = arith.constant 0 : index
     %cst = arith.constant 0.000000e+00 : f32
-    %cst_0 = arith.constant 4.096000e+04 : f32
-    %cst_1 = arith.constant 9.99999974E-6 : f32
-    %c69524992 = arith.constant 69524992 : index
-    %c74767872 = arith.constant 74767872 : index
     %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x32x10x4096xf16>>
     %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x32xf32>>
     %2 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0, 0, 0], sizes = [2, 32, 10, 4096], strides = [1, 1, 1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x32x10x4096xf16>> -> tensor<2x32x10x4096xf16>
@@ -88,11 +84,12 @@ func.func @reduction_with_no_consumer() {
 
 // CHECK-LABEL: func.func @reduction_with_no_consumer
 // CHECK:           lowering_config = #iree_gpu.lowering_config
-// CHECK-SAME:      lane_basis = {{\[}}[1, 1, 1, 64], [0, 1, 2, 3]
-// CHECK-SAME:      partial_reduction = [0, 0, 1, 4096]
-// CHECK-SAME:      subgroup_basis = {{\[}}[1, 1, 1, 8], [0, 1, 2, 3]
-// CHECK-SAME:      thread = [0, 0, 1, 8],
-// CHECK-SAME:      workgroup = [1, 1, 0, 0]
+// CHECK-SAME:      expand_dims = #iree_gpu.expand_dims<{{\[}}[0], [1], [2], [3, 4]{{\]}}, output_shape = [?, ?, ?, ?, 8]>
+// CHECK-SAME:      lane_basis = {{\[}}[1, 1, 1, 64, 1], [0, 1, 2, 3, 4]{{\]}}
+// CHECK-SAME:      partial_reduction = [0, 0, 1, 512, 0]
+// CHECK-SAME:      subgroup_basis = {{\[}}[1, 1, 1, 8, 1], [0, 1, 2, 3, 4]{{\]}}
+// CHECK-SAME:      thread = [0, 0, 1, 1, 8]
+// CHECK-SAME:      workgroup = [1, 1, 0, 0, 0]
 
 // -----
 
@@ -154,20 +151,22 @@ func.func @test_multiple_reduction() {
 // CHECK-SAME:    ins(%{{.*}} : tensor<2x32x10x16384xf32>)
 // CHECK-SAME:    outs({{.*}}: tensor<2x32xf32>)
 // CHECK-SAME:    attrs =  {lowering_config = #iree_gpu.lowering_config<{
-// CHECK-SAME:               lane_basis = {{\[}}[1, 1, 1, 64], [0, 1, 2, 3]],
-// CHECK-SAME:               partial_reduction = [0, 0, 1, 8192],
-// CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1, 16], [0, 1, 2, 3]],
-// CHECK-SAME:               thread = [0, 0, 1, 8],
-// CHECK-SAME:               workgroup = [1, 1, 0, 0]
+// CHECK-SAME:               expand_dims = #iree_gpu.expand_dims<{{\[}}[0], [1], [2], [3, 4]{{\]}}, output_shape = [?, ?, ?, ?, 8]>,
+// CHECK-SAME:               lane_basis = {{\[}}[1, 1, 1, 64, 1], [0, 1, 2, 3, 4]{{\]}},
+// CHECK-SAME:               partial_reduction = [0, 0, 1, 1024, 0],
+// CHECK-SAME:               subgroup_basis = {{\[}}[1, 1, 1, 16, 1], [0, 1, 2, 3, 4]{{\]}},
+// CHECK-SAME:               thread = [0, 0, 1, 1, 8],
+// CHECK-SAME:               workgroup = [1, 1, 0, 0, 0]
 // CHECK:       %{{.*}} = linalg.generic {indexing_maps = [#map, #map1, #map1],
 // CHECK-SAME:    iterator_types = ["parallel", "parallel", "reduction", "reduction"]}
 // CHECK-SAME:    ins{{.*}}, {{.*}} : tensor<2x32x10x16384xf32>, tensor<2x32xf32>)
 // CHECK-SAME:    outs(%{{.*}} : tensor<2x32xf32>)
 // CHECK-SAME:    attrs =  {lowering_config = #iree_gpu.lowering_config<{
-// CHECK-SAME:              lane_basis = {{\[}}[1, 1, 1, 64], [0, 1, 2, 3]],
-// CHECK-SAME:              partial_reduction = [0, 0, 1, 8192],
-// CHECK-SAME:              subgroup_basis = {{\[}}[1, 1, 1, 16], [0, 1, 2, 3]],
-// CHECK-SAME:              thread = [0, 0, 1, 8],
+// CHECK-SAME:              expand_dims = #iree_gpu.expand_dims<{{\[}}[0], [1], [2], [3, 4]{{\]}}, output_shape = [?, ?, ?, ?, 8]>,
+// CHECK-SAME:              lane_basis = {{\[}}[1, 1, 1, 64, 1], [0, 1, 2, 3, 4]{{\]}},
+// CHECK-SAME:              partial_reduction = [0, 0, 1, 1024, 0],
+// CHECK-SAME:              subgroup_basis = {{\[}}[1, 1, 1, 16, 1], [0, 1, 2, 3, 4]{{\]}},
+// CHECK-SAME:              thread = [0, 0, 1, 1, 8],
 // CHECK:       %{{.*}} = linalg.generic {indexing_maps = [#map, #map1, #map1, #map],
 // CHECK-SAME:    iterator_types = ["parallel", "parallel", "parallel", "parallel"]}
 // CHECK-SAME:    ins({{.*}}, %{{.*}}, {{.*}} : tensor<2x32x10x16384xf16>, tensor<2x32xf32>, tensor<2x32xf32>)
@@ -177,6 +176,81 @@ func.func @test_multiple_reduction() {
 // CHECK-SAME:              serial = [0, 0, 1, 8192],
 // CHECK-SAME:              subgroup_basis = {{\[}}[1, 1, 1, 16], [0, 1, 2, 3]],
 // CHECK-SAME:              thread = [0, 0, 0, 8],
+
+// -----
+
+// Test derived from NHWC layernorm and the bug reported in
+// https://github.com/iree-org/iree/issues/23340.
+// At the time, the VectorDistribute pipeline wasn't chosen for this input,
+// because the `threadLoads` determined purely based on the root reduction
+// operation doesn't divide the number of channels (3). Now `threadLoads`
+// is determined across all compute ops in the dispatch and VectorDistribute
+// is used.
+#pipeline_layout = #hal.pipeline.layout<bindings = [
+  #hal.pipeline.binding<storage_buffer, "ReadOnly|Indirect">,
+  #hal.pipeline.binding<storage_buffer, "ReadOnly|Indirect">,
+  #hal.pipeline.binding<storage_buffer, "ReadOnly|Indirect">,
+  #hal.pipeline.binding<storage_buffer, Indirect>
+], flags = Indirect>
+func.func @nhwc_layernorm_small_channel() {
+  %cst = arith.constant 0.000000e+00 : bf16
+  %cst_0 = arith.constant 4.915200e+04 : bf16
+  %cst_1 = arith.constant 9.99999974E-6 : f32
+  %c0 = arith.constant 0 : index
+  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) flags("ReadOnly|Indirect") : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x16384x3xbf16>>
+  %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) flags("ReadOnly|Indirect") : !iree_tensor_ext.dispatch.tensor<readonly:tensor<16384x3xbf16>>
+  %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(2) alignment(64) offset(%c0) flags("ReadOnly|Indirect") : !iree_tensor_ext.dispatch.tensor<readonly:tensor<16384x3xbf16>>
+  %3 = hal.interface.binding.subspan layout(#pipeline_layout) binding(3) alignment(64) offset(%c0) flags(Indirect) : !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x16384x3xbf16>>
+  %4 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0, 0], sizes = [2, 16384, 3], strides = [1, 1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<2x16384x3xbf16>> -> tensor<2x16384x3xbf16>
+  %5 = iree_tensor_ext.dispatch.tensor.load %1, offsets = [0, 0], sizes = [16384, 3], strides = [1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<16384x3xbf16>> -> tensor<16384x3xbf16>
+  %6 = iree_tensor_ext.dispatch.tensor.load %2, offsets = [0, 0], sizes = [16384, 3], strides = [1, 1] : !iree_tensor_ext.dispatch.tensor<readonly:tensor<16384x3xbf16>> -> tensor<16384x3xbf16>
+  %7 = tensor.empty() : tensor<2xbf16>
+  %8 = linalg.fill ins(%cst : bf16) outs(%7 : tensor<2xbf16>) -> tensor<2xbf16>
+  %9 = tensor.empty() : tensor<2x3x16384xbf16>
+  %10 = linalg.generic {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2, d1)>, affine_map<(d0, d1, d2) -> (d0, d1, d2)>], iterator_types = ["parallel", "parallel", "parallel"]} ins(%4 : tensor<2x16384x3xbf16>) outs(%9 : tensor<2x3x16384xbf16>) {
+  ^bb0(%in: bf16, %out: bf16):
+    linalg.yield %in : bf16
+  } -> tensor<2x3x16384xbf16>
+  %11 = linalg.generic {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>, affine_map<(d0, d1, d2) -> (d0)>], iterator_types = ["parallel", "reduction", "reduction"]} ins(%10 : tensor<2x3x16384xbf16>) outs(%8 : tensor<2xbf16>) {
+  ^bb0(%in: bf16, %out: bf16):
+    %16 = arith.addf %in, %out : bf16
+    linalg.yield %16 : bf16
+  } -> tensor<2xbf16>
+  %12 = linalg.generic {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>, affine_map<(d0, d1, d2) -> (d0)>, affine_map<(d0, d1, d2) -> (d0)>], iterator_types = ["parallel", "reduction", "reduction"]} ins(%10, %11 : tensor<2x3x16384xbf16>, tensor<2xbf16>) outs(%8 : tensor<2xbf16>) {
+  ^bb0(%in: bf16, %mean: bf16, %out: bf16):
+    %16 = arith.divf %mean, %cst_0 : bf16
+    %17 = arith.subf %in, %16 : bf16
+    %18 = arith.mulf %17, %17 : bf16
+    %19 = arith.addf %18, %out : bf16
+    linalg.yield %19 : bf16
+  } -> tensor<2xbf16>
+  %13 = tensor.empty() : tensor<2x16384x3xbf16>
+  %14 = linalg.generic {indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d2, d1)>, affine_map<(d0, d1, d2) -> (d0)>, affine_map<(d0, d1, d2) -> (d1, d2)>, affine_map<(d0, d1, d2) -> (d1, d2)>, affine_map<(d0, d1, d2) -> (d0, d1, d2)>], iterator_types = ["parallel", "parallel", "parallel"]} ins(%10, %12, %5, %6 : tensor<2x3x16384xbf16>, tensor<2xbf16>, tensor<16384x3xbf16>, tensor<16384x3xbf16>) outs(%13 : tensor<2x16384x3xbf16>) {
+  ^bb0(%in: bf16, %var: bf16, %scale: bf16, %bias: bf16, %out: bf16):
+    %16 = arith.divf %var, %cst_0 : bf16
+    %17 = arith.truncf %cst_1 : f32 to bf16
+    %18 = arith.addf %16, %17 : bf16
+    %19 = math.rsqrt %18 : bf16
+    %20 = arith.mulf %in, %19 : bf16
+    %21 = arith.mulf %20, %scale : bf16
+    %22 = arith.addf %21, %bias : bf16
+    linalg.yield %22 : bf16
+  } -> tensor<2x16384x3xbf16>
+  iree_tensor_ext.dispatch.tensor.store %14, %3, offsets = [0, 0, 0], sizes = [2, 16384, 3], strides = [1, 1, 1] : tensor<2x16384x3xbf16> -> !iree_tensor_ext.dispatch.tensor<writeonly:tensor<2x16384x3xbf16>>
+  return
+}
+
+// Verify VectorDistribute is selected despite small channel dimension.
+// The thread tile sizes should be 1 (not 8) because threadLoads was reduced
+// to satisfy the constraint from the parallel operations' last parallel
+// dim (3).
+
+// CHECK:       #iree_codegen.translation_info<pipeline = LLVMGPUVectorDistribute
+
+// CHECK-LABEL: func.func @nhwc_layernorm_small_channel
+// CHECK:       linalg.generic {{.*}} iterator_types = ["parallel", "reduction", "reduction"]{{.*}} thread = [0, 1, 1]
+// CHECK:       linalg.generic {{.*}} iterator_types = ["parallel", "reduction", "reduction"]{{.*}} thread = [0, 1, 1]
+// CHECK:       linalg.generic {{.*}} iterator_types = ["parallel", "parallel", "parallel"]{{.*}} thread = [0, 0, 1]
 
 // -----
 
@@ -254,11 +328,12 @@ func.func @test_multiple_stores(%arg0: !iree_tensor_ext.dispatch.tensor<readonly
 //  CHECK-SAME:               workgroup = [1, 0]
 //       CHECK:   linalg.generic
 //  CHECK-SAME:      attrs =  {lowering_config = #iree_gpu.lowering_config<{
-//  CHECK-SAME:               lane_basis = {{\[}}[1, 64], [0, 1]],
-//  CHECK-SAME:               partial_reduction = [0, 4096],
-//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 16], [0, 1]],
-//  CHECK-SAME:               thread = [0, 4],
-//  CHECK-SAME:               workgroup = [1, 0]
+//  CHECK-SAME:               expand_dims = #iree_gpu.expand_dims<{{\[}}[0], [1, 2]{{\]}}, output_shape = [?, ?, 4]>,
+//  CHECK-SAME:               lane_basis = {{\[}}[1, 64, 1], [0, 1, 2]{{\]}},
+//  CHECK-SAME:               partial_reduction = [0, 1024, 0],
+//  CHECK-SAME:               subgroup_basis = {{\[}}[1, 16, 1], [0, 1, 2]{{\]}},
+//  CHECK-SAME:               thread = [0, 1, 4],
+//  CHECK-SAME:               workgroup = [1, 0, 0]
 
 // -----
 
@@ -295,9 +370,9 @@ func.func @test_gather_config(%arg0: !iree_tensor_ext.dispatch.tensor<readonly:t
 //      CHECK:    linalg.yield
 //      CHECK:   linalg.generic
 // CHECK-SAME:      attrs =  {lowering_config = #iree_gpu.lowering_config<{
-// CHECK-SAME:               lane_basis = {{\[}}[1, 64], [0, 1]],
+// CHECK-SAME:               lane_basis = {{\[}}[1, 64], [0, 1]{{\]}},
 // CHECK-SAME:               partial_reduction = [0, 64],
-// CHECK-SAME:               subgroup_basis = {{\[}}[1, 1], [0, 1]],
+// CHECK-SAME:               subgroup_basis = {{\[}}[1, 1], [0, 1]{{\]}},
 // CHECK-SAME:               thread = [0, 1],
 // CHECK-SAME:               workgroup = [1, 0]
 
@@ -436,8 +511,46 @@ func.func @batch_matvec_f16_f32() {
 // CHECK-LABEL: @batch_matvec_f16_f32
 //       CHECK:   linalg.generic
 //  CHECK-SAME:      attrs = {lowering_config = #iree_gpu.lowering_config<{
-//  CHECK-SAME:                 lane_basis = {{\[}}[1, 1, 64], [0, 1, 2]],
-//  CHECK-SAME:                 partial_reduction = [0, 0, 512],
-//  CHECK-SAME:                 subgroup_basis = {{\[}}[1, 1, 1], [0, 1, 2]],
-//  CHECK-SAME:                 thread = [0, 0, 8],
-//  CHECK-SAME:                 workgroup = [4, 1, 0]
+//  CHECK-SAME:                 expand_dims = #iree_gpu.expand_dims<{{\[}}[0], [1], [2, 3]{{\]}}, output_shape = [?, ?, ?, 8]>,
+//  CHECK-SAME:                 lane_basis = {{\[}}[1, 1, 64, 1], [0, 1, 2, 3]{{\]}},
+//  CHECK-SAME:                 partial_reduction = [0, 0, 64, 0],
+//  CHECK-SAME:                 subgroup_basis = {{\[}}[1, 1, 1, 1], [0, 1, 2, 3]{{\]}},
+//  CHECK-SAME:                 thread = [0, 0, 1, 8],
+//  CHECK-SAME:                 workgroup = [4, 1, 0, 0]
+
+// -----
+
+#pipeline_layout = #hal.pipeline.layout<bindings = [
+  #hal.pipeline.binding<storage_buffer>,
+  #hal.pipeline.binding<storage_buffer>
+]>
+#map = affine_map<(d0, d1, d2, d3) -> (d3, d1 * 2, d2 * 2)>
+#map1 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+func.func @strided_reduction_no_expand_dims() {
+  %c0 = arith.constant 0 : index
+  %c0_i32 = arith.constant 0 : i32
+  %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) alignment(64) offset(%c0) flags(ReadOnly) :
+!iree_tensor_ext.dispatch.tensor<readonly:tensor<1152x28x28xi8>>
+  %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) :
+!iree_tensor_ext.dispatch.tensor<writeonly:tensor<1152x14x14xi32>>
+  %2 = iree_tensor_ext.dispatch.tensor.load %0, offsets = [0, 0, 0], sizes = [1152, 28, 28], strides = [1, 1, 1] :
+!iree_tensor_ext.dispatch.tensor<readonly:tensor<1152x28x28xi8>> -> tensor<1152x28x28xi8>
+  %3 = tensor.empty() : tensor<1152x14x14xi32>
+  %4 = linalg.fill ins(%c0_i32 : i32) outs(%3 : tensor<1152x14x14xi32>) -> tensor<1152x14x14xi32>
+  %5 = linalg.generic {
+    indexing_maps = [#map, #map1],
+    iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+  } ins(%2 : tensor<1152x28x28xi8>) outs(%4 : tensor<1152x14x14xi32>) {
+  ^bb0(%in: i8, %out: i32):
+    %6 = arith.extsi %in : i8 to i32
+    %7 = arith.addi %out, %6 : i32
+    linalg.yield %7 : i32
+  } -> tensor<1152x14x14xi32>
+  iree_tensor_ext.dispatch.tensor.store %5, %1, offsets = [0, 0, 0], sizes = [1152, 14, 14], strides = [1, 1, 1] : tensor<1152x14x14xi32> ->
+!iree_tensor_ext.dispatch.tensor<writeonly:tensor<1152x14x14xi32>>
+  return
+}
+
+// CHECK-LABEL: func.func @strided_reduction_no_expand_dims()
+// CHECK:       linalg.generic {{.*}}lowering_config = #iree_gpu.lowering_config
+// CHECK-NOT:   expand_dims

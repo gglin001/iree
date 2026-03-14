@@ -23,11 +23,13 @@ namespace mlir::iree_compiler::IREE::Stream {
 namespace {
 
 static std::optional<int64_t> matchConstant(Value value) {
-  if (!value)
+  if (!value) {
     return std::nullopt;
+  }
   APInt constant;
-  if (!matchPattern(value, m_ConstantInt(&constant)))
+  if (!matchPattern(value, m_ConstantInt(&constant))) {
     return std::nullopt;
+  }
   return constant.getSExtValue();
 }
 
@@ -113,7 +115,7 @@ verifyAsyncAccessOp(IREE::Stream::AsyncAccessOpInterface accessOp) {
 //===----------------------------------------------------------------------===//
 
 struct VerifyAsyncAccessRangesPass
-    : public IREE::Stream::impl::VerifyAsyncAccessRangesPassBase<
+    : IREE::Stream::impl::VerifyAsyncAccessRangesPassBase<
           VerifyAsyncAccessRangesPass> {
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();

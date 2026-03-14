@@ -8,13 +8,14 @@
 
 #include <memory>
 
+#include "iree/compiler/Codegen/Common/Passes.h"
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "iree/compiler/Dialect/Util/Transforms/Passes.h"
 #include "iree/compiler/Dialect/VM/IR/VMOps.h"
 #include "iree/compiler/Utils/PassUtils.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
-#include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Transforms/Passes.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/Transforms/Passes.h"
@@ -93,26 +94,30 @@ void buildVMTransformPassPipeline(OpPassManager &passManager,
   // together.
   passManager.addPass(IREE::Util::createCombineInitializersPass());
 
-  FunctionLikeNest(passManager)
-      .addPass(mlir::createSCFForLoopCanonicalizationPass);
+  {
+    MultiPipelineNest nest(passManager);
+    nest.nest<func::FuncOp, IREE::Util::InitializerOp, IREE::Util::FuncOp>();
 
-  // This pass is sketchy as it can pessimize tight loops due to affine
-  // treating all indices as signed and the unsigned conversion pass not being
-  // able to handle that. The scf.for canonicalization does a decent job of
-  // removing trivial loops above and this catches the rest. It inserts nasty
-  // rem/div ops that we can never safely remove inside of the hot inner loop
-  // and that sucks. We still have this here for now as the cost of the rem/div
-  // are less than the cost of an additional loop that this could remove.
-  passManager.addNestedPass<func::FuncOp>(affine::createLoopCoalescingPass());
+    nest.addPass(mlir::createSCFForLoopCanonicalizationPass);
 
-  FunctionLikeNest(passManager)
-      .addPass(mlir::createLoopInvariantCodeMotionPass)
-      .addPass(mlir::createSCFToControlFlowPass)
-      // TODO: Maybe this should be a part of Affine lowering pass.
-      // Remove if it is added there.
-      // https://github.com/llvm/llvm-project/issues/78458
-      .addPass(affine::createAffineExpandIndexOpsPass)
-      .addPass(mlir::createLowerAffinePass);
+    // This pass is sketchy as it can pessimize tight loops due to affine
+    // treating all indices as signed and the unsigned conversion pass not being
+    // able to handle that. The scf.for canonicalization does a decent job of
+    // removing trivial loops above and this catches the rest. It inserts nasty
+    // rem/div ops that we can never safely remove inside of the hot inner loop
+    // and that sucks. We still have this here for now as the cost of the
+    // rem/div are less than the cost of an additional loop that this could
+    // remove.
+    nest.addPassFor<func::FuncOp>(affine::createLoopCoalescingPass);
+
+    nest.addPass(mlir::createLoopInvariantCodeMotionPass)
+        .addPass(mlir::createSCFToControlFlowPass)
+        // TODO: Maybe this should be a part of Affine lowering pass.
+        // Remove if it is added there.
+        // https://github.com/llvm/llvm-project/issues/78458
+        .addPass(createIREECodegenAffineExpandIndexOpsPass)
+        .addPass(createIREECodegenLowerAffinePass);
+  }
 
   passManager.addPass(mlir::arith::createArithUnsignedWhenEquivalentPass());
 
@@ -156,9 +161,28 @@ void buildVMTransformPassPipeline(OpPassManager &passManager,
   passManager.addNestedPass<IREE::VM::ModuleOp>(
       createDropEmptyModuleInitializersPass());
 
+  // Annotate functions with yield/unwind requirements by analyzing the call
+  // graph. This must happen after all inlining is complete.
+  passManager.addNestedPass<IREE::VM::ModuleOp>(createAnnotateFunctionsPass());
+
+  // Convert calls to yieldable functions to vm.call.yieldable. This must run
+  // after AnnotateFunctionsPass which marks functions with vm.yield.
+  passManager.addNestedPass<IREE::VM::ModuleOp>(
+      createConvertToYieldableCallsPass());
+
   if (targetOptions.optimizeForStackSize) {
     passManager.addNestedPass<IREE::VM::ModuleOp>(createSinkDefiningOpsPass());
   }
+
+  // Drop vm.optimization_barrier ops now that optimization is complete.
+  passManager.addNestedPass<IREE::VM::ModuleOp>(
+      createDropOptimizationBarriersPass());
+
+  // Insert explicit discard ops for ref values at their last use points.
+  // Uses edge-based placement: refs dying on control flow edges get discards
+  // inserted on those edges, refs dying mid-block get discards after last use.
+  passManager.addNestedPass<IREE::VM::ModuleOp>(
+      createMaterializeRefDiscardsPass());
 }
 
 //===----------------------------------------------------------------------===//

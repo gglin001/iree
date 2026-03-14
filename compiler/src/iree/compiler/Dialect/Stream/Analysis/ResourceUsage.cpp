@@ -37,6 +37,61 @@ namespace mlir::iree_compiler::IREE::Stream {
 // as transients instead of straight-line escaping results.
 static constexpr bool kFavorTransients = false;
 
+// Returns true if |value| has any tied uses that mutate the resource. A tied
+// operand-result pair may be either a genuine in-place mutation (dispatch,
+// fill, copy) or a scheduling passthrough (barriers, timepoint ops). This
+// function distinguishes the two using interface and trait queries rather than
+// hardcoded op names.
+//
+// The detection strategy (in order):
+//  - TiedResourcePassthrough trait: the op ties resources for scheduling
+//    without accessing the data (timepoint.barrier, timepoint.await).
+//  - StreamableOpInterface::isMetadata(): the op is a scheduling passthrough
+//    within the async phase (async.barrier).
+//  - AsyncAccessOpInterface: if the op reports access ranges, check whether
+//    any range for this resource includes a write.
+//  - Conservative fallback: unknown tied ops are assumed to mutate.
+static bool hasMutatingTiedUses(Value value) {
+  for (OpOperand &use : value.getUses()) {
+    auto tiedOp = dyn_cast<IREE::Util::TiedOpInterface>(use.getOwner());
+    if (!tiedOp || !tiedOp.isOperandTied(use.getOperandNumber())) {
+      continue;
+    }
+    Operation *owner = use.getOwner();
+
+    // Ops that tie resources purely for scheduling/synchronization.
+    if (owner->hasTrait<OpTrait::IREE::Stream::TiedResourcePassthrough>()) {
+      continue;
+    }
+
+    // Streamable metadata ops pass resources through unchanged.
+    if (auto streamableOp =
+            dyn_cast<IREE::Stream::StreamableOpInterface>(owner)) {
+      if (streamableOp.isMetadata()) {
+        continue;
+      }
+    }
+
+    // If the op reports explicit access ranges, check for writes on this
+    // resource. No write → not a mutation.
+    if (auto accessOp = dyn_cast<IREE::Stream::AsyncAccessOpInterface>(owner)) {
+      SmallVector<AsyncAccessRange> ranges;
+      accessOp.getAsyncAccessRanges(ranges);
+      bool hasWrite = llvm::any_of(ranges, [&](const AsyncAccessRange &range) {
+        return range.resource == use.get() && !range.isReadOnly();
+      });
+      if (hasWrite) {
+        return true;
+      }
+      continue;
+    }
+
+    // Unknown tied op: conservatively assume mutation.
+    return true;
+  }
+  return false;
+}
+
 // Starts by assuming that the resource is never used and then removes assumed
 // bits based on the usage in the program.
 //
@@ -52,17 +107,17 @@ static constexpr bool kFavorTransients = false;
 // Worst state: used for all kinds of things.
 template <typename ElementT>
 class AbstractResourceUsage
-    : public DFX::StateWrapper<DFX::BitIntegerState<uint16_t, 4095, 0>,
+    : public DFX::StateWrapper<DFX::BitIntegerState<uint16_t, 8191, 0>,
                                ElementT> {
 public:
   using BaseType =
-      DFX::StateWrapper<DFX::BitIntegerState<uint16_t, 4095, 0>, ElementT>;
+      DFX::StateWrapper<DFX::BitIntegerState<uint16_t, 8191, 0>, ElementT>;
 
   // Inverted bits matching ResourceUsageBitfield.
   enum {
     NOT_INDIRECT = 1u << 0,
     NOT_EXTERNAL = 1u << 1,
-    NOT_MUTATED = 1u << 2, // beyond definition
+    NOT_MUTATED = 1u << 2,
     NOT_CONSTANT = 1u << 3,
     NOT_TRANSFER_READ = 1u << 4,
     NOT_TRANSFER_WRITE = 1u << 5,
@@ -72,11 +127,12 @@ public:
     NOT_DISPATCH_WRITE = 1u << 9,
     NOT_GLOBAL_READ = 1u << 10,
     NOT_GLOBAL_WRITE = 1u << 11,
+    NOT_GLOBAL_STORAGE = 1u << 12,
 
     BEST_STATE = NOT_INDIRECT | NOT_EXTERNAL | NOT_MUTATED | NOT_CONSTANT |
                  NOT_TRANSFER_READ | NOT_TRANSFER_WRITE | NOT_STAGING_READ |
                  NOT_STAGING_WRITE | NOT_DISPATCH_READ | NOT_DISPATCH_WRITE |
-                 NOT_GLOBAL_READ | NOT_GLOBAL_WRITE,
+                 NOT_GLOBAL_READ | NOT_GLOBAL_WRITE | NOT_GLOBAL_STORAGE,
   };
   static_assert(BEST_STATE == BaseType::getBestState(),
                 "unexpected BEST_STATE value");
@@ -131,35 +187,50 @@ public:
 
   const std::string getAsStr(AsmState &asmState) const override {
     std::string str;
-    if (!isValidState())
+    if (!isValidState()) {
       return "*";
+    }
     auto append = [&](const char *part) {
-      if (!str.empty())
+      if (!str.empty()) {
         str += '|';
+      }
       str += part;
     };
-    if (!this->isAssumed(NOT_INDIRECT))
+    if (!this->isAssumed(NOT_INDIRECT)) {
       append("indirect");
+    }
     append(this->isAssumed(NOT_EXTERNAL) ? "internal" : "external");
     append(this->isAssumed(NOT_MUTATED) ? "immutable" : "mutable");
-    if (!this->isAssumed(NOT_CONSTANT))
+    if (!this->isAssumed(NOT_CONSTANT)) {
       append("constant");
-    if (!this->isAssumed(NOT_TRANSFER_READ))
+    }
+    if (!this->isAssumed(NOT_TRANSFER_READ)) {
       append("transfer_read");
-    if (!this->isAssumed(NOT_TRANSFER_WRITE))
+    }
+    if (!this->isAssumed(NOT_TRANSFER_WRITE)) {
       append("transfer_write");
-    if (!this->isAssumed(NOT_STAGING_READ))
+    }
+    if (!this->isAssumed(NOT_STAGING_READ)) {
       append("staging_read");
-    if (!this->isAssumed(NOT_STAGING_WRITE))
+    }
+    if (!this->isAssumed(NOT_STAGING_WRITE)) {
       append("staging_write");
-    if (!this->isAssumed(NOT_DISPATCH_READ))
+    }
+    if (!this->isAssumed(NOT_DISPATCH_READ)) {
       append("dispatch_read");
-    if (!this->isAssumed(NOT_DISPATCH_WRITE))
+    }
+    if (!this->isAssumed(NOT_DISPATCH_WRITE)) {
       append("dispatch_write");
-    if (!this->isAssumed(NOT_GLOBAL_READ))
+    }
+    if (!this->isAssumed(NOT_GLOBAL_READ)) {
       append("global_read");
-    if (!this->isAssumed(NOT_GLOBAL_WRITE))
+    }
+    if (!this->isAssumed(NOT_GLOBAL_WRITE)) {
       append("global_write");
+    }
+    if (!this->isAssumed(NOT_GLOBAL_STORAGE)) {
+      append("global_storage");
+    }
     return str.empty() ? "*" : str;
   }
 
@@ -247,8 +318,9 @@ private:
   // itself is under analysis.
   void updateFromDefiningOp(Value value, OpResult result, DFX::Solver &solver) {
     // Some tied uses route through ops that change types - ignore those.
-    if (!isa<IREE::Stream::ResourceType>(result.getType()))
+    if (!isa<IREE::Stream::ResourceType>(result.getType())) {
       return;
+    }
 
     TypeSwitch<Operation *, void>(result.getOwner())
         .Case([&](mlir::arith::SelectOp op) {
@@ -268,7 +340,7 @@ private:
           getState() ^= sourceUsage.getState();
         })
         .Case([&](IREE::Util::GlobalLoadOpInterface op) {
-          removeAssumedBits(NOT_GLOBAL_READ);
+          removeAssumedBits(NOT_GLOBAL_READ | NOT_GLOBAL_STORAGE);
           auto globalType = cast<IREE::Stream::ResourceType>(
               op.getLoadedGlobalValue().getType());
           switch (globalType.getLifetime()) {
@@ -285,7 +357,8 @@ private:
           getState() ^= resultUsage.getState();
         })
         .Case([&](IREE::Util::GlobalLoadIndirectOpInterface op) {
-          removeAssumedBits(NOT_INDIRECT | NOT_GLOBAL_READ);
+          removeAssumedBits(NOT_INDIRECT | NOT_GLOBAL_READ |
+                            NOT_GLOBAL_STORAGE);
           auto &resultUsage = solver.getElementFor<ValueResourceUsage>(
               *this, Position::forValue(op.getLoadedGlobalValue()),
               DFX::Resolution::REQUIRED);
@@ -348,11 +421,30 @@ private:
           getState() ^= resultUsage.getState();
         })
         .Case([&](IREE::Stream::AsyncCloneOp op) {
-          removeAssumedBits(NOT_TRANSFER_WRITE);
-          auto &sourceUsage = solver.getElementFor<ValueResourceUsage>(
-              *this, Position::forValue(op.getSource()),
-              DFX::Resolution::OPTIONAL);
-          getState() ^= sourceUsage.getState();
+          // Check if the clone result has any tied uses that actually mutate
+          // the resource. This is a static IR property, safe to query during
+          // DFX iteration.
+          if (hasMutatingTiedUses(op.getResult())) {
+            // Result is mutated: clone creates a fresh allocation whose
+            // lifetime is determined by how the clone result is used (backward
+            // propagation from uses), not by the source's lifetime. This
+            // allows clones of external resources to become transient when
+            // only used internally.
+            removeAssumedBits(NOT_TRANSFER_WRITE);
+          } else {
+            // Result is never mutated: this clone is purely a type-cast (no
+            // data isolation needed). Propagate source usage so that
+            // RefineUsage assigns the same lifetime to both sides. The second
+            // ElideAsyncCopies pass then elides the now-same-type clone.
+            auto &sourceUsage = solver.getElementFor<ValueResourceUsage>(
+                *this, Position::forValue(op.getSource()),
+                DFX::Resolution::OPTIONAL);
+            getState() ^= sourceUsage.getState();
+          }
+          auto &resultUsage = solver.getElementFor<ValueResourceUsage>(
+              *this, Position::forValue(op.getResult()),
+              DFX::Resolution::REQUIRED);
+          getState() ^= resultUsage.getState();
         })
         .Case([&](IREE::Stream::AsyncSliceOp op) {
           removeAssumedBits(NOT_TRANSFER_WRITE);
@@ -506,6 +598,41 @@ private:
                 getState() ^= tiedUsage.getState();
               }
             })
+        .Case([&](IREE::Stream::AsyncParameterLoadOp op) {
+          removeAssumedBits(NOT_CONSTANT | NOT_TRANSFER_WRITE);
+          auto &resultUsage = solver.getElementFor<ValueResourceUsage>(
+              *this, Position::forValue(op.getResult()),
+              DFX::Resolution::REQUIRED);
+          getState() ^= resultUsage.getState();
+        })
+        .Case([&](IREE::Stream::AsyncParameterReadOp op) {
+          removeAssumedBits(NOT_TRANSFER_WRITE);
+          auto &targetUsage = solver.getElementFor<ValueResourceUsage>(
+              *this, Position::forValue(op.getTarget()),
+              DFX::Resolution::REQUIRED);
+          getState() ^= targetUsage.getState();
+        })
+        .Case([&](IREE::Stream::AsyncParameterWriteOp op) {
+          removeAssumedBits(NOT_TRANSFER_READ);
+          auto &sourceUsage = solver.getElementFor<ValueResourceUsage>(
+              *this, Position::forValue(op.getSource()),
+              DFX::Resolution::REQUIRED);
+          getState() ^= sourceUsage.getState();
+        })
+        .Case([&](IREE::Stream::AsyncParameterGatherOp op) {
+          removeAssumedBits(NOT_TRANSFER_WRITE);
+          auto &targetUsage = solver.getElementFor<ValueResourceUsage>(
+              *this, Position::forValue(op.getTarget()),
+              DFX::Resolution::REQUIRED);
+          getState() ^= targetUsage.getState();
+        })
+        .Case([&](IREE::Stream::AsyncParameterScatterOp op) {
+          removeAssumedBits(NOT_TRANSFER_READ);
+          auto &sourceUsage = solver.getElementFor<ValueResourceUsage>(
+              *this, Position::forValue(op.getSource()),
+              DFX::Resolution::REQUIRED);
+          getState() ^= sourceUsage.getState();
+        })
         .Default([&](Operation *op) {});
   }
 
@@ -513,8 +640,9 @@ private:
   // This walks through tied uses as well.
   void updateFromUse(Value value, OpOperand &operand, DFX::Solver &solver) {
     // Some tied uses route through ops that change types - ignore those.
-    if (!isa<IREE::Stream::ResourceType>(operand.get().getType()))
+    if (!isa<IREE::Stream::ResourceType>(operand.get().getType())) {
       return;
+    }
 
     auto *userOp = operand.getOwner();
     unsigned operandIdx = operand.getOperandNumber();
@@ -637,7 +765,7 @@ private:
           getState() ^= resultUsage.getState();
         })
         .Case([&](IREE::Util::GlobalStoreOpInterface op) {
-          removeAssumedBits(NOT_GLOBAL_WRITE);
+          removeAssumedBits(NOT_GLOBAL_WRITE | NOT_GLOBAL_STORAGE);
           auto globalType = cast<IREE::Stream::ResourceType>(
               op.getStoredGlobalValue().getType());
           switch (globalType.getLifetime()) {
@@ -650,7 +778,8 @@ private:
           }
         })
         .Case([&](IREE::Util::GlobalStoreIndirectOpInterface op) {
-          removeAssumedBits(NOT_INDIRECT | NOT_GLOBAL_WRITE);
+          removeAssumedBits(NOT_INDIRECT | NOT_GLOBAL_WRITE |
+                            NOT_GLOBAL_STORAGE);
         })
         .Case([&](IREE::Stream::TensorExportOp op) {
           auto sourceType =
@@ -859,6 +988,26 @@ private:
                 getState() ^= resultUsage.getState();
               }
             })
+        .Case([&](IREE::Stream::AsyncParameterReadOp op) {
+          removeAssumedBits(NOT_MUTATED | NOT_TRANSFER_WRITE);
+          auto &resultUsage = solver.getElementFor<ValueResourceUsage>(
+              *this, Position::forValue(op.getResult()),
+              DFX::Resolution::REQUIRED);
+          getState() ^= resultUsage.getState();
+        })
+        .Case([&](IREE::Stream::AsyncParameterWriteOp op) {
+          removeAssumedBits(NOT_TRANSFER_READ);
+        })
+        .Case([&](IREE::Stream::AsyncParameterGatherOp op) {
+          removeAssumedBits(NOT_MUTATED | NOT_TRANSFER_WRITE);
+          auto &resultUsage = solver.getElementFor<ValueResourceUsage>(
+              *this, Position::forValue(op.getResult()),
+              DFX::Resolution::REQUIRED);
+          getState() ^= resultUsage.getState();
+        })
+        .Case([&](IREE::Stream::AsyncParameterScatterOp op) {
+          removeAssumedBits(NOT_TRANSFER_READ);
+        })
         .Case([&](IREE::Stream::YieldOp op) {
           // Take on the traits of the result of the parent operation.
           Value result = op->getParentOp()->getResult(operandIdx);
@@ -905,14 +1054,7 @@ private:
 const char ValueResourceUsage::ID = 0;
 
 ResourceUsageAnalysis::ResourceUsageAnalysis(Operation *rootOp)
-    : explorer(rootOp, TraversalAction::SHALLOW), solver(explorer, allocator) {
-  explorer.setOpInterfaceAction<mlir::FunctionOpInterface>(
-      TraversalAction::RECURSE);
-  explorer.setOpAction<mlir::scf::ForOp>(TraversalAction::RECURSE);
-  explorer.setOpAction<mlir::scf::IfOp>(TraversalAction::RECURSE);
-  explorer.setOpAction<mlir::scf::WhileOp>(TraversalAction::RECURSE);
-  explorer.setDialectAction<IREE::Stream::StreamDialect>(
-      TraversalAction::RECURSE);
+    : explorer(rootOp, TraversalAction::RECURSE), solver(explorer, allocator) {
   // Ignore the contents of executables (linalg goo, etc).
   explorer.setOpAction<IREE::Stream::ExecutableOp>(TraversalAction::IGNORE);
   explorer.initialize();
@@ -924,8 +1066,9 @@ std::optional<ResourceUsageBitfield>
 ResourceUsageAnalysis::tryLookupResourceUsage(Value value) {
   auto resourceUsage =
       solver.lookupElementFor<ValueResourceUsage>(Position::forValue(value));
-  if (!resourceUsage)
+  if (!resourceUsage) {
     return std::nullopt;
+  }
   return resourceUsage->getAssumedUsage();
 }
 

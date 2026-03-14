@@ -144,6 +144,12 @@ macro(iree_setup_toolchain)
   # defined with the same sanitizer flags, including e.g. standard library
   # symbols that might be used by both IREE and non-IREE (e.g. LLVM) code.
 
+  # Fuzzing requires ASan - enable it automatically if not already set.
+  if(IREE_ENABLE_FUZZING AND NOT IREE_ENABLE_ASAN)
+    message(STATUS "Fuzzing enabled: automatically enabling ASan")
+    set(IREE_ENABLE_ASAN ON)
+  endif()
+
   if(IREE_ENABLE_ASAN)
     string(APPEND CMAKE_CXX_FLAGS " -fsanitize=address")
     string(APPEND CMAKE_C_FLAGS " -fsanitize=address")
@@ -186,6 +192,18 @@ macro(iree_setup_toolchain)
   if(IREE_ENABLE_UBSAN)
     string(APPEND CMAKE_CXX_FLAGS " -fsanitize=undefined")
     string(APPEND CMAKE_C_FLAGS " -fsanitize=undefined")
+    # The vptr sanitizer check uses typeid() to verify vtable pointers, which
+    # requires RTTI. IREE compiles all C++ with -fno-rtti for LLVM/MLIR
+    # compatibility, so the vptr check produces false positives on every
+    # virtual dispatch (including gtest internals). Exclude it.
+    string(APPEND CMAKE_CXX_FLAGS " -fno-sanitize=vptr")
+  endif()
+  if(IREE_ENABLE_FUZZING)
+    # Instrument all code for libFuzzer coverage feedback without linking the
+    # fuzzer runtime. Fuzz targets link with -fsanitize=fuzzer separately to
+    # get the main() function and driver.
+    string(APPEND CMAKE_CXX_FLAGS " -fsanitize=fuzzer-no-link")
+    string(APPEND CMAKE_C_FLAGS " -fsanitize=fuzzer-no-link")
   endif()
 
   #-----------------------------------------------------------------------------

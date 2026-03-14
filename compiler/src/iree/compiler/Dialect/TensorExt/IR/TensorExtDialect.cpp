@@ -16,7 +16,7 @@ namespace mlir::iree_compiler::IREE::TensorExt {
 
 // Used to control inlining behavior.
 namespace {
-struct IREETensorExtInlinerInterface : public DialectInlinerInterface {
+struct IREETensorExtInlinerInterface : DialectInlinerInterface {
   using DialectInlinerInterface::DialectInlinerInterface;
 
   bool isLegalToInline(Operation *call, Operation *callable,
@@ -40,12 +40,13 @@ struct IREETensorExtInlinerInterface : public DialectInlinerInterface {
 } // namespace
 
 void IREETensorExtDialect::initialize() {
+  initializeAttrs();
   addInterfaces<IREETensorExtInlinerInterface>();
   addTypes<DispatchTensorType>();
 
-#define GET_OP_LIST
   addOperations<
-#include "iree/compiler/Dialect/TensorExt/IR/TensorExtOps.cpp.inc"
+#define GET_OP_LIST
+#include "iree/compiler/Dialect/TensorExt/IR/TensorExtOps.cpp.inc" // IWYU pragma: keep
       >();
 
   getContext()->getOrLoadDialect<tensor::TensorDialect>();

@@ -37,11 +37,13 @@ void ConvertToDynamicSharedMemory(ModuleOp moduleOp) {
   moduleOp.walk([&](LLVM::AddressOfOp addressOfOp) {
     // Check that the global associated with this addressOfOp has shared memory
     // space.
-    if (addressOfOp.getGlobal(symbolTableCollection).getAddrSpace() == 3)
+    if (addressOfOp.getGlobal(symbolTableCollection).getAddrSpace() == 3) {
       addressOfOps.push_back(addressOfOp);
+    }
   });
-  if (addressOfOps.size() == 0)
+  if (addressOfOps.empty()) {
     return;
+  }
   OpBuilder builder(moduleOp);
   builder.setInsertionPoint(&moduleOp.front());
   auto type =
@@ -51,7 +53,7 @@ void ConvertToDynamicSharedMemory(ModuleOp moduleOp) {
       LLVM::Linkage::External, "__dynamic_shared_memory__", Attribute(),
       /*alignment=*/16, /*addr_space=*/3);
   uint32_t numberOfBytes = 0;
-  // Replace the addressOfOps with correctly offseted pointers to dynamic
+  // Replace the addressOfOps with correctly offsetted pointers to dynamic
   // shared memory.
   llvm::SmallDenseMap<LLVM::GlobalOp, uint32_t> globalMemoryOffsetMap;
   for (auto addressOfOp : addressOfOps) {
@@ -112,14 +114,15 @@ namespace {
 /// Scalarize math ops. It is needed to lower vector operation that don't have
 /// vector support in CUDA and ROCM device library.
 template <typename MathOpTy>
-struct ScalarizeMathOp : public OpRewritePattern<MathOpTy> {
+struct ScalarizeMathOp : OpRewritePattern<MathOpTy> {
   using OpRewritePattern<MathOpTy>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(MathOpTy mathOp,
                                 PatternRewriter &rewriter) const override {
     auto vecType = dyn_cast<VectorType>(mathOp.getType());
-    if (!vecType)
+    if (!vecType) {
       return failure();
+    }
     Location loc = mathOp.getLoc();
     Value newVector = arith::ConstantOp::create(rewriter, loc, vecType,
                                                 rewriter.getZeroAttr(vecType));
@@ -146,33 +149,35 @@ struct ScalarizeMathOp : public OpRewritePattern<MathOpTy> {
   }
 };
 
-struct ConvertSharedMemAllocOp : public OpRewritePattern<memref::AllocOp> {
+struct ConvertSharedMemAllocOp : OpRewritePattern<memref::AllocOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(memref::AllocOp allocOp,
                                 PatternRewriter &rewriter) const override {
-    if (!hasSharedMemoryAddressSpace(allocOp.getType()))
+    if (!hasSharedMemoryAddressSpace(allocOp.getType())) {
       return failure();
+    }
     ArrayRef<int64_t> shape = allocOp.getType().getShape();
     if (ShapedType::isDynamicShape(shape)) {
       return failure();
     }
 
-    uint64_t alignement;
-    if (std::optional<uint64_t> alignementInfo = allocOp.getAlignment()) {
-      alignement = alignementInfo.value();
+    uint64_t alignment;
+    if (std::optional<uint64_t> alignmentInfo = allocOp.getAlignment()) {
+      alignment = alignmentInfo.value();
     } else {
       // If no alignment specified align at least to the size of an element.
       Type elType = allocOp.getType().getElementType();
-      if (auto shapeType = dyn_cast<ShapedType>(elType))
-        alignement =
+      if (auto shapeType = dyn_cast<ShapedType>(elType)) {
+        alignment =
             shapeType.getNumElements() * shapeType.getElementTypeBitWidth() / 8;
-      else if (elType.isIndex()) {
+      } else if (elType.isIndex()) {
         auto mod = allocOp->getParentOfType<ModuleOp>();
         LowerToLLVMOptions options(mod.getContext(), DataLayout(mod));
-        alignement = options.getIndexBitwidth() / 8;
-      } else
-        alignement = elType.getIntOrFloatBitWidth() / 8;
+        alignment = options.getIndexBitwidth() / 8;
+      } else {
+        alignment = elType.getIntOrFloatBitWidth() / 8;
+      }
     }
     // In CUDA workgroup memory is represented by a global variable.
     MemRefType allocType = allocOp.getType();
@@ -187,7 +192,7 @@ struct ConvertSharedMemAllocOp : public OpRewritePattern<memref::AllocOp> {
         /*type=*/allocType,
         /*initial_value=*/ElementsAttr(),
         /*constant=*/false,
-        /*alignment=*/rewriter.getI64IntegerAttr(alignement));
+        /*alignment=*/rewriter.getI64IntegerAttr(alignment));
     symbolTable.insert(global);
 
     rewriter.setInsertionPointToStart(&(*funcOp.getFunctionBody().begin()));
@@ -262,8 +267,9 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     FunctionType fnType = funcOp.getFunctionType();
     (void)fnType;
-    if (!funcOp.isPublic())
+    if (!funcOp.isPublic()) {
       return failure();
+    }
 
     // illegal FuncOp must have 0 inputs.
     assert(fnType.getNumInputs() == 0 && fnType.getNumResults() == 0);
@@ -296,8 +302,9 @@ public:
 
     FailureOr<SmallVector<BindingProperties>> maybeBindingsInfo =
         analyzeSubspans(subspans, numBindings, getTypeConverter());
-    if (failed(maybeBindingsInfo))
+    if (failed(maybeBindingsInfo)) {
       return failure();
+    }
     auto bindingsInfo = std::move(*maybeBindingsInfo);
 
     SmallVector<Type, 8> llvmInputTypes;
@@ -309,8 +316,9 @@ public:
     // All the push constants are i32 and go at the end of the argument list.
     llvmInputTypes.resize(numBindings + numConstants, rewriter.getI32Type());
 
-    if (!llvmInputTypes.empty())
+    if (!llvmInputTypes.empty()) {
       signatureConverter.addInputs(llvmInputTypes);
+    }
 
     // Construct newFunc with all attributes except return type & symbol name.
     SmallVector<NamedAttribute> funcAttrs;
@@ -376,7 +384,7 @@ public:
 };
 
 struct ConvertIREEBindingSubspanOp final
-    : public ConvertOpToLLVMPattern<IREE::HAL::InterfaceBindingSubspanOp> {
+    : ConvertOpToLLVMPattern<IREE::HAL::InterfaceBindingSubspanOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
 
   LogicalResult
@@ -384,8 +392,9 @@ struct ConvertIREEBindingSubspanOp final
                   ConversionPatternRewriter &rewriter) const override {
     // Bail until nested under an LLVMFuncOp.
     auto llvmFuncOp = op->getParentOfType<LLVM::LLVMFuncOp>();
-    if (!llvmFuncOp)
+    if (!llvmFuncOp) {
       return failure();
+    }
     assert(llvmFuncOp.getNumArguments() > 0);
 
     Location loc = op->getLoc();
@@ -399,7 +408,7 @@ struct ConvertIREEBindingSubspanOp final
 
     auto [strides, offset] = memrefType.getStridesAndOffset();
     if (memrefType.hasStaticShape() &&
-        !llvm::any_of(strides, ShapedType::isDynamic) &&
+        llvm::none_of(strides, ShapedType::isDynamic) &&
         ShapedType::isStatic(offset)) {
       auto desc = MemRefDescriptor::fromStaticShape(
           rewriter, loc, *getTypeConverter(), memrefType, llvmBufferBasePtr);
@@ -481,7 +490,7 @@ struct ConvertIREEBindingSubspanOp final
 };
 
 struct ConvertIREEConstantOp final
-    : public ConvertOpToLLVMPattern<IREE::HAL::InterfaceConstantLoadOp> {
+    : ConvertOpToLLVMPattern<IREE::HAL::InterfaceConstantLoadOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
 
   LogicalResult
@@ -489,8 +498,9 @@ struct ConvertIREEConstantOp final
                   ConversionPatternRewriter &rewriter) const override {
     // Bail until nested under an LLVMFuncOp.
     auto llvmFuncOp = op->getParentOfType<LLVM::LLVMFuncOp>();
-    if (!llvmFuncOp)
+    if (!llvmFuncOp) {
       return failure();
+    }
     assert(llvmFuncOp.getNumArguments() > 0);
 
     auto ireeConstantOp = cast<IREE::HAL::InterfaceConstantLoadOp>(op);
@@ -561,7 +571,7 @@ struct ConvertIREEConstantOp final
 /// corresponding GPU ops.
 template <typename InterfaceOpTy, typename NewOpTy>
 struct HALInterfaceWorkgroupOpsConverter final
-    : public OpConversionPattern<InterfaceOpTy> {
+    : OpConversionPattern<InterfaceOpTy> {
   using OpConversionPattern<InterfaceOpTy>::OpConversionPattern;
 
   LogicalResult
@@ -572,8 +582,9 @@ struct HALInterfaceWorkgroupOpsConverter final
                                           gpu::Dimension::z};
     NewOpTy newOp =
         rewriter.replaceOpWithNewOp<NewOpTy>(op, op.getType(), dimAttr[index]);
-    if (IntegerAttr bound = op.getUpperBoundAttr())
+    if (IntegerAttr bound = op.getUpperBoundAttr()) {
       newOp.setUpperBoundAttr(bound);
+    }
     return success();
   }
 };
@@ -594,7 +605,7 @@ public:
 };
 
 struct ConvertIREEUtilAssumeIntOp final
-    : public ConvertOpToLLVMPattern<IREE::Util::AssumeIntOp> {
+    : ConvertOpToLLVMPattern<IREE::Util::AssumeIntOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
 
   LogicalResult
@@ -602,23 +613,26 @@ struct ConvertIREEUtilAssumeIntOp final
                   ConversionPatternRewriter &rewriter) const override {
     // Bail until nested under an LLVMFuncOp.
     auto llvmFuncOp = op->getParentOfType<LLVM::LLVMFuncOp>();
-    if (!llvmFuncOp)
+    if (!llvmFuncOp) {
       return failure();
+    }
 
     Location loc = op.getLoc();
     auto updateConds = [&](std::optional<Value> &conds, Value cond) {
-      if (!conds)
+      if (!conds) {
         conds = cond;
-      else
+      } else {
         conds = LLVM::AndOp::create(rewriter, loc, *conds, cond);
+      }
     };
-    // Materialize the assumptions that aren't atteched directly to arguments
+    // Materialize the assumptions that aren't attached directly to arguments
     // in order to account for the fact that i64 inputs get passed in as a pair
     // of i32 constants.
     for (auto [idx, mlirVal, llvmVal] :
          llvm::enumerate(op.getOperands(), adaptor.getOperands())) {
-      if (mlirVal.getDefiningOp<IREE::HAL::InterfaceConstantLoadOp>())
+      if (mlirVal.getDefiningOp<IREE::HAL::InterfaceConstantLoadOp>()) {
         continue;
+      }
       std::optional<Value> conds;
       Type type = llvmVal.getType();
       auto [min, max] = op.getUnionedUnsignedRange(idx);

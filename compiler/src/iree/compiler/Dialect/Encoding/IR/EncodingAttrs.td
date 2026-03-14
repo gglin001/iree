@@ -11,6 +11,7 @@ include "iree/compiler/Dialect/Encoding/IR/EncodingBase.td"
 include "iree/compiler/Dialect/Encoding/IR/EncodingInterfaces.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/EnumAttr.td"
+include "mlir/IR/TensorEncoding.td"
 
 //===---------------------------------------------------------------------===//
 // Data layout encoding attributes
@@ -41,7 +42,7 @@ def EncodingOpTypeAttr:
   IREEEncoding_EnumAttr<EncodingOpType, "optype">;
 
 //===---------------------------------------------------------------------===//
-// iree_encoding.packed_storage
+// iree_encoding.layout
 //===---------------------------------------------------------------------===//
 
 def LayoutAttr :
@@ -50,7 +51,8 @@ def LayoutAttr :
         "isSerialized",
         "isIdentityLayout",
         "calculateStorageSizeInBytes",
-      ]>
+      ]>,
+      DeclareAttrInterfaceMethods<VerifiableTensorEncoding>
     ]> {
   let mnemonic = "layout";
   let assemblyFormat = "`<` $layouts `>`";
@@ -82,12 +84,23 @@ def LayoutAttr :
 // iree_encoding.packed_storage
 //===---------------------------------------------------------------------===//
 
-def PackedStorageAttr : IREEEncoding_AttrDef<"PackedStorage"> {
+def PackedStorageAttr :
+    IREEEncoding_AttrDef<"PackedStorage", [
+      DeclareAttrInterfaceMethods<IREEEncoding_SerializableAttr, [
+          "isSerialized",
+          "calculateStorageSizeInBytes",
+          "isCompatibleWith",
+          "getCollapsedEncoding",
+      ]>,
+      DeclareAttrInterfaceMethods<VerifiableTensorEncoding>
+    ]> {
   let mnemonic = "packed_storage";
   let summary = [{Indicates packed storage data type.}];
   let description = [{
     This attribute indicates this is a back-to-back packed storage in memory.
     This attribute takes no arguments.
+    The element type of the encoded tensors must be sub-byte (i.e., <8 bits)
+    types with power-of-two bitwidth.
   }];
   let genVerifyDecl = 0;
 }
@@ -101,6 +114,8 @@ def EncodingAttr :
       DeclareAttrInterfaceMethods<IREEEncoding_SerializableAttr, [
         "isSerialized",
         "cloneWithLayouts",
+        "convertForBitcast",
+        "getNumDynamicEncodingDims",
       ]>,
       DeclareAttrInterfaceMethods<IREEEncoding_ContractionEncodingAttrInterface, [
         "getReductionDims",
@@ -118,6 +133,12 @@ def EncodingAttr :
     can be used to explicitly manifest the layout change
     through operations like pack/unpack.
 
+    The optional `original_element_type` field indicates that the tensor was
+    bitcast from a different element type. This is used when sub-byte types
+    (e.g., i4) are packed into larger storage types (e.g., i8). When present,
+    tile size calculations use this type instead of the tensor's actual element
+    type to correctly account for the packing ratio.
+
     This attribute has a verifier that will ensure that:
     - The `operand_index` shouldn't exceed the size of
       `user_indexing_maps`, if the latter is provided.
@@ -126,8 +147,8 @@ def EncodingAttr :
 
   let assemblyFormat = [{
     `<`
-    struct($operand_index, $op_type, $element_types, $user_indexing_maps,
-           custom<DynamicI64ArrayAttr>($iteration_sizes))
+    struct($operand_index, $op_type, $element_types, $original_element_type,
+           $user_indexing_maps, custom<DynamicI64ArrayAttr>($iteration_sizes))
     `>`
   }];
 
@@ -135,6 +156,7 @@ def EncodingAttr :
     AttrParameter<"IntegerAttr", "this tensor operand's index in the parameter list">:$operand_index,
     AttrParameter<"EncodingOpTypeAttr", "operand type">:$op_type,
     AttrParameter<"ArrayAttr", "element types of the user's operands">:$element_types,
+    OptionalParameter<"TypeAttr", "original element type before bitcast packing">:$original_element_type,
     OptionalParameter<"ArrayAttr", "Indexing maps of the operation using this tensor">:$user_indexing_maps,
     OptionalParameter<"ArrayAttr", "The original operation's iteration sizes. "
     "This is useful for handling skinny dimension sizes">:$iteration_sizes
@@ -144,6 +166,7 @@ def EncodingAttr :
     AttrBuilder<(ins "int64_t":$operandIndex,
         "EncodingOpType":$opType,
         "ArrayRef<Type>":$elemTypes,
+        CArg<"Type", "{}">:$originalElementType,
         CArg<"ArrayRef<AffineMap>", "{}">:$maps,
         CArg<"ArrayRef<int64_t>", "{}">:$iterationSizes)>
   ];
@@ -173,7 +196,7 @@ def EncodingAttr :
     SmallVector<int64_t> getIterationSizesArray() const;
 
     /// Returns a vector with values in `element_types`.
-    SmallVector<Type> getElementTypesArray();
+    SmallVector<Type> getElementTypesArray() const;
 
     /// Clones an encoding with a new indexing map being appended to the
     /// `operand_index` entry of `user_indexing_map`.
@@ -266,6 +289,7 @@ def IdentityResolverAttr :
       DeclareAttrInterfaceMethods<IREEEncoding_LayoutResolverAttr, [
         "cloneWithSimplifiedConfig",
         "getLayout",
+        "getUnifiedEncoding",
       ]>,
       DeclareAttrInterfaceMethods<IREEEncoding_LayoutMaterializerAttr, [
         "convertType",
@@ -314,6 +338,7 @@ def TestingAttr :
       DeclareAttrInterfaceMethods<IREEEncoding_SerializableAttr, [
         "isSerialized",
         "cloneWithLayouts",
+        "convertForBitcast",
       ]>
     ]> {
   let mnemonic = "testing";
@@ -326,10 +351,14 @@ def TestingAttr :
 
   let parameters = (ins
     OptionalParameter<"ArrayAttr", "An array of attributes that describes the "
-    "layouts.">:$layouts
+    "layouts.">:$layouts,
+    OptionalParameter<"Type", "Original element type before bitcast packing. "
+    "This can differ from the actual storage type. E.g., in case of a bitcast "
+    "from i4 to i8, the tensor's element type becomes the storage type while "
+    "this field preserves the original element type.">:$original_element_type
   );
 
-  let hasCustomAssemblyFormat = 1;
+  let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 0;
 }
 
@@ -349,6 +378,7 @@ def SpecializationResolverAttr :
       DeclareAttrInterfaceMethods<IREEEncoding_LayoutResolverAttr, [
         "cloneWithSimplifiedConfig",
         "getLayout",
+        "getUnifiedEncoding",
       ]>
     ]> {
   let mnemonic = "specialization_resolver";

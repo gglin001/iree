@@ -114,15 +114,17 @@ static void inlineSCFBlockAndReplaceOp(PatternRewriter &rewriter, Block &block,
 //   br ^bb1(%0 : index)
 // ^bb1(%arg0: index):  // %arg1 remapped to %arg0
 struct FoldBlockArgumentsPattern
-    : public OpInterfaceRewritePattern<CallableOpInterface> {
+    : OpInterfaceRewritePattern<CallableOpInterface> {
   using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
   LogicalResult matchAndRewrite(CallableOpInterface op,
                                 PatternRewriter &rewriter) const override {
-    if (!op.getCallableRegion())
+    if (!op.getCallableRegion()) {
       return failure();
+    }
     auto &region = *op.getCallableRegion();
-    if (region.empty() || region.hasOneBlock())
+    if (region.empty() || region.hasOneBlock()) {
       return failure();
+    }
 
     // Analyze all branches in the op to compute the information we'll need to
     // analyze across branch sources.
@@ -171,11 +173,13 @@ struct FoldBlockArgumentsPattern
     for (auto &block : llvm::make_range(++region.getBlocks().begin(),
                                         region.getBlocks().end())) {
       unsigned numArgs = block.getNumArguments();
-      if (numArgs == 0)
+      if (numArgs == 0) {
         continue;
+      }
       auto blockSources = llvm::ArrayRef(blockSourceMap[&block]);
-      if (blockSources.size() == 0)
+      if (blockSources.empty()) {
         continue;
+      }
 
       // Which args we'll end up erasing.
       // We need to do the actual removal after we've done the remapping below
@@ -259,15 +263,17 @@ struct FoldBlockArgumentsPattern
 //    br ^bb1
 //  ^bb1:  // %0 remapped to %arg0
 struct ElideBranchOperandsPattern
-    : public OpInterfaceRewritePattern<CallableOpInterface> {
+    : OpInterfaceRewritePattern<CallableOpInterface> {
   using OpInterfaceRewritePattern::OpInterfaceRewritePattern;
   LogicalResult matchAndRewrite(CallableOpInterface op,
                                 PatternRewriter &rewriter) const override {
-    if (!op.getCallableRegion())
+    if (!op.getCallableRegion()) {
       return failure();
+    }
     auto &region = *op.getCallableRegion();
-    if (region.empty())
+    if (region.empty()) {
       return failure();
+    }
     DominanceInfo dominance(op);
 
     // Analyze all branches to build a map of blocks to their sources.
@@ -298,11 +304,13 @@ struct ElideBranchOperandsPattern
     for (auto &block : llvm::make_range(++region.getBlocks().begin(),
                                         region.getBlocks().end())) {
       unsigned numArgs = block.getNumArguments();
-      if (numArgs == 0)
+      if (numArgs == 0) {
         continue;
+      }
       auto blockSources = llvm::ArrayRef(blockSourceMap[&block]);
-      if (blockSources.size() == 0)
+      if (blockSources.empty()) {
         continue;
+      }
 
       // Which args we'll end up erasing.
       // We need to do the actual removal after we've done the remapping below
@@ -342,8 +350,9 @@ struct ElideBranchOperandsPattern
           uniformValue = nullptr;
           break;
         }
-        if (!uniformValue)
+        if (!uniformValue) {
           continue;
+        }
 
         // See if the uniform value dominates this block; if so we can use it.
         if (!uniformValue.getDefiningOp() ||
@@ -354,8 +363,9 @@ struct ElideBranchOperandsPattern
           elidedArgs.set(argIndex);
         }
       }
-      if (elidedArgs.none())
+      if (elidedArgs.none()) {
         continue;
+      }
 
       // Erase all the block arguments we remapped.
       for (auto &blockSource : blockSources) {
@@ -403,12 +413,13 @@ struct ElideBranchOperandsPattern
 //    %default = ...
 //    scf.yield %default : i32
 //  }
-struct IndexSwitchToIfPattern : public OpRewritePattern<scf::IndexSwitchOp> {
+struct IndexSwitchToIfPattern : OpRewritePattern<scf::IndexSwitchOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(scf::IndexSwitchOp switchOp,
                                 PatternRewriter &rewriter) const override {
-    if (switchOp.getNumCases() != 1)
+    if (switchOp.getNumCases() != 1) {
       return failure();
+    }
     Value caseValue = arith::ConstantIndexOp::create(
         rewriter, switchOp.getLoc(), switchOp.getCases().front());
     Value isCaseValue = rewriter.createOrFold<arith::CmpIOp>(
@@ -464,7 +475,7 @@ struct IndexSwitchToIfPattern : public OpRewritePattern<scf::IndexSwitchOp> {
 //    bar_default
 //    scf.yield
 //  }
-struct MergeIndexSwitchPattern : public OpRewritePattern<scf::IndexSwitchOp> {
+struct MergeIndexSwitchPattern : OpRewritePattern<scf::IndexSwitchOp> {
   MergeIndexSwitchPattern(MLIRContext *context)
       : OpRewritePattern(context, 1000) {}
   LogicalResult matchAndRewrite(scf::IndexSwitchOp nextOp,
@@ -472,16 +483,19 @@ struct MergeIndexSwitchPattern : public OpRewritePattern<scf::IndexSwitchOp> {
     // Inspect the previous op to see if it's also a switch.
     auto prevOp =
         dyn_cast_if_present<scf::IndexSwitchOp>(nextOp->getPrevNode());
-    if (!prevOp)
+    if (!prevOp) {
       return failure();
+    }
 
     // Require that the cases line up exactly. There's probably some merging
     // we could do in other cases but it'd be best to leave other patterns to
     // hoist/CSE cases/etc instead.
-    if (prevOp.getNumCases() != nextOp.getNumCases())
+    if (prevOp.getNumCases() != nextOp.getNumCases()) {
       return rewriter.notifyMatchFailure(nextOp, "number of cases differ");
-    if (!llvm::equal(prevOp.getCases(), nextOp.getCases()))
+    }
+    if (!llvm::equal(prevOp.getCases(), nextOp.getCases())) {
       return rewriter.notifyMatchFailure(nextOp, "case values differ");
+    }
 
     // Create a new switch to replace nextOp that contains the same cases but
     // combined results from both ops.
@@ -518,8 +532,9 @@ struct MergeIndexSwitchPattern : public OpRewritePattern<scf::IndexSwitchOp> {
       // values for the particular case.
       auto yieldA = *regionA.getOps<scf::YieldOp>().begin();
       for (auto &op : regionA.getOps()) {
-        if (op.hasTrait<OpTrait::IsTerminator>())
+        if (op.hasTrait<OpTrait::IsTerminator>()) {
           continue;
+        }
         // Clone each op and map its original value to the new local value.
         targetBuilder.clone(op, localMapping);
       }
@@ -534,8 +549,9 @@ struct MergeIndexSwitchPattern : public OpRewritePattern<scf::IndexSwitchOp> {
       // Clone regionB into target.
       auto yieldB = *regionB.getOps<scf::YieldOp>().begin();
       for (auto &op : regionB.getOps()) {
-        if (op.hasTrait<OpTrait::IsTerminator>())
+        if (op.hasTrait<OpTrait::IsTerminator>()) {
           continue;
+        }
         // Clone each op and map its original value to the new local value.
         targetBuilder.clone(op, localMapping);
       }
@@ -584,7 +600,7 @@ struct MergeIndexSwitchPattern : public OpRewritePattern<scf::IndexSwitchOp> {
 //  // TODO: add assertion that !%cond when we have util.assume.* propagation
 //  // to indicate that the opposite of `%cond` is true.
 //  "some.op"() : () -> ()
-struct SimplifyIfWithUnreachablePattern : public OpRewritePattern<scf::IfOp> {
+struct SimplifyIfWithUnreachablePattern : OpRewritePattern<scf::IfOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(scf::IfOp ifOp,
                                 PatternRewriter &rewriter) const override {
@@ -651,8 +667,7 @@ struct SimplifyIfWithUnreachablePattern : public OpRewritePattern<scf::IfOp> {
 };
 
 // Simplifies scf.while when the body contains unreachable.
-struct SimplifyWhileWithUnreachablePattern
-    : public OpRewritePattern<scf::WhileOp> {
+struct SimplifyWhileWithUnreachablePattern : OpRewritePattern<scf::WhileOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(scf::WhileOp whileOp,
                                 PatternRewriter &rewriter) const override {
@@ -697,7 +712,7 @@ struct SimplifyWhileWithUnreachablePattern
 
 // Simplifies scf.index_switch when cases contain unreachable.
 struct SimplifyIndexSwitchWithUnreachablePattern
-    : public OpRewritePattern<scf::IndexSwitchOp> {
+    : OpRewritePattern<scf::IndexSwitchOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(scf::IndexSwitchOp switchOp,
                                 PatternRewriter &rewriter) const override {
@@ -785,7 +800,7 @@ struct SimplifyIndexSwitchWithUnreachablePattern
 };
 
 // Simplifies scf.for when the body contains unreachable.
-struct SimplifyForWithUnreachablePattern : public OpRewritePattern<scf::ForOp> {
+struct SimplifyForWithUnreachablePattern : OpRewritePattern<scf::ForOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(scf::ForOp forOp,
                                 PatternRewriter &rewriter) const override {
@@ -817,8 +832,7 @@ struct SimplifyForWithUnreachablePattern : public OpRewritePattern<scf::ForOp> {
 
 // Simplifies unconditional branches to blocks that are unreachable.
 // This is likely to happen via other patterns but we preserve this for defense.
-struct SimplifyBranchToUnreachablePattern
-    : public OpRewritePattern<cf::BranchOp> {
+struct SimplifyBranchToUnreachablePattern : OpRewritePattern<cf::BranchOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(cf::BranchOp branchOp,
                                 PatternRewriter &rewriter) const override {
@@ -848,7 +862,7 @@ struct SimplifyBranchToUnreachablePattern
 //   │  reachable      │  unreachable    │  cf.br ^true         │
 //   └─────────────────┴─────────────────┴──────────────────────┘
 struct SimplifyCondBranchToUnreachablePattern
-    : public OpRewritePattern<cf::CondBranchOp> {
+    : OpRewritePattern<cf::CondBranchOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(cf::CondBranchOp condBr,
                                 PatternRewriter &rewriter) const override {

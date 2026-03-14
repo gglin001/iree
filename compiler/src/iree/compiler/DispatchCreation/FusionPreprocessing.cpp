@@ -45,13 +45,14 @@ namespace {
 
 // If possible, interchange indexing maps to make input maps all identity.
 struct ElementwiseOpInterchangePattern final
-    : public OpRewritePattern<linalg::GenericOp> {
+    : OpRewritePattern<linalg::GenericOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(linalg::GenericOp genericOp,
                                 PatternRewriter &rewriter) const override {
     if (!linalg::isElementwise(genericOp) || genericOp.getNumResults() != 1 ||
-        genericOp.getNumDpsInputs() == 0)
+        genericOp.getNumDpsInputs() == 0) {
       return failure();
+    }
 
     // All input maps must be equal and non-identity. All maps, including
     // output, must be be permutations. Permutation maps are checked by
@@ -97,7 +98,7 @@ struct ElementwiseOpInterchangePattern final
 /// %3 = tensor.insert_slice %a into %2
 /// ```
 struct FoldSuccessiveTensorInsertSliceOps final
-    : public OpRewritePattern<tensor::InsertSliceOp> {
+    : OpRewritePattern<tensor::InsertSliceOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(tensor::InsertSliceOp sliceOp,
                                 PatternRewriter &rewriter) const override {
@@ -148,7 +149,7 @@ struct FoldSuccessiveTensorInsertSliceOps final
 };
 
 struct FusionPreprocessingPass final
-    : public impl::FusionPreprocessingPassBase<FusionPreprocessingPass> {
+    : impl::FusionPreprocessingPassBase<FusionPreprocessingPass> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     patterns.add<ElementwiseOpInterchangePattern,

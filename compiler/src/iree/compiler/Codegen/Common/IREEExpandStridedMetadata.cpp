@@ -154,12 +154,13 @@ namespace {
 /// interface binding. This preserves SSA links through buffer binding
 /// optimizations that update offsets.
 struct ConvertMemRefExtractMetadataToIREECodegen
-    : public OpRewritePattern<memref::ExtractStridedMetadataOp> {
+    : OpRewritePattern<memref::ExtractStridedMetadataOp> {
   using OpRewritePattern<memref::ExtractStridedMetadataOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(memref::ExtractStridedMetadataOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!getSourceInterfaceBinding(op.getSource()))
+    if (!getSourceInterfaceBinding(op.getSource())) {
       return failure();
+    }
     // Replace with iree_codegen version which doesn't fold.
     rewriter.replaceOpWithNewOp<IREE::Codegen::ExtractStridedMetadataOp>(
         op, op.getSource());
@@ -168,13 +169,14 @@ struct ConvertMemRefExtractMetadataToIREECodegen
 };
 
 struct ResolveExtractMetadataFromHalInterfaceBindingSubspan
-    : public OpRewritePattern<IREE::Codegen::ExtractStridedMetadataOp> {
+    : OpRewritePattern<IREE::Codegen::ExtractStridedMetadataOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(IREE::Codegen::ExtractStridedMetadataOp op,
                                 PatternRewriter &rewriter) const override {
     auto binding = getSourceInterfaceBinding(op.getSource());
-    if (!binding)
+    if (!binding) {
       return failure();
+    }
     auto memRefType = cast<MemRefType>(binding->getResult().getType());
 
     auto loc = op.getLoc();
@@ -278,7 +280,7 @@ struct ResolveExtractMetadataFromHalInterfaceBindingSubspan
 /// a HAL binding (those are resolved by
 /// ResolveExtractMetadataFromHalInterfaceBindingSubspan).
 struct ConvertIREECodegenExtractMetadataToMemRef
-    : public OpRewritePattern<IREE::Codegen::ExtractStridedMetadataOp> {
+    : OpRewritePattern<IREE::Codegen::ExtractStridedMetadataOp> {
   using OpRewritePattern<
       IREE::Codegen::ExtractStridedMetadataOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(IREE::Codegen::ExtractStridedMetadataOp op,
@@ -287,8 +289,9 @@ struct ConvertIREECodegenExtractMetadataToMemRef
     // Pattern ResolveExtractMetadataFromHalInterfaceBindingSubspan must
     // resolve these first to preserve SSA links through buffer binding
     // optimizations.
-    if (getSourceInterfaceBinding(op.getSource()))
+    if (getSourceInterfaceBinding(op.getSource())) {
       return failure();
+    }
 
     // Only convert ops that don't have HAL bindings (or are already resolved).
     rewriter.replaceOpWithNewOp<memref::ExtractStridedMetadataOp>(
@@ -343,7 +346,10 @@ void IREEExpandStridedMetadataPass::runOnOperation() {
   RewritePatternSet patterns(context);
   populateIREEResolveExtractStridedMetadataPatterns(patterns,
                                                     allowSubviewExpansion);
-  if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+  GreedyRewriteConfig config;
+  config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+  if (failed(
+          applyPatternsGreedily(getOperation(), std::move(patterns), config))) {
     return signalPassFailure();
   }
 

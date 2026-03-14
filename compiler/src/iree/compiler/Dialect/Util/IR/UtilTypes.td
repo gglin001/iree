@@ -17,6 +17,7 @@ include "iree/compiler/Dialect/Util/IR/UtilInterfaces.td"
 def Util_BufferType : Util_TypeDef<"Buffer", [
   Util_ReferenceType,
   Util_SizeAwareType,
+  Util_HoistableType,
   DeclareTypeInterfaceMethods<Util_GlobalType, [
     "isAccessStorageCompatible",
   ]>,
@@ -58,6 +59,9 @@ def Util_ListType : Util_TypeDef<"List"> {
   );
 
   let builders = [
+    TypeBuilder<(ins), [{
+      return $_get($_ctxt, IREE::Util::VariantType::get($_ctxt));
+    }]>,
     TypeBuilderWithInferredContext<(ins
       "Type":$element_type
     ), [{

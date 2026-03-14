@@ -37,7 +37,7 @@ static size_t getGlobalStorageSize(IREE::Util::GlobalOpInterface globalOp) {
 // NOTE: symbols are serialized in ordinal-order (hence the name!) and we have
 // an opportunity here to set the layout of the final binaries, similar to how
 // old-timey games would layout files on their spinning plastic discs to
-// optimize the time spent moving a physical laser carridge around. Functions
+// optimize the time spent moving a physical laser carriage around. Functions
 // related to each other and global data accessed in proximity should be
 // clustered together to make use of paging in memory mapped files.
 class OrdinalAllocationPass
@@ -85,8 +85,9 @@ class OrdinalAllocationPass
     int globalBytes = 0;
     for (auto sizeGlobalOps : llvm::enumerate(primitiveGlobalOps)) {
       size_t storageSize = sizeGlobalOps.index();
-      if (sizeGlobalOps.value().empty())
+      if (sizeGlobalOps.value().empty()) {
         continue;
+      }
       nextGlobalBytesOrdinal =
           llvm::alignTo(nextGlobalBytesOrdinal, storageSize);
       for (auto &globalOp : sizeGlobalOps.value()) {

@@ -45,8 +45,9 @@ namespace {
 static bool doesOperationNeedWrapping(Operation *op) {
   return llvm::any_of(op->getOperands(),
                       [](Value operand) {
-                        if (!isa<TensorType>(operand.getType()))
+                        if (!isa<TensorType>(operand.getType())) {
                           return false;
+                        }
                         return !isa_and_nonnull<TensorExportOp>(
                             operand.getDefiningOp());
                       }) ||
@@ -61,7 +62,7 @@ static bool doesOperationNeedWrapping(Operation *op) {
 
 // Fallback handler for unknown ops taking/returning tensors that need to be
 // marshaled into/outof stream resource types.
-struct GenericResourcePattern : public ConversionPattern {
+struct GenericResourcePattern : ConversionPattern {
   GenericResourcePattern(MLIRContext *context, TypeConverter &converter,
                          IREE::Stream::AffinityAnalysis *affinityAnalysis)
       : ConversionPattern(converter, MatchAnyOpTypeTag(), 0, context),
@@ -72,6 +73,27 @@ struct GenericResourcePattern : public ConversionPattern {
                   ConversionPatternRewriter &rewriter) const override {
     if (!doesOperationNeedWrapping(op)) {
       return failure();
+    }
+
+    // We cannot support unknown operations with dynamically shaped tensors if
+    // they are not shape/size-aware. Importing a dynamically shaped
+    // tensor requires to determine the size and for operations that are not
+    // shape/size-aware, this would require inserting `tensor.dim` operations,
+    // which are illegal after this pass.
+    auto anyDynamicTensorTy = [](TypeRange types) {
+      return llvm::any_of(types, [](Type t) {
+        if (auto tensorTy = dyn_cast<TensorType>(t)) {
+          return !tensorTy.hasStaticShape();
+        }
+        return false;
+      });
+    };
+    if (!llvm::IsaPred<IREE::Util::ShapeAwareOpInterface,
+                       IREE::Util::SizeAwareOpInterface>(op) &&
+        anyDynamicTensorTy(op->getResultTypes())) {
+      return rewriter.notifyMatchFailure(
+          op, "dynamic tensor import for non-shape, "
+              "non-size aware operation not supported");
     }
 
     auto executionAffinityAttr = affinityAnalysis->inferExecutionAffinity(op);
@@ -216,7 +238,7 @@ static void stripAffinityAttrs(ModuleOp moduleOp) {
 //===----------------------------------------------------------------------===//
 
 struct ConvertToStreamPass final
-    : public IREE::Stream::impl::ConvertToStreamPassBase<ConvertToStreamPass> {
+    : IREE::Stream::impl::ConvertToStreamPassBase<ConvertToStreamPass> {
   void runOnOperation() override {
     auto *context = &getContext();
 

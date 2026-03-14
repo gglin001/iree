@@ -8,10 +8,13 @@
 #include "iree/compiler/Dialect/Encoding/IR/EncodingDialect.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingOps.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h"
+#include "iree/compiler/Dialect/Encoding/Utils/Utils.h"
+#include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtInterfaces.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 
 #define DEBUG_TYPE "iree-encoding-external-models"
@@ -33,7 +36,8 @@ namespace {
 /// 1. Are encoded by casting their types to the encoded types.
 /// 2. Are able to directly use the source of any producer unset_encoding ops
 ///    for propagation, and do not need to re-set the encoding.
-static IREE::Encoding::PropagationResult propagateThroughEncodingCastableOp(
+static FailureOr<IREE::Encoding::PropagationResult>
+propagateThroughEncodingCastableOp(
     RewriterBase &builder, Operation *op,
     IREE::Encoding::PropagationEncoding encodings,
     OpOperand *propagationSource) {
@@ -43,6 +47,22 @@ static IREE::Encoding::PropagationResult propagateThroughEncodingCastableOp(
       propagationSource->get().getDefiningOp<IREE::Encoding::UnsetEncodingOp>();
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPoint(op);
+
+  // Try to rematerialize encoding dims at the new insertion point.
+  // For bubble-up propagation through encoding castable ops (tensor.cast,
+  // tensor.collapse_shape, etc.), tensor.dim ops on the result can be
+  // recreated from the source operand. These ops have a single tensor
+  // input as their first operand.
+  Value sourceOperand = op->getOperand(0);
+  FailureOr<SmallVector<Value>> rematerializedDims =
+      IREE::Encoding::rematerializeEncodingDims(
+          builder, op, encodings.encodingDims, propagationSource->get(),
+          sourceOperand);
+  if (failed(rematerializedDims)) {
+    return failure();
+  }
+  encodings.encodingDims = *rematerializedDims;
+
   for (auto [operand, encoding] :
        llvm::zip_equal(op->getOperands(), encodings.operandEncodings)) {
     // Scalar operands do not need encodings.
@@ -71,7 +91,8 @@ static IREE::Encoding::PropagationResult propagateThroughEncodingCastableOp(
     }
     // Otherwise, we need to create a new set_encoding op.
     auto setEncodingOp = IREE::Encoding::SetEncodingOp::create(
-        builder, op->getLoc(), encodedOperandType, operand);
+        builder, op->getLoc(), encodedOperandType, operand,
+        encodings.encodingDims);
     encodedOperands.push_back(setEncodingOp.getResult());
     result.generatedEncodingOps.push_back(setEncodingOp);
   }
@@ -100,7 +121,7 @@ static IREE::Encoding::PropagationResult propagateThroughEncodingCastableOp(
     std::tie(std::ignore, resultDynamicDims) = decomposeMixedValues(mixedSizes);
     auto unsetEncodingOp = IREE::Encoding::UnsetEncodingOp::create(
         builder, op->getLoc(), originalResult.getType(), encodedResult,
-        resultDynamicDims);
+        resultDynamicDims, encodings.encodingDims);
     result.generatedEncodingOps.push_back(unsetEncodingOp);
     result.replacements.push_back(unsetEncodingOp.getResult());
   }
@@ -112,7 +133,7 @@ struct EncodingAttrPropagationInterface final
           EncodingAttrPropagationInterface, IREE::Encoding::EncodingAttr> {
   bool isPropagableDown(Attribute attr, OpOperand *target) const {
     return TypeSwitch<Operation *, bool>(target->getOwner())
-        .Case<linalg::GenericOp>([&](auto genericOp) {
+        .Case([&](linalg::GenericOp genericOp) {
           // Only support parallel generic ops.
           if (genericOp.getNumReductionLoops() != 0) {
             return false;
@@ -131,7 +152,7 @@ struct EncodingAttrPropagationInterface final
           }
           return true;
         })
-        .Default([&](auto) { return false; });
+        .Default(false);
   }
 
   FailureOr<IREE::Encoding::PropagationEncoding>
@@ -140,7 +161,7 @@ struct EncodingAttrPropagationInterface final
     return TypeSwitch<Operation *,
                       FailureOr<IREE::Encoding::PropagationEncoding>>(
                target->getOwner())
-        .Case<linalg::GenericOp>([&](auto genericOp) {
+        .Case([&](linalg::GenericOp genericOp) {
           IREE::Encoding::PropagationEncoding propEncoding;
           propEncoding.operandEncodings.reserve(genericOp->getNumOperands());
           // Append the target and respective operand's indexing maps to the
@@ -179,7 +200,7 @@ struct EncodingAttrPropagationInterface final
           }
           return propEncoding;
         })
-        .Default([&](auto) { return failure(); });
+        .Default(failure());
   }
 };
 
@@ -189,14 +210,14 @@ struct LayoutAttrPropagationInterface final
   bool isPropagableUp(Attribute attr, OpResult target) const {
     auto layoutAttr = cast<IREE::Encoding::LayoutAttr>(attr);
     return TypeSwitch<Operation *, bool>(target.getOwner())
-        .Case<tensor::CastOp>([&](auto castOp) {
+        .Case([&](tensor::CastOp castOp) {
           // CastOp is propagable if it is casting between compatible shapes,
           // because the dimensions need to be consistent with the
           // user_indexing_maps carried by the encoding. The tensor.cast op
           // verifier already guarantees that the shapes are compatible.
           return layoutAttr.isSerialized();
         })
-        .Default([&](auto) { return false; });
+        .Default(false);
   }
 
   FailureOr<IREE::Encoding::PropagationEncoding>
@@ -205,13 +226,13 @@ struct LayoutAttrPropagationInterface final
     return TypeSwitch<Operation *,
                       FailureOr<IREE::Encoding::PropagationEncoding>>(
                target.getOwner())
-        .Case<tensor::CastOp>([&](tensor::CastOp) {
+        .Case([&](tensor::CastOp) {
           IREE::Encoding::PropagationEncoding propEncoding;
           propEncoding.resultEncodings.push_back(encoding);
           propEncoding.operandEncodings.push_back(encoding);
           return propEncoding;
         })
-        .Default([&](auto) { return failure(); });
+        .Default(failure());
   }
 };
 
@@ -239,6 +260,56 @@ struct EncodingCastableOpPropagationInterfaceHelper {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// LinalgFusionOpInterface for Encoding Ops
+//===----------------------------------------------------------------------===//
+
+/// External model for encoding ops implementing LinalgFusionOpInterface.
+/// All dimensions are parallel with identity indexing maps.
+template <typename ConcreteType>
+struct EncodingFusionOpInterfaceAdapter
+    : IREE::LinalgExt::LinalgFusionOpInterface::ExternalModel<
+          EncodingFusionOpInterfaceAdapter<ConcreteType>, ConcreteType> {
+  SmallVector<AffineMap> getIndexingMapsForOperands(Operation *op) const {
+    int64_t rank = cast<ConcreteType>(op).getResultType().getRank();
+    return {AffineMap::getMultiDimIdentityMap(rank, op->getContext())};
+  }
+
+  SmallVector<AffineMap> getIndexingMapsForResults(Operation *op) const {
+    int64_t rank = cast<ConcreteType>(op).getResultType().getRank();
+    return {AffineMap::getMultiDimIdentityMap(rank, op->getContext())};
+  }
+
+  SmallVector<AffineMap> getIndexingMapsArray(Operation *op) const {
+    auto operandMaps = getIndexingMapsForOperands(op);
+    llvm::append_range(operandMaps, getIndexingMapsForResults(op));
+    return operandMaps;
+  }
+
+  unsigned getNumParallelLoops(Operation *op) const {
+    return cast<ConcreteType>(op).getResultType().getRank();
+  }
+
+  unsigned getNumLoops(Operation *op) const {
+    return cast<ConcreteType>(op).getResultType().getRank();
+  }
+
+  SmallVector<int64_t> getStaticLoopRanges(Operation *op) const {
+    auto type = cast<ConcreteType>(op).getResultType();
+    return SmallVector<int64_t>(type.getShape());
+  }
+
+  AffineMap getIndexingMapMatchingResult(Operation *op, OpResult result) const {
+    assert(result.getOwner() == op);
+    return getIndexingMapsForResults(op)[result.getResultNumber()];
+  }
+
+  AffineMap getMatchingIndexingMap(Operation *op, OpOperand *opOperand) const {
+    assert(opOperand->getOwner() == op);
+    return getIndexingMapsArray(op)[opOperand->getOperandNumber()];
+  }
+};
+
 } // namespace
 
 void registerEncodingExternalModels(DialectRegistry &registry) {
@@ -247,6 +318,11 @@ void registerEncodingExternalModels(DialectRegistry &registry) {
     IREE::Encoding::EncodingAttr::attachInterface<
         EncodingAttrPropagationInterface>(*ctx);
     IREE::Encoding::LayoutAttr::attachInterface<LayoutAttrPropagationInterface>(
+        *ctx);
+    IREE::Encoding::SetEncodingOp::attachInterface<
+        EncodingFusionOpInterfaceAdapter<IREE::Encoding::SetEncodingOp>>(*ctx);
+    IREE::Encoding::UnsetEncodingOp::attachInterface<
+        EncodingFusionOpInterfaceAdapter<IREE::Encoding::UnsetEncodingOp>>(
         *ctx);
   });
   registry.addExtension(

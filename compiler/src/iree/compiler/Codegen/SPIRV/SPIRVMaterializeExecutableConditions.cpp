@@ -44,7 +44,7 @@ struct KernelFeatures {
   // Note that i32 or i1 is assumed to always exist and does not appear in
   // this bitfield.
   uint32_t computeInt;
-  // Storage bitwidth requirement bitfiled:
+  // Storage bitwidth requirement bitfield:
   // * 0b01: 8-bit
   // * 0b10: 16-bit
   uint32_t storage;
@@ -157,8 +157,9 @@ LogicalResult mapToDeviceQuery(IREE::HAL::ExecutableExportOp entryPoint,
         entryPoint->getAttrOfType<ArrayAttr>("iree.spirv.coopmatrix.type");
     auto coopmatShape = entryPoint->getAttrOfType<DenseI64ArrayAttr>(
         "iree.spirv.coopmatrix.shape");
-    if (!coopmatType || !coopmatShape)
+    if (!coopmatType || !coopmatShape) {
       return failure();
+    }
 
     Type inputType = cast<TypeAttr>(coopmatType.getValue().front()).getValue();
     Type outputType = cast<TypeAttr>(coopmatType.getValue().back()).getValue();
@@ -168,7 +169,7 @@ LogicalResult mapToDeviceQuery(IREE::HAL::ExecutableExportOp entryPoint,
 
     // We explicitly perform exact match here given that 1) we need to have the
     // corresponding query in the runtime, and 2) we are not using a lot of
-    // configuarations in CodeGen yet.
+    // configurations in CodeGen yet.
     if (inputType.isF16() && outputType.isF16()) {
       if (mSize == 16 && nSize == 16 && kSize == 16) {
         features.coopMatrix |= 0b1;
@@ -277,8 +278,9 @@ struct SPIRVMaterializeExecutableConditionsPass final
           SPIRVMaterializeExecutableConditionsPass> {
   void runOnOperation() override {
     IREE::HAL::ExecutableVariantOp variantOp = getOperation();
-    if (!usesSPIRVCodeGen(variantOp))
+    if (!usesSPIRVCodeGen(variantOp)) {
       return;
+    }
 
     IREE::HAL::ExecutableTargetAttr executableTarget = variantOp.getTarget();
     DictionaryAttr configuration = executableTarget.getConfiguration();

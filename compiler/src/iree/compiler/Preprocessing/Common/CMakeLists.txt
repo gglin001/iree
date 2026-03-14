@@ -28,7 +28,7 @@ iree_cc_library(
   SRCS
     "ApplyPDLPatterns.cpp"
     "AttrBasedPipelinePass.cpp"
-    "ConvertConv2DToImg2Col.cpp"
+    "Convert1X1FilterConv2DToMatmul.cpp"
     "ConvertConvFilterToChannelsLast.cpp"
     "ConvertConvToChannelsLast.cpp"
     "FoldAttentionWithTranspose.cpp"
@@ -38,7 +38,6 @@ iree_cc_library(
     "PadLinalgOps.cpp"
     "PadToIntrinsics.cpp"
     "Passes.cpp"
-    "SinkTransposeThroughPad.cpp"
     "TransposeMatmul.cpp"
   DEPS
     ::PassesIncGen

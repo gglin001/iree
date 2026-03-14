@@ -15,12 +15,15 @@ include "iree/compiler/Utils/CommonTypeConstraints.td"
 include "mlir/Dialect/Linalg/IR/LinalgBase.td"
 include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/OpBase.td"
+include "mlir/IR/Properties.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/TilingInterface.td"
 include "mlir/Interfaces/VectorInterfaces.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/ValueBoundsOpInterface.td"
+include "mlir/Dialect/SMT/IR/SMTTypes.td"
 
 def TensorTypeAttr : TypeAttrBase<"::mlir::TensorType", "Tensor type attribute">;
 
@@ -112,6 +115,22 @@ def IREECodegen_ExtractStridedMetadataOp : Op<IREECodegen_Dialect, "extract_stri
 }
 
 //===----------------------------------------------------------------------===//
+// FusionBarrierOp
+//===----------------------------------------------------------------------===//
+
+def IREECodegen_FusionBarrierOp :
+    Op<IREECodegen_Dialect, "fusion_barrier", [
+      SameOperandsAndResultType, Pure]> {
+  let summary = [{Prevents fusion through a tensor value}];
+
+  let arguments = (ins AnyRankedTensor:$source);
+  let results = (outs AnyRankedTensor:$result);
+  let assemblyFormat = [{
+    attr-dict $source `:` type($result)
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // SwizzleHintOp
 //===----------------------------------------------------------------------===//
 
@@ -156,9 +175,9 @@ def IREECodegen_SwizzleHintOp : Op<IREECodegen_Dialect, "swizzle_hint", [
     is otherwise perfectly legal.
   }];
 
-  let arguments = (ins RankedTensorOrMemRefOf<[AnyType], [1]>:$operand,
+  let arguments = (ins AnyRankedTensorOrMemRef:$operand,
                        IREECodegen_AnySwizzleAttr:$swizzle);
-  let results = (outs RankedTensorOrMemRefOf<[AnyType], [1]>:$result);
+  let results = (outs AnyRankedTensorOrMemRef:$result);
 
   let assemblyFormat = [{
     $operand `[` $swizzle attr-dict `]` `:` type($result)
@@ -238,6 +257,8 @@ def IREECodegen_InnerTiledOp : Op<IREECodegen_Dialect, "inner_tiled", [
     AttrSizedOperandSegments,
     InferTypeOpAdaptor,
     DestinationStyleOpInterface,
+    DeclareOpInterfaceMethods<ValueBoundsOpInterface,
+       ["populateBoundsForShapedValueDim"]>,
     DeclareOpInterfaceMethods<VectorUnrollOpInterface, ["getShapeForUnroll"]>,
     DeclareOpInterfaceMethods<TilingInterface,
        ["getIterationDomain",
@@ -348,7 +369,7 @@ def IREECodegen_InnerTiledOp : Op<IREECodegen_Dialect, "inner_tiled", [
 
     Note that different `kind` attributes may adopt different conventions as to
     the intrinsic vector tile formats. Some may use only flattened 1-D vectors,
-    and it may be necessary to use `opaque = true` to accomodate them. Others
+    and it may be necessary to use `opaque = true` to accommodate them. Others
     may use higher-rank vectors with shapes reflecting semantics, allowing to
     use `opaque = false`, which is preferable when possible at all thanks to the
     stricter semantics. However, that is not only a function of the `kind`
@@ -401,7 +422,7 @@ def IREECodegen_InnerTiledOp : Op<IREECodegen_Dialect, "inner_tiled", [
 
   let arguments = (ins Variadic<AnyRankedTensorOrVector>:$inputs,
       Variadic<AnyRankedTensorOrVector>:$outputs,
-      TypedArrayAttrBase<AffineMapAttr, "indxing affine maps">:$indexing_maps,
+      TypedArrayAttrBase<AffineMapAttr, "indexing affine maps">:$indexing_maps,
       IteratorTypeArrayAttr:$iterator_types,
       IREECodegen_AnyInnerTileDescAttr:$kind,
       IREECodegen_AnyInnerTiledSemanticscAttr:$semantics,
@@ -491,6 +512,275 @@ def IREECodegen_InnerTiledOp : Op<IREECodegen_Dialect, "inner_tiled", [
     }
   }];
 
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// HintWorkgroupCountOp
+//===----------------------------------------------------------------------===//
+
+def IREECodegen_WorkgroupCountHintOp :
+    Op<IREECodegen_Dialect, "workgroup_count_hint", []> {
+  let summary = [{Hints at the workgroup count to set}];
+
+  let description = [{
+    Captures a set of values to use as the workgroup count. The backward slice
+    starting from this op's operands is cloned into the workgroup count region
+    of all transitive callers.
+
+    The sizes are specified in logical order (innermost to outermost), matching
+    the workgroup count region's (x, y, z) convention. If fewer than 3 sizes
+    are provided, the remaining dimensions default to 1.
+
+    If multiple hints inform the same entry point, the **elementwise maximum**
+    across all hints is used as the count along each dimension. For example:
+
+    ```mlir
+    hal.executable.export @entry_point
+    module {
+      func.func @entry_point() {
+        iree_codegen.workgroup_count_hint sizes(%a, %b, %c)
+        iree_codegen.workgroup_count_hint sizes(%x, %y, %z)
+      }
+    }
+    ```
+
+    resolves to:
+
+    ```mlir
+    hal.executable.export @entry_point {
+      %wx = arith.maxsi %a, %x
+      %wy = arith.maxsi %b, %y
+      %wz = arith.maxsi %c, %z
+      hal.return %wx, %wy, %wz
+    }
+    ```
+
+    #### Common Usage: Linearized Workgroup Counts
+
+    The most common use case for this operation involves computing a linearized
+    (1-D) workgroup count and specifying it as a single size.
+
+    ```mlir
+    %num_workgroups = arith.ceildivui %total_iterations, %tile_size : index
+    iree_codegen.workgroup_count_hint sizes(%num_workgroups)
+    ```
+
+    This results in `(%num_workgroups, 1, 1)` as the final workgroup count.
+  }];
+
+  let arguments = (ins
+    Variadic<Index>:$sizes,
+    DenseI64ArrayAttr:$static_sizes
+  );
+  let results = (outs);
+  let hasCustomAssemblyFormat = 1;
+
+  let builders = [
+    OpBuilder<(ins "ArrayRef<OpFoldResult>":$sizes)>
+  ];
+
+  let extraClassDeclaration = [{
+    /// Returns a vector with all the static and dynamic sizes.
+    SmallVector<OpFoldResult> getMixedSizes() {
+      OpBuilder builder(getContext());
+      return ::mlir::getMixedValues(getStaticSizes(), getSizes(), builder);
+    }
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// IndexHintOp
+//===----------------------------------------------------------------------===//
+
+def IREECodegen_IndexHintOp : Op<IREECodegen_Dialect, "index_hint", [Pure]> {
+  let summary = "Compiler hint providing semantic information about an index";
+  let description = [{
+    Pure pass-through operation that annotates an index value with semantic
+    information about how it varies across parallel workers (e.g., GPU lanes).
+
+    The hint attribute describes the index behavior. Common hints include:
+    - `#iree_gpu.lane_constant<N>`: Index is uniform within groups of N lanes
+    - `#iree_gpu.lane_increment<N>`: Index increments by 1 within groups of N lanes
+
+    This operation is always safe to remove (replace with input). It exists
+    purely to guide optimization passes.
+
+    Example:
+    ```mlir
+    %row = iree_codegen.index_hint %idx(#iree_gpu.lane_constant<16>) : index
+    %col = iree_codegen.index_hint %idx(#iree_gpu.lane_increment<16>) : index
+    ```
+  }];
+
+  let arguments = (ins Index:$input, AnyAttr:$hint);
+  let results = (outs Index:$result);
+
+  let assemblyFormat = "$input `(` $hint `)` attr-dict `:` type($input)";
+}
+
+//===----------------------------------------------------------------------===//
+// ConstraintsOp
+//===----------------------------------------------------------------------===//
+
+def IREECodegen_ConstraintsOp :
+    Op<IREECodegen_Dialect, "smt.constraints",
+       [IsolatedFromAbove, SingleBlock, NoTerminator]> {
+  let summary = "SMT constraints for a codegen configuration of root ops.";
+  let description = [{
+    Declares SMT constraints over problem dimensions and configuration
+    knobs for a codegen pipeline, targeting a set of root ops.
+
+    `target`: A `#iree_codegen.root_op<set = N>` attribute identifying
+    which root op set these constraints apply to. All ops marked with
+    the same `#iree_codegen.root_op<set = N>` attribute share the same
+    lowering config. This decouples constraints from SSA values, so ops
+    with zero or multiple results are supported.
+
+    `pipeline`: The codegen pipeline to use. This is a fixed choice,
+    not decided by the solver.
+
+    `knobs`: DictionaryAttr mirroring GPULoweringConfigAttr. Leaves
+    that are `#iree_codegen.smt.int_knob<"name">` attrs name tunable SMT
+    constants (materialized by `iree_codegen.smt.knob` ops in the body).
+    Integer/attr leaves are fixed.
+
+    `problem_dims`: index-typed problem dimensions; corresponding block
+    arguments are !smt.int.
+
+    Does not have any execution semantics and is meant to be used by the
+    tuner or verification passes, and erased before lowering.
+
+    Example:
+    ```mlir
+    // The matmul is marked: {root_op = #iree_codegen.root_op<set = 0>}
+    iree_codegen.smt.constraints target = <set = 0>, pipeline = LLVMGPUVectorDistribute,
+     knobs = {workgroup = [#iree_codegen.smt.int_knob<"wg_m">, #iree_codegen.smt.int_knob<"wg_n">]}
+     dims(%M, %N, %K) {
+    ^bb0(%m: !smt.int, %n: !smt.int, %k: !smt.int):
+      %wg_m = iree_codegen.smt.knob "wg_m" : !smt.int
+      %wg_n = iree_codegen.smt.knob "wg_n" : !smt.int
+    }
+    ```
+  }];
+  let arguments = (ins
+    IREECodegen_RootOpAttr:$target,
+    AnyAttrOf<[DispatchLoweringPassPipelineAttr,
+               IREECodegen_PipelineAttrInterface]>:$pipeline,
+    DictionaryAttr:$knobs,
+    Variadic<Index>:$problem_dims
+  );
+  let regions = (region SizedRegion<1>:$body);
+  let results = (outs);
+  let assemblyFormat = [{
+    `target` `=` $target `,` `pipeline` `=` custom<PipelineAttr>($pipeline) `,`
+    custom<KnobsDictionary>($knobs)
+    `dims` `(` $problem_dims `)` attr-dict-with-keyword
+    $body
+  }];
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// AssertOp
+//===----------------------------------------------------------------------===//
+
+def IREECodegen_AssertOp :
+    Op<IREECodegen_Dialect, "smt.assert", [HasParent<"ConstraintsOp">]> {
+  let summary = "Named SMT assertion for constraint verification.";
+  let description = [{
+    Asserts that a boolean SMT expression holds, with a human-readable
+    format string describing what is being checked. The format string may
+    contain `{}` placeholders that correspond positionally to the `args`
+    operands. An evaluator or verifier can substitute concrete values into
+    the placeholders for diagnostics.
+
+    Args are restricted to `!smt.int` because all constraint knobs and
+    dimension values are integers.
+
+    Used inside `iree_codegen.smt.constraints` regions.
+
+    Examples:
+    ```mlir
+    // Static message (no args):
+    iree_codegen.smt.assert %cond, "dim_0 == 128" : !smt.bool
+
+    // Format string with args:
+    iree_codegen.smt.assert %cond, "wg_x ({}) < wg_y ({})", %x, %y : !smt.bool, !smt.int, !smt.int
+    ```
+  }];
+  let arguments = (ins
+    BoolType:$condition,
+    StrAttr:$msg,
+    Variadic<IntType>:$printArgs
+  );
+  let assemblyFormat = [{
+    $condition `,` $msg (`,` $printArgs^)?
+        `:` type($condition) (`,` type($printArgs)^)? attr-dict
+  }];
+  let builders = [
+    // Convenience builder for assertions with no format args.
+    OpBuilder<(ins "::mlir::Value":$condition, "::llvm::StringRef":$msg), [{
+      build($_builder, $_state, condition, msg, ::mlir::ValueRange{});
+    }]>
+  ];
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// KnobOp
+//===----------------------------------------------------------------------===//
+
+def IREECodegen_KnobOp :
+    Op<IREECodegen_Dialect, "smt.knob", [Pure, HasParent<"ConstraintsOp">]> {
+  let summary = "Declare an SMT constant for a tunable configuration knob.";
+  let description = [{
+    Materializes a named SMT constant (!smt.int) for use in constraint
+    expressions. The name must match an `#iree_codegen.smt.int_knob<"name">`
+    or `#iree_codegen.smt.one_of_knob<"name", [...]>` leaf in the
+    enclosing `iree_codegen.smt.constraints` op's `knobs` dictionary.
+
+    In SMT terminology this is a constant (0-ary function), not a variable.
+    The tuner assigns concrete integer values to these constants.
+
+    Example:
+    ```mlir
+    %wg_m = iree_codegen.smt.knob "wg_m" : !smt.int
+    ```
+  }];
+  let arguments = (ins StrAttr:$name);
+  let results = (outs IntType:$result);
+  let assemblyFormat = "$name attr-dict `:` type($result)";
+}
+
+//===----------------------------------------------------------------------===//
+// LookupOp
+//===----------------------------------------------------------------------===//
+
+def IREECodegen_LookupOp :
+    Op<IREECodegen_Dialect, "smt.lookup", [Pure, HasParent<"ConstraintsOp">]> {
+  let summary = "Integer table lookup for SMT constraints.";
+  let description = [{
+    Maps an SMT integer index to an integer value via a sparse key-value
+    table. Used to derive values from enumerated knobs (e.g., MMA shape
+    dimensions from an mma_idx knob).
+
+    TODO: During constraint verification, the lookup will be evaluated
+    directly. During SMT-LIB export, it will be lowered to a chain of
+    `smt.ite` ops. Neither pass is implemented yet.
+
+    Example:
+    ```mlir
+    %mma_m = iree_codegen.smt.lookup %idx [3, 7, 12] -> [16, 32, 64] : !smt.int
+    ```
+  }];
+  let arguments = (ins
+    IntType:$index,
+    DenseI64ArrayAttr:$keys,
+    DenseI64ArrayAttr:$values
+  );
+  let results = (outs IntType:$result);
+  let assemblyFormat = "$index $keys `->` $values attr-dict `:` type($result)";
   let hasVerifier = 1;
 }
 

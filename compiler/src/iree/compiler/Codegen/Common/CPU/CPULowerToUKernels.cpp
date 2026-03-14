@@ -77,8 +77,9 @@ public:
 /// Returns `true` if an `outsOperand` value is initialized to zero.
 static bool isInitializedToZero(Value outsOperand) {
   auto fillOp = outsOperand.getDefiningOp<linalg::FillOp>();
-  if (!fillOp)
+  if (!fillOp) {
     return false;
+  }
   Value fillVal = fillOp.getDpsInputOperand(0)->get();
   return matchPattern(fillVal, m_Zero()) ||
          matchPattern(fillVal, m_AnyZeroFloat());
@@ -367,12 +368,12 @@ matchDAGForUKernel(RewriterBase &rewriter, linalg::PackOp op,
   if (paddingValBitWidth < 64) {
     paddingVal = arith::ExtUIOp::create(rewriter, loc, i64, paddingVal);
   }
-  Value in_size0 = tensor::DimOp::create(rewriter, loc, in, 0);
-  Value in_size1 = tensor::DimOp::create(rewriter, loc, in, 1);
-  Value out_size0 = tensor::DimOp::create(rewriter, loc, out, 0);
-  Value out_size1 = tensor::DimOp::create(rewriter, loc, out, 1);
-  Value out_size2 = tensor::DimOp::create(rewriter, loc, out, 2);
-  Value out_size3 = tensor::DimOp::create(rewriter, loc, out, 3);
+  Value inSize0 = tensor::DimOp::create(rewriter, loc, in, 0);
+  Value inSize1 = tensor::DimOp::create(rewriter, loc, in, 1);
+  Value outSize0 = tensor::DimOp::create(rewriter, loc, out, 0);
+  Value outSize1 = tensor::DimOp::create(rewriter, loc, out, 1);
+  Value outSize2 = tensor::DimOp::create(rewriter, loc, out, 2);
+  Value outSize3 = tensor::DimOp::create(rewriter, loc, out, 3);
   Value flagsVal = arith::ConstantOp::create(rewriter, loc,
                                              rewriter.getI32IntegerAttr(flags));
   auto fn = getFnNameAndDefAttrs(ukernelName, rewriter, targetAttr);
@@ -380,7 +381,7 @@ matchDAGForUKernel(RewriterBase &rewriter, linalg::PackOp op,
       getUKernelGenericReturnTypes(targetAttr, outType);
   auto genericMicroKernelOp = IREE::Codegen::UKernelGenericOp::create(
       rewriter, loc, returnTypes, fn.name, in, out,
-      ValueRange{in_size0, in_size1, out_size0, out_size1, out_size2, out_size3,
+      ValueRange{inSize0, inSize1, outSize0, outSize1, outSize2, outSize3,
                  paddingVal, flagsVal},
       /*fn_def_attrs=*/rewriter.getDictionaryAttr(fn.defAttrs),
       /*num_strided_outer_dims=*/2);
@@ -455,12 +456,12 @@ matchDAGForUKernel(RewriterBase &rewriter, linalg::UnPackOp op,
   }
 
   Location loc = op.getLoc();
-  Value in_size0 = tensor::DimOp::create(rewriter, loc, in, 0);
-  Value in_size1 = tensor::DimOp::create(rewriter, loc, in, 1);
-  Value in_size2 = tensor::DimOp::create(rewriter, loc, in, 2);
-  Value in_size3 = tensor::DimOp::create(rewriter, loc, in, 3);
-  Value out_size0 = tensor::DimOp::create(rewriter, loc, out, 0);
-  Value out_size1 = tensor::DimOp::create(rewriter, loc, out, 1);
+  Value inSize0 = tensor::DimOp::create(rewriter, loc, in, 0);
+  Value inSize1 = tensor::DimOp::create(rewriter, loc, in, 1);
+  Value inSize2 = tensor::DimOp::create(rewriter, loc, in, 2);
+  Value inSize3 = tensor::DimOp::create(rewriter, loc, in, 3);
+  Value outSize0 = tensor::DimOp::create(rewriter, loc, out, 0);
+  Value outSize1 = tensor::DimOp::create(rewriter, loc, out, 1);
   Value flagsVal = arith::ConstantOp::create(rewriter, loc,
                                              rewriter.getI32IntegerAttr(flags));
   auto fn = getFnNameAndDefAttrs(ukernelName, rewriter, targetAttr);
@@ -468,7 +469,7 @@ matchDAGForUKernel(RewriterBase &rewriter, linalg::UnPackOp op,
       getUKernelGenericReturnTypes(targetAttr, outType);
   auto genericMicroKernelOp = IREE::Codegen::UKernelGenericOp::create(
       rewriter, loc, returnTypes, fn.name, in, out,
-      ValueRange{in_size0, in_size1, in_size2, in_size3, out_size0, out_size1,
+      ValueRange{inSize0, inSize1, inSize2, inSize3, outSize0, outSize1,
                  flagsVal},
       /*fn_def_attrs=*/rewriter.getDictionaryAttr(fn.defAttrs),
       /*num_strided_outer_dims=*/2);

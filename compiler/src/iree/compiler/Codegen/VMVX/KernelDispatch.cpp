@@ -19,17 +19,36 @@ namespace mlir::iree_compiler {
 
 constexpr int kDefaultDistTileSize = 64;
 
+/// Returns true if the operation is nested inside a tiled and distributed loop.
+static bool isInsideDistributedLoop(Operation *op) {
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      if (isTiledAndDistributedLoop(forOp)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 static SmallVector<int64_t>
 getDefaultDistributionTileSizes(TilingInterface op) {
+  // If the op is already inside a distributed loop, skip distribution.
   unsigned numLoops = op.getLoopIteratorTypes().size();
+  if (isInsideDistributedLoop(op)) {
+    return SmallVector<int64_t>(numLoops, 0);
+  }
+
   auto partitionedLoops = cast<PartitionableLoopsInterface>(op.getOperation())
                               .getPartitionableLoops(kNumMaxParallelDims);
   SmallVector<int64_t> distTileSizes(numLoops, kDefaultDistTileSize);
   llvm::DenseSet<unsigned> partitionedLoopsSet(partitionedLoops.begin(),
                                                partitionedLoops.end());
   for (auto dim : llvm::seq<int64_t>(0, distTileSizes.size())) {
-    if (!partitionedLoopsSet.count(dim))
+    if (!partitionedLoopsSet.contains(dim)) {
       distTileSizes[dim] = 0;
+    }
   }
 
   return distTileSizes;
@@ -88,11 +107,12 @@ static LogicalResult
 setVMVXRootConfigImpl(mlir::FunctionOpInterface entryPointFn, Operation *op) {
   auto setRootConfigFn = [&](Operation *op) -> LogicalResult {
     return TypeSwitch<Operation *, LogicalResult>(op)
-        .Case<IREE::LinalgExt::FftOp>(
-            [&](auto op) { return setRootConfig(entryPointFn, op); })
-        .Case<TilingInterface>(
-            [&](auto op) { return setRootConfig(entryPointFn, op); })
-        .Default([&](Operation *op) { return success(); });
+        .Case([&](IREE::LinalgExt::FftOp op) {
+          return setRootConfig(entryPointFn, op);
+        })
+        .Case(
+            [&](TilingInterface op) { return setRootConfig(entryPointFn, op); })
+        .Default(success());
   };
   return setRootConfigFn(op);
 }

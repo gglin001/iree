@@ -17,6 +17,7 @@
 #include "llvm/Support/InterleavedRange.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include "mlir/IR/Remarks.h"
 
 #define DEBUG_TYPE "iree-codegen-gpu-heuristics"
 
@@ -38,9 +39,9 @@ static llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
 llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
                               const GPUMMASchedule &schedule) {
   os << "mmaKind " << schedule.mmaKind << ", ";
-  os << "mSizes: " << schedule.mSize << ", ";
-  os << "nSizes: " << schedule.nSize << ", ";
-  os << "kSizes: " << schedule.kSize << ", ";
+  os << "mSizes: " << schedule.mSizes << ", ";
+  os << "nSizes: " << schedule.nSizes << ", ";
+  os << "kSizes: " << schedule.kSizes << ", ";
   os << "mTileSizes: " << schedule.mTileSizes << ", ";
   os << "nTileSizes: " << schedule.nTileSizes << ", ";
   os << "kTileSizes: " << schedule.kTileSizes << ", ";
@@ -49,66 +50,104 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
   return os;
 }
 
+llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
+                              const GemmSizeKind &gemmSize) {
+  switch (gemmSize) {
+  case GemmSizeKind::SmallGemm:
+    return os << "SmallGemm";
+  case GemmSizeKind::MediumGemm:
+    return os << "MediumGemm";
+  case GemmSizeKind::LargeGemm:
+    return os << "LargeGemm";
+  case GemmSizeKind::VeryLargeGemm:
+    return os << "VeryLargeGemm";
+  default:
+    assert(false && "Unhandled gemm size");
+    return os << "NotSet";
+  }
+}
+
 static int64_t calculateOperandsSharedMemoryUsedInBytes(
     const GPUMMASchedule &schedule, int64_t lhsBitwidth, int64_t rhsBitwidth,
-    int64_t numRhs = 1) {
-  int64_t tileM = schedule.mSize * llvm::product_of(schedule.mTileSizes) *
-                  llvm::product_of(schedule.mSubgroupCounts);
-  int64_t tileN = schedule.nSize * llvm::product_of(schedule.nTileSizes) *
-                  llvm::product_of(schedule.nSubgroupCounts);
-  int64_t tileK = schedule.kSize * llvm::product_of(schedule.kTileSizes);
-  return (tileM * tileK * lhsBitwidth + numRhs * tileN * tileK * rhsBitwidth) /
-         8;
+    int64_t lhsScaleBitwidth = 0, int64_t rhsScaleBitwidth = 0,
+    int64_t numRhs = 1, bool useDirectLoad = false,
+    int64_t prefetchNumStages = 0) {
+  int64_t tileM = schedule.getTotalMSize() * schedule.getTotalMTileSize() *
+                  schedule.getTotalMSubgroupCount();
+  int64_t tileN = schedule.getTotalNSize() * schedule.getTotalNTileSize() *
+                  schedule.getTotalNSubgroupCount();
+
+  // For scaled matmul, the K dimension is split into Ko (outer) and Kb (block),
+  // where elements in a Kb block share the same scale. For lhs and rhs we
+  // account for both Ko and Kb, while for scale operands, only Ko. For regular
+  // matmul, scale bitwidth is 0 so the scale terms below have no effect.
+  int64_t tileK = schedule.getTotalKSize() * schedule.getTotalKTileSize();
+  int64_t tileKb = schedule.kSizes.back() * schedule.kTileSizes.back();
+  int64_t tileKo = tileK / tileKb;
+
+  int64_t lhsSharedMemoryUsed = tileM * tileK * lhsBitwidth;
+  int64_t rhsSharedMemoryUsed = numRhs * tileN * tileK * rhsBitwidth;
+  int64_t aScaleSharedMemoryUsed = tileM * tileKo * lhsScaleBitwidth;
+  int64_t bScaleSharedMemoryUsed = numRhs * tileN * tileKo * rhsScaleBitwidth;
+
+  int64_t totalBits = lhsSharedMemoryUsed + rhsSharedMemoryUsed +
+                      aScaleSharedMemoryUsed + bScaleSharedMemoryUsed;
+
+  // In direct load mode, ROCDLPrefetchSharedMemoryPass multi-buffers shared
+  // memory allocations, where the number of buffers equals prefetchNumStages.
+  if (useDirectLoad && prefetchNumStages > 0) {
+    totalBits *= prefetchNumStages;
+  }
+
+  return totalBits / 8;
 }
 
 static int64_t
 calculateResultSharedMemoryUsedInBytes(const GPUMMASchedule &schedule,
                                        int64_t resultBitwidth,
                                        int64_t numRes = 1) {
-  int64_t tileM = schedule.mSize * llvm::product_of(schedule.mTileSizes) *
-                  llvm::product_of(schedule.mSubgroupCounts);
-  int64_t tileN = schedule.nSize * llvm::product_of(schedule.nTileSizes) *
-                  llvm::product_of(schedule.nSubgroupCounts);
+  int64_t tileM = schedule.getTotalMSize() * schedule.getTotalMTileSize() *
+                  schedule.getTotalMSubgroupCount();
+  int64_t tileN = schedule.getTotalNSize() * schedule.getTotalNTileSize() *
+                  schedule.getTotalNSubgroupCount();
   return (numRes * tileM * tileN * resultBitwidth) / 8;
 }
 
 /// Check that a GPUMMASchedule fits alignment restrictions. To be aligned,
 /// the problem must be evenly divisible by the number of elements in the
-/// schedule for each dimension. If `mustBeAligned` is false, then the innermost
-/// problem dimension is allowed to be unaligned .
+/// schedule for each dimension. If `mustBeAligned` is false, then the problem
+/// is allowed to be unaligned and the function simply returns true.
 static bool isScheduleAligned(const GPUMatmulShapeType &problem,
                               const GPUMMASchedule &schedule,
                               bool mustBeAligned) {
-  SmallVector<int64_t, 2> alignedMSizes(problem.mSizes);
-  alignedMSizes.back() =
-      mustBeAligned ? problem.mSizes.back()
-                    : llvm::divideCeil(problem.mSizes.back(), schedule.mSize) *
-                          schedule.mSize;
-  SmallVector<int64_t, 2> alignedNSizes(problem.nSizes);
-  alignedNSizes.back() =
-      mustBeAligned ? problem.nSizes.back()
-                    : llvm::divideCeil(problem.nSizes.back(), schedule.nSize) *
-                          schedule.nSize;
-  SmallVector<int64_t, 2> alignedKSizes(problem.kSizes);
-  alignedKSizes.back() =
-      mustBeAligned ? problem.kSizes.back()
-                    : llvm::divideCeil(problem.kSizes.back(), schedule.kSize) *
-                          schedule.kSize;
+  // If alignment is not required, skip checks and return true.
+  if (!mustBeAligned) {
+    return true;
+  }
   // Returns the number of elements in the schedule for each dimension.
-  auto getScheduleSizes =
-      [&](int64_t size, SmallVector<int64_t> tileCount,
-          std::optional<SmallVector<int64_t>> subgroupCount) {
-        SmallVector<int64_t> sizes = llvm::map_to_vector(
-            llvm::seq<int64_t>(tileCount.size()), [&](int64_t i) {
-              return subgroupCount ? tileCount[i] * subgroupCount.value()[i]
-                                   : tileCount[i];
-            });
-        sizes.back() *= size;
-        return sizes;
-      };
+  auto getScheduleSizes = [&](ArrayRef<int64_t> intrinsicSizes,
+                              ArrayRef<int64_t> tileCount,
+                              std::optional<ArrayRef<int64_t>> subgroupCount) {
+    SmallVector<int64_t> sizes = llvm::map_to_vector(
+        llvm::seq<int64_t>(tileCount.size()), [&](int64_t i) {
+          return subgroupCount ? tileCount[i] * subgroupCount.value()[i]
+                               : tileCount[i];
+        });
+    // Multiply by intrinsic sizes, applying to the inner dimensions, as
+    // the outer dimensions are unrolling factors. For example, if tileCount
+    // = [a, b, c, d] and intrinsicSizes = [x, y], the result is [a, b, c*x,
+    // d*y].
+    assert(intrinsicSizes.size() <= sizes.size() &&
+           "intrinsic sizes should not exceed tile count sizes");
+    for (auto [intrinsicSize, size] :
+         llvm::zip(llvm::reverse(intrinsicSizes), llvm::reverse(sizes))) {
+      size *= intrinsicSize;
+    }
+    return sizes;
+  };
   // Checks whether the elements of `a` are evenly divisible by the
   // corresponding elements of `b`.
-  auto areAligned = [](SmallVector<int64_t, 2> a, SmallVector<int64_t, 2> b) {
+  auto areAligned = [](ArrayRef<int64_t> a, ArrayRef<int64_t> b) {
     for (auto [aVal, bVal] : llvm::zip_equal(a, b)) {
       if (aVal % bVal != 0) {
         return false;
@@ -117,14 +156,14 @@ static bool isScheduleAligned(const GPUMatmulShapeType &problem,
     return true;
   };
   bool isValidM = areAligned(
-      alignedMSizes, getScheduleSizes(schedule.mSize, schedule.mTileSizes,
-                                      schedule.mSubgroupCounts));
+      problem.mSizes, getScheduleSizes(schedule.mSizes, schedule.mTileSizes,
+                                       schedule.mSubgroupCounts));
   bool isValidN = areAligned(
-      alignedNSizes, getScheduleSizes(schedule.nSize, schedule.nTileSizes,
-                                      schedule.nSubgroupCounts));
+      problem.nSizes, getScheduleSizes(schedule.nSizes, schedule.nTileSizes,
+                                       schedule.nSubgroupCounts));
   bool isValidK = areAligned(
-      alignedKSizes,
-      getScheduleSizes(schedule.kSize, schedule.kTileSizes, std::nullopt));
+      problem.kSizes,
+      getScheduleSizes(schedule.kSizes, schedule.kTileSizes, std::nullopt));
   return isValidM && isValidN && isValidK;
 }
 
@@ -144,14 +183,13 @@ static bool isValidMMASchedule(const GPUMatmulShapeType &problem,
   const int64_t kMaxVectorLoadBitWidth = 128;
   int64_t elemsPerThread =
       kMaxVectorLoadBitWidth / problem.bType.getIntOrFloatBitWidth();
-  int64_t wgThreads = subgroupSize *
-                      llvm::product_of(schedule.mSubgroupCounts) *
-                      llvm::product_of(schedule.nSubgroupCounts);
-  int64_t mWgSize = schedule.mSize * llvm::product_of(schedule.mTileSizes) *
-                    llvm::product_of(schedule.mSubgroupCounts);
-  int64_t nWgSize = schedule.nSize * llvm::product_of(schedule.nTileSizes) *
-                    llvm::product_of(schedule.nSubgroupCounts);
-  int64_t kWgSize = schedule.kSize * llvm::product_of(schedule.kTileSizes);
+  int64_t wgThreads = subgroupSize * schedule.getTotalMSubgroupCount() *
+                      schedule.getTotalNSubgroupCount();
+  int64_t mWgSize = schedule.getTotalMSize() * schedule.getTotalMTileSize() *
+                    schedule.getTotalMSubgroupCount();
+  int64_t nWgSize = schedule.getTotalNSize() * schedule.getTotalNTileSize() *
+                    schedule.getTotalNSubgroupCount();
+  int64_t kWgSize = schedule.getTotalKSize() * schedule.getTotalKTileSize();
   int64_t innerLhsDimSize = transposedLhs ? mWgSize : kWgSize;
   int64_t innerRhsDimSize = transposedRhs ? kWgSize : nWgSize;
 
@@ -178,10 +216,11 @@ static FailureOr<GPUMMASchedule> fitScheduleInSharedMemory(
            << schedule << "\nShrinking schedule...";
 
     auto decrementIfPossible =
-        [](SmallVector<int64_t> &sizes) -> LogicalResult {
+        [](MutableArrayRef<int64_t> sizes) -> LogicalResult {
       for (int64_t &size : sizes) {
-        if (size <= 1)
+        if (size <= 1) {
           continue;
+        }
         --size;
         return success();
       }
@@ -331,6 +370,16 @@ static int64_t distributeTilesUsingGCD(int64_t &totalTiles,
   return distributeTileCount;
 }
 
+/// Like distributeTilesUsingGCD but uses min instead of GCD. This handles
+/// non-power-of-2 tile counts where GCD fails (e.g., prime tile counts).
+static int64_t distributeTilesUsingMin(int64_t &totalTiles,
+                                       int64_t &tilesToDistribute) {
+  int64_t distributeTileCount = std::min(tilesToDistribute, totalTiles);
+  totalTiles = llvm::divideCeil(totalTiles, distributeTileCount);
+  tilesToDistribute /= distributeTileCount;
+  return distributeTileCount;
+}
+
 /// Distributes the square root of the subgroup and tile counts to both M and N
 /// dimensions. The first argument servers as a flag to indicate whether the
 /// distribution is for the M or N dimension. Both total tiles and remaining
@@ -477,11 +526,38 @@ static GPUMMASchedule getOptimalMMASchedule(const GPUMatmulShapeType &problem,
                         remainingSubgroups, remainingTiles);
   }
 
-  // Note: Experimentation has proved that leaving the leftover factors
-  // unassigned is better than greedily assigning them to the larger collapsed
-  // dimension. This is likely because assigning leftover factors often results
-  // in overly aggressive tiling that ended up reducing occupancy and increasing
-  // shared memory usage.
+  // Leaving leftover factors unassigned generally works better than greedily
+  // assigning them, as it avoids overly aggressive tiling that reduces
+  // occupancy. However, for heavily imbalanced problems (4:1+ tile ratio),
+  // GCD fails for non-power-of-2 tile counts (e.g., 149 tiles for F=2376/16).
+  // In such cases, redirect remaining tiles to the starved dimension using
+  // min-based distribution. Only do this when both dimensions have enough
+  // tiles (>= 8) to avoid hurting small shapes like group convolutions.
+  constexpr int64_t kMinTileCountThreshold = 8;
+  int64_t minMNTileCount =
+      std::min(mTotalTileCounts.back(), nTotalTileCounts.back());
+  bool useMinForM = minMNTileCount >= kMinTileCountThreshold &&
+                    mTotalTileCounts.back() >= 4 * nTotalTileCounts.back();
+  bool useMinForN = minMNTileCount >= kMinTileCountThreshold &&
+                    nTotalTileCounts.back() >= 4 * mTotalTileCounts.back();
+
+  // Redirect remaining tiles to the starved (dominant) dimension.
+  auto redirectRemainingTiles = [&](bool condition, int64_t totalTiles,
+                                    int64_t &tileSizeDistributed) {
+    if (!condition || remainingTiles <= 1) {
+      return;
+    }
+    int64_t newTile = std::min(remainingTiles, totalTiles);
+    if (newTile > tileSizeDistributed) {
+      remainingTiles /= (newTile / tileSizeDistributed);
+      tileSizeDistributed = newTile;
+    }
+  };
+  redirectRemainingTiles(useMinForM, mTotalTileToDistribute,
+                         mTileSizeDistributed);
+  redirectRemainingTiles(useMinForN, nTotalTileToDistribute,
+                         nTileSizeDistributed);
+
   LDBG() << "Leftover factors: subgroups: " << remainingSubgroups
          << ", tiles: " << remainingTiles;
   LDBG() << "Collapsed subgroup counts: M: " << mSubgroupDistributed
@@ -489,39 +565,38 @@ static GPUMMASchedule getOptimalMMASchedule(const GPUMatmulShapeType &problem,
   LDBG() << "Collapsed tile sizes: M: " << mTileSizeDistributed
          << ", N: " << nTileSizeDistributed;
 
+  // Distribute collapsed counts to per-dimension M and N (inner -> outer).
+  // Use min-based distribution for the dominant dimension in imbalanced
+  // problems, since GCD fails for non-power-of-2 tile counts.
+  auto distributeToDims = [](MutableArrayRef<int64_t> tileCounts,
+                             MutableArrayRef<int64_t> subgroupCounts,
+                             MutableArrayRef<int64_t> tileSizes,
+                             int64_t &subgroupBudget, int64_t &tileBudget,
+                             bool useMin) {
+    int64_t (*distribute)(int64_t &, int64_t &) =
+        useMin ? distributeTilesUsingMin : distributeTilesUsingGCD;
+    for (size_t e = tileCounts.size(), i = e - 1; i < e; --i) {
+      subgroupCounts[i] = distribute(tileCounts[i], subgroupBudget);
+      tileSizes[i] = distribute(tileCounts[i], tileBudget);
+    }
+  };
+
   SmallVector<int64_t> mSubgroupCounts(problem.mSizes.size(), 0),
       nSubgroupCounts(problem.nSizes.size(), 0),
       mTileSizes(problem.mSizes.size(), 0),
       nTileSizes(problem.nSizes.size(), 0);
 
-  // Distribute collapsed tile to M dims from inner -> outer.
-  for (size_t e = problem.mSizes.size(), i = e - 1; i < e; --i) {
-    mSubgroupCounts[i] =
-        distributeTilesUsingGCD(mTotalTileCounts[i], mSubgroupDistributed);
-    mTileSizes[i] =
-        distributeTilesUsingGCD(mTotalTileCounts[i], mTileSizeDistributed);
-  }
-
-  // Distribute collapsed tile to N dims from inner -> outer.
-  for (size_t e = problem.nSizes.size(), i = e - 1; i < e; --i) {
-    nSubgroupCounts[i] =
-        distributeTilesUsingGCD(nTotalTileCounts[i], nSubgroupDistributed);
-    nTileSizes[i] =
-        distributeTilesUsingGCD(nTotalTileCounts[i], nTileSizeDistributed);
-  }
+  distributeToDims(mTotalTileCounts, mSubgroupCounts, mTileSizes,
+                   mSubgroupDistributed, mTileSizeDistributed, useMinForM);
+  distributeToDims(nTotalTileCounts, nSubgroupCounts, nTileSizes,
+                   nSubgroupDistributed, nTileSizeDistributed, useMinForN);
 
   SmallVector<int64_t> kTileSizes =
       getBestKTileSizes(problem, intrinsic, seeds);
 
-  return GPUMMASchedule{intrinsic.mmaKind,
-                        llvm::product_of(intrinsic.mSizes),
-                        llvm::product_of(intrinsic.nSizes),
-                        llvm::product_of(intrinsic.kSizes),
-                        mSubgroupCounts,
-                        nSubgroupCounts,
-                        mTileSizes,
-                        nTileSizes,
-                        kTileSizes};
+  return GPUMMASchedule{intrinsic.mmaKind, intrinsic.mSizes, intrinsic.nSizes,
+                        intrinsic.kSizes,  mSubgroupCounts,  nSubgroupCounts,
+                        mTileSizes,        nTileSizes,       kTileSizes};
 }
 
 /// Compare the MMA intrinsics by following precedence rules:
@@ -529,7 +604,7 @@ static GPUMMASchedule getOptimalMMASchedule(const GPUMatmulShapeType &problem,
 ///   dimension of the problem.
 ///   2) M/N-alignment. We prefer intrinsics that can evenly divide the M
 ///   and N dimensions of the problem.
-///   3) Intrinsic with larger gemm size.
+///   3) Intrinsic with larger gemm input size.
 ///   4) Intrinsic with larger K size.
 ///
 /// This function acts as a comparison function object for std::sort, which
@@ -557,11 +632,41 @@ static bool compareIntrinsics(const GPUMatmulShapeType &problem,
     return lhsMNAligned > rhsMNAligned;
   }
 
+  auto intrinsicCompute = [&](const GPUIntrinsicType &intrinsic) {
+    return ShapedType::getNumElements(intrinsic.mSizes) *
+           ShapedType::getNumElements(intrinsic.nSizes) *
+           ShapedType::getNumElements(intrinsic.kSizes);
+  };
   auto intrinsicArea = [&](const GPUIntrinsicType &intrinsic) {
     return (ShapedType::getNumElements(intrinsic.mSizes) +
             ShapedType::getNumElements(intrinsic.nSizes)) *
            ShapedType::getNumElements(intrinsic.kSizes);
   };
+
+  // For compute-bound GEMMs, maximize compute throughput first, then
+  // minimize operand VGPR pressure among equal-compute intrinsics.
+  // E.g., 32x32x16 (compute=16384, area=1024) beats 32x32x8
+  // (compute=8192, area=512) because throughput matters more. Among
+  // 16x16x32 and 32x32x16 (both area=1024), prefer smaller K (16 vs 32)
+  // for less operand staging pressure.
+  if (problem.gemmSize == GemmSizeKind::VeryLargeGemm) {
+    int64_t lhsCompute = intrinsicCompute(lhs);
+    int64_t rhsCompute = intrinsicCompute(rhs);
+    if (lhsCompute != rhsCompute) {
+      return lhsCompute > rhsCompute;
+    }
+
+    int64_t lhsArea = intrinsicArea(lhs);
+    int64_t rhsArea = intrinsicArea(rhs);
+    if (lhsArea != rhsArea) {
+      return lhsArea < rhsArea;
+    }
+
+    return ShapedType::getNumElements(lhs.kSizes) <
+           ShapedType::getNumElements(rhs.kSizes);
+  }
+
+  // For memory-bound GEMMs, prefer larger area to amortize memory latency.
   int64_t lhsArea = intrinsicArea(lhs);
   int64_t rhsArea = intrinsicArea(rhs);
   if (lhsArea != rhsArea) {
@@ -596,8 +701,7 @@ static int64_t adjustSeedsForWgpCount(const GPUMatmulShapeType &problem,
     return bestMNTileCountPerSubgroup;
   }
 
-  if (problem.gemmSize == GemmSize::NotSet ||
-      problem.gemmSize == GemmSize::SmallGemm) {
+  if (!problem.gemmSize || problem.gemmSize == GemmSizeKind::SmallGemm) {
     LDBG() << "Arithmetic intensity is too low, "
            << "skipping adjustment of seeds for workgroup count.";
     return bestMNTileCountPerSubgroup;
@@ -642,8 +746,9 @@ static int64_t adjustSeedsForWgpCount(const GPUMatmulShapeType &problem,
 FailureOr<GPUMMASchedule> deduceMMASchedule(
     const GPUMatmulShapeType &problem, ArrayRef<GPUIntrinsicType> intrinsics,
     const GPUMMAHeuristicSeeds &seeds, int64_t sharedMemLimitInBytes,
-    int64_t subgroupSize, std::optional<int64_t> wgpCount, bool transposedLhs,
-    bool transposedRhs, bool canUpcastAcc, bool mustBeAligned,
+    int64_t subgroupSize, std::optional<int64_t> wgpCount, Location loc,
+    bool transposedLhs, bool transposedRhs, bool canUpcastAcc,
+    bool useDirectLoad, int64_t prefetchNumStages, bool mustBeAligned,
     bool doCPromotion, int64_t splitReductionTripCnt) {
 
   SmallVector<GPUIntrinsicType> sortedIntrinsics =
@@ -668,14 +773,25 @@ FailureOr<GPUMMASchedule> deduceMMASchedule(
     LDBG() << "Chosen MMA schedule:\n" << schedule;
 
     auto isValidSchedule = [&](const GPUMMASchedule &schedule) -> bool {
-      int64_t lhsBitwidth = intrinsic.aType.getIntOrFloatBitWidth();
-      int64_t rhsBitwidth = intrinsic.bType.getIntOrFloatBitWidth();
-      int64_t resultBitwidth = intrinsic.cType.getIntOrFloatBitWidth();
+      int64_t lhsBitwidth = problem.aType.getIntOrFloatBitWidth();
+      int64_t rhsBitwidth = problem.bType.getIntOrFloatBitWidth();
+      int64_t resultBitwidth = problem.cType.getIntOrFloatBitWidth();
+      int64_t lhsScaleBitwidth =
+          problem.aScaleType ? problem.aScaleType.getIntOrFloatBitWidth() : 0;
+      int64_t rhsScaleBitwidth =
+          problem.bScaleType ? problem.bScaleType.getIntOrFloatBitWidth() : 0;
       bool isAligned =
           isValidMMASchedule(problem, schedule, mustBeAligned, subgroupSize,
                              transposedLhs, transposedRhs);
       int64_t sharedMemoryUsed = calculateOperandsSharedMemoryUsedInBytes(
-          schedule, lhsBitwidth, rhsBitwidth, problem.numHorizontallyFusedOps);
+          schedule, lhsBitwidth, rhsBitwidth, lhsScaleBitwidth,
+          rhsScaleBitwidth, problem.numHorizontallyFusedOps, useDirectLoad,
+          prefetchNumStages);
+      // Add accumulator/result memory when it uses shared memory (LDS):
+      // - Result needs padding in shared memory, OR
+      // - matmul_accumulate loads accumulator from global memory via shared mem
+      // For zero-initialized GEMMs without C promotion, the accumulator stays
+      // in registers and doesn't need shared memory.
       if (doCPromotion) {
         sharedMemoryUsed += calculateResultSharedMemoryUsedInBytes(
             schedule, resultBitwidth, problem.numHorizontallyFusedOps);
@@ -684,7 +800,15 @@ FailureOr<GPUMMASchedule> deduceMMASchedule(
       LDBG() << "Available Shared Memory: " << sharedMemLimitInBytes << " bytes"
              << "Predicted Shared Memory Used by Schedule: " << sharedMemoryUsed
              << " bytes";
-      return isAligned && sharedMemoryUsed <= sharedMemLimitInBytes;
+
+      bool isValid = isAligned && sharedMemoryUsed <= sharedMemLimitInBytes;
+      if (isValid) {
+        // Only emit remark for the shared memory usage of the valid schedule.
+        remark::analysis(loc, remark::RemarkOpts::name("SharedMemoryUsage")
+                                  .category("deduceMMASchedule"))
+            << std::to_string(sharedMemoryUsed);
+      }
+      return isValid;
     };
     return fitScheduleInSharedMemory(schedule, isValidSchedule);
   }
@@ -917,9 +1041,9 @@ FailureOr<std::pair<GPUMMASchedule, GPUMMASchedule>> deduceAttentionSchedule(
     qkKSizes.back() = qkMatmul.kSizes.back() / intrinsicAK;
     GPUMMASchedule qkSchedule{
         intrinsicA.mmaKind,
-        pvSchedule->mSize,
-        pvSchedule->kSize,
-        intrinsicAK,
+        pvSchedule->mSizes,
+        pvSchedule->kSizes,
+        {intrinsicAK},
         /*mSubgroupCount=*/pvSchedule->mSubgroupCounts,
         /*nSubgroupCount=*/SmallVector<int64_t>(qkMatmul.nSizes.size(), 1),
         pvSchedule->mTileSizes,

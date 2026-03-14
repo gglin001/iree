@@ -40,8 +40,7 @@ verifyAffinityAssigned(IREE::Stream::AffinityOpInterface op) {
 //===----------------------------------------------------------------------===//
 
 struct VerifyAffinitiesPass
-    : public IREE::Stream::impl::VerifyAffinitiesPassBase<
-          VerifyAffinitiesPass> {
+    : IREE::Stream::impl::VerifyAffinitiesPassBase<VerifyAffinitiesPass> {
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
     if (moduleOp
@@ -60,8 +59,9 @@ struct VerifyAffinitiesPass
                          ? WalkResult::skip()
                          : WalkResult::advance();
             })
-            .wasInterrupted())
+            .wasInterrupted()) {
       return signalPassFailure();
+    }
 
     // Preserve all analyses since this is a read-only verification pass.
     markAllAnalysesPreserved();

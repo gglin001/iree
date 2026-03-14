@@ -76,7 +76,7 @@ struct AbstractState {
 //===----------------------------------------------------------------------===//
 
 template <typename BaseTy, BaseTy BestState, BaseTy WorstState>
-struct IntegerStateBase : public AbstractState {
+struct IntegerStateBase : AbstractState {
   using base_t = BaseTy;
 
   IntegerStateBase() = default;
@@ -171,7 +171,7 @@ protected:
 //===----------------------------------------------------------------------===//
 
 // Specialization of the integer state for single-bit values.
-struct BooleanState : public IntegerStateBase<bool, 1, 0> {
+struct BooleanState : IntegerStateBase<bool, 1, 0> {
   using super = IntegerStateBase<bool, 1, 0>;
   using base_t = IntegerStateBase::base_t;
 
@@ -181,7 +181,7 @@ struct BooleanState : public IntegerStateBase<bool, 1, 0> {
   // Returns true if the state is known to hold.
   bool isKnown() const { return getKnown(); }
 
-  // Sets the known and asssumed value to |value|.
+  // Sets the known and assumed value to |value|.
   void setKnown(bool value) {
     known |= value;
     assumed |= value;
@@ -195,12 +195,14 @@ struct BooleanState : public IntegerStateBase<bool, 1, 0> {
 
 private:
   void handleNewKnownValue(base_t value) override {
-    if (value)
+    if (value) {
       known = (assumed = value);
+    }
   }
   void handleNewAssumedValue(base_t value) override {
-    if (!value)
+    if (!value) {
       assumed = known;
+    }
   }
 
   void joinOR(base_t assumedValue, base_t knownValue) override {
@@ -221,8 +223,7 @@ private:
 // Specialization of the integer state for a bitwise encoding.
 template <typename BaseTy = uint32_t, BaseTy BestState = ~BaseTy(0),
           BaseTy WorstState = 0>
-struct BitIntegerState
-    : public IntegerStateBase<BaseTy, BestState, WorstState> {
+struct BitIntegerState : IntegerStateBase<BaseTy, BestState, WorstState> {
   using base_t = BaseTy;
 
   // Returns true if the bits set in |BitsEncoding| are "known bits".
@@ -286,8 +287,7 @@ private:
 // the best state and 0 the worst.
 template <typename BaseTy = uint32_t, BaseTy BestState = ~BaseTy(0),
           BaseTy WorstState = 0>
-struct IncIntegerState
-    : public IntegerStateBase<BaseTy, BestState, WorstState> {
+struct IncIntegerState : IntegerStateBase<BaseTy, BestState, WorstState> {
   using super = IntegerStateBase<BaseTy, BestState, WorstState>;
   using base_t = BaseTy;
 
@@ -340,7 +340,7 @@ private:
 // Specialization of the integer state for a decreasing value, hence 0 is the
 // best state and ~0u the worst.
 template <typename BaseTy = uint32_t>
-struct DecIntegerState : public IntegerStateBase<BaseTy, 0, ~BaseTy(0)> {
+struct DecIntegerState : IntegerStateBase<BaseTy, 0, ~BaseTy(0)> {
   using base_t = BaseTy;
 
   // Takes minimum of known and |value|.
@@ -412,23 +412,27 @@ struct PotentialValuesState : AbstractState {
   // Returns this set. We should check whether this set is valid or not by
   // isValidState() before calling this function.
   const SetTy &getAssumedSet() const {
-    assert(isValidState() && "This set shoud not be used when it is invalid!");
+    assert(isValidState() && "This set should not be used when it is invalid!");
     return set;
   }
 
   // Returns whether this state contains an undef value or not.
   bool isUndefContained() const {
-    assert(isValidState() && "This flag shoud not be used when it is invalid!");
+    assert(isValidState() &&
+           "This flag should not be used when it is invalid!");
     return undefIsContained;
   }
 
   bool operator==(const PotentialValuesState &rhs) const {
-    if (isValidState() != rhs.isValidState())
+    if (isValidState() != rhs.isValidState()) {
       return false;
-    if (!isValidState() && !rhs.isValidState())
+    }
+    if (!isValidState() && !rhs.isValidState()) {
       return true;
-    if (isUndefContained() != rhs.isUndefContained())
+    }
+    if (isUndefContained() != rhs.isUndefContained()) {
       return false;
+    }
     return set == rhs.getAssumedSet();
   }
 
@@ -487,8 +491,9 @@ private:
 
   // Inserts an element into this set.
   void insert(const MemberTy &c) {
-    if (!isValidState())
+    if (!isValidState()) {
       return;
+    }
     set.insert(c);
     checkAndInvalidate();
   }
@@ -496,15 +501,17 @@ private:
   // Takes union with |rhs|.
   void unionWith(const PotentialValuesState &rhs) {
     // If this is a full set, do nothing.
-    if (!isValidState())
+    if (!isValidState()) {
       return;
+    }
     // If rhs is full set, change L to a full set.
     if (!rhs.isValidState()) {
       indicatePessimisticFixpoint();
       return;
     }
-    for (const MemberTy &c : rhs.set)
+    for (const MemberTy &c : rhs.set) {
       set.insert(c);
+    }
     undefIsContained |= rhs.isUndefContained();
     checkAndInvalidate();
   }
@@ -518,8 +525,9 @@ private:
   // Takes intersection with |rhs|.
   void intersectWith(const PotentialValuesState &rhs) {
     // If rhs is a full set, do nothing.
-    if (!rhs.isValidState())
+    if (!rhs.isValidState()) {
       return;
+    }
     // If this is a full set, change this to rhs.
     if (!isValidState()) {
       *this = rhs;
@@ -527,8 +535,9 @@ private:
     }
     SetTy intersectSet;
     for (const MemberTy &c : set) {
-      if (rhs.set.count(c))
+      if (rhs.set.count(c)) {
         intersectSet.insert(c);
+      }
     }
     set = intersectSet;
     undefIsContained &= rhs.isUndefContained();
@@ -563,11 +572,11 @@ ChangeStatus clampStateAndIndicateChange(StateType &state,
 // Helper to tie a abstract state implementation to an abstract element.
 //
 // Usage:
-//  struct MyElement : public StateWrapper<IntegerRangeState, AbstractElement> {
+//  struct MyElement : StateWrapper<IntegerRangeState, AbstractElement> {
 //    ...
 //  };
 template <typename StateTy, typename BaseType, class... Ts>
-struct StateWrapper : public BaseType, public StateTy {
+struct StateWrapper : BaseType, StateTy {
   // Provide static access to the type of the state.
   using StateType = StateTy;
 

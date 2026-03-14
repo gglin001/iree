@@ -16,15 +16,16 @@ namespace mlir::iree_compiler {
 namespace {
 
 struct LLVMCPUAssignConstantOrdinalsPass
-    : public impl::LLVMCPUAssignConstantOrdinalsPassBase<
+    : impl::LLVMCPUAssignConstantOrdinalsPassBase<
           LLVMCPUAssignConstantOrdinalsPass> {
   void runOnOperation() override {
     IREE::HAL::ExecutableVariantOp variantOp = getOperation();
 
     // Get a constant key -> ordinal mapping.
     auto keyOrdinals = variantOp.gatherConstantOrdinals();
-    if (keyOrdinals.empty())
+    if (keyOrdinals.empty()) {
       return;
+    }
 
     // Update placeholders to hold the concrete ordinal values.
     // Eventually MLIR or LLVM will inline them.
@@ -33,8 +34,9 @@ struct LLVMCPUAssignConstantOrdinalsPass
          llvm::make_early_inc_range(moduleOp.getOps<LLVM::GlobalOp>())) {
       auto keyAttr = globalOp->getAttr(
           IREE::HAL::ExecutableConstantBlockOp::getKeyAttrName());
-      if (!keyAttr)
+      if (!keyAttr) {
         continue;
+      }
       auto it = keyOrdinals.find(keyAttr);
       if (it == keyOrdinals.end()) {
         globalOp.emitOpError()

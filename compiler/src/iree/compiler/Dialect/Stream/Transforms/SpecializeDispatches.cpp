@@ -64,8 +64,9 @@ buildConstantTable(mlir::FunctionOpInterface funcOp,
   llvm::BitVector constantOperandMap(operandCount, /*t=*/true);
   for (auto dispatchOp : dispatchOps) {
     for (unsigned idx = 0; idx < operandCount; ++idx) {
-      if (!constantOperandMap.test(idx))
+      if (!constantOperandMap.test(idx)) {
         continue;
+      }
       auto value = dispatchOp.getUniformOperands()[idx];
       Attribute constantValue;
       if (!matchPattern(value, m_Constant(&constantValue))) {
@@ -86,8 +87,9 @@ buildConstantTable(mlir::FunctionOpInterface funcOp,
   DenseMap<Type, ConstantSet> typeSets;
   SmallVector<Type> typeOrder;
   for (unsigned idx = 0; idx < operandCount; ++idx) {
-    if (!constantOperandMap.test(idx))
+    if (!constantOperandMap.test(idx)) {
       continue;
+    }
     auto operandType = anyDispatchOp.getUniformOperands()[idx].getType();
     auto &set = typeSets[operandType];
     if (!set.type) {
@@ -286,15 +288,17 @@ specializeDispatches(IREE::Stream::ExecutableOp executableOp,
                      IREE::Stream::ExecutableExportOp exportOp,
                      SmallVector<IREE::Stream::CmdDispatchOp> &dispatchOps,
                      MemoizedCmdConstants &memoizedConstants) {
-  if (dispatchOps.empty())
+  if (dispatchOps.empty()) {
     return; // no-op if no dispatches
+  }
 
   auto funcOp = exportOp.lookupFunctionRef();
 
   // Build a constant table for unique per-dispatch constant values.
   auto constantTable = buildConstantTable(funcOp, dispatchOps);
-  if (constantTable.coveredOperands.none())
+  if (constantTable.coveredOperands.none()) {
     return;
+  }
 
   LLVM_DEBUG({
     AsmState asmState(executableOp->getParentOp());
@@ -315,7 +319,7 @@ specializeDispatches(IREE::Stream::ExecutableOp executableOp,
   });
 
   // Inline that constant table into the dispatch function and look up the
-  // contants to use based on a parameterized input. All unneeded operands
+  // constants to use based on a parameterized input. All unneeded operands
   // are removed.
   insertConstantTableLookup(funcOp, constantTable);
 
@@ -329,7 +333,7 @@ specializeDispatches(IREE::Stream::ExecutableOp executableOp,
 //===----------------------------------------------------------------------===//
 
 struct SpecializeDispatchesPass
-    : public IREE::Stream::impl::SpecializeDispatchesPassBase<
+    : IREE::Stream::impl::SpecializeDispatchesPassBase<
           SpecializeDispatchesPass> {
   void runOnOperation() override {
     SymbolTable symbolTable(getOperation());

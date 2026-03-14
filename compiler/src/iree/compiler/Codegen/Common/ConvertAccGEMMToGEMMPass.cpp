@@ -11,9 +11,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "iree/compiler/Codegen/Common/Passes.h"
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
+#include "iree/compiler/Codegen/Dialect/GPU/IR/GPULoweringConfigUtils.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUAttrs.h"
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
+#include "iree/compiler/Codegen/Utils/Utils.h"
 #include "iree/compiler/Dialect/LinalgExt/Utils/MatchUtils.h"
 #include "iree/compiler/Dialect/TensorExt/IR/TensorExtOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -48,8 +51,27 @@ static bool accGemmToGemmPrecondition(Operation *op) {
   if (!linalgOp.hasPureTensorSemantics()) {
     return false;
   }
+
+  if (auto config = getLoweringConfig<IREE::GPU::LoweringConfigAttr>(op)) {
+    return IREE::GPU::shouldConvertAccGemm(config);
+  }
+
+  if (isValidInPlaceAccumulatingOp(
+          cast<DestinationStyleOpInterface>(linalgOp.getOperation()))) {
+    return false;
+  }
+
   return linalgOp.getMatchingIndexingMap(linalgOp.getDpsInitOperand(0))
       .isProjectedPermutation();
+}
+
+static bool isFuncArgument(Value v) {
+  auto blockArg = dyn_cast<BlockArgument>(v);
+  if (!blockArg) {
+    return false;
+  }
+  return isa<func::FuncOp, IREE::Util::FuncOp>(
+      blockArg.getParentBlock()->getParentOp());
 }
 
 static void convertAccGemmToGemm(RewriterBase &rewriter,
@@ -58,8 +80,10 @@ static void convertAccGemmToGemm(RewriterBase &rewriter,
       llvm::to_vector(llvm::make_pointer_range(dpsOp.getDpsInitsMutable()));
   Value outputOperand = outputOperands.front()->get();
   auto outsDefiningOp = outputOperand.getDefiningOp();
-  // If not DispatchTensorLoadOp or LoadFromBufferOp then do nothing.
-  if (!isa_and_nonnull<IREE::TensorExt::DispatchTensorLoadOp,
+  // If, not a function argument, and not DispatchTensorLoadOp/LoadFromBufferOp
+  // then do nothing.
+  if (!isFuncArgument(outputOperand) &&
+      !isa_and_nonnull<IREE::TensorExt::DispatchTensorLoadOp,
                        IREE::Codegen::LoadFromBufferOp>(outsDefiningOp)) {
     return;
   }
@@ -116,7 +140,7 @@ struct ConvertAccGEMMToGEMMPass final
     FunctionOpInterface funcOp = getOperation();
     SmallVector<Operation *> candidates = llvm::filter_to_vector(
         llvm::make_pointer_range(funcOp.getFunctionBody().getOps()),
-        accGemmToGemmPrecondition);
+        [&](Operation *op) { return accGemmToGemmPrecondition(op); });
     IRRewriter rewriter(&getContext());
     for (Operation *candidate : candidates) {
       convertAccGemmToGemm(rewriter,

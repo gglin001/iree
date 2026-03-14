@@ -111,7 +111,7 @@ using AliasGroup = SmallVector<Operation *>;
 /// Analyze the liverange of the given allocs and set them in individual groups
 /// if they don't overlap.
 /// The algorithm is a simplistic memory allocation solution. It sorts
-/// allocations into alias groups. Everytime two alloc's liverange interfers
+/// allocations into alias groups. Everytime two alloc's liverange interferes
 /// they are merge into the same group. If a new alloc is part of multiple alias
 /// groups all those are merged into one. At the end we are left with groups of
 /// allocations that are disjoint and can use the same memory.
@@ -120,10 +120,19 @@ void analyseAllocsForPacking(mlir::FunctionOpInterface funcOp,
                              SmallVector<AliasGroup> &aliasGroups);
 
 /// Pack groups of allocations into a unique large i8 allocation and use
-/// memref.view to separate the indivudual allocations. This allows re-using
+/// memref.view to separate the individual allocations. This allows re-using
 /// memory across alias groups.
 void packAllocs(OpBuilder &builder, mlir::FunctionOpInterface funcOp,
                 ArrayRef<AliasGroup> aliasGroups);
+
+/// Materialize the provided slice at the current insertion point. The leaves of
+/// the slice are expected to be `iree_tensor_ext.workload.ordinal` ops that
+/// are mapped to the corresponding `workloadVals`. The `map` is updated with
+/// the mapping from the original ops to the cloned ops.
+LogicalResult materializeSliceFromOrdinals(
+    RewriterBase &rewriter, IRMapping &map, ValueRange workloadVals,
+    ArrayRef<IREE::TensorExt::DispatchWorkloadOrdinalOp> ordinals,
+    ArrayRef<Operation *> slice);
 
 /// Materialize the backward slice starting at the values in `workgroupCount`
 /// at the current insertion point of the `rewriter`. The leaves of the slice
@@ -165,6 +174,15 @@ LogicalResult lowerWorkgroupCountFromSliceOp(
     ArrayRef<OpFoldResult> workgroupCount,
     int maxWorkgroupParallelDims = kNumMaxParallelDims);
 
+/// Creates an `iree_codegen.workgroup_count_hint` op at the current insertion
+/// point with the provided operands. If there are more operands provided than
+/// |maxWorkgroupParallelDims| the outermost sizes are linearized into the
+/// one at the maximum dim. If |reverse| is true, the workgroupCount is added in
+/// reverse order to the hint.
+LogicalResult createWorkgroupCountHint(
+    RewriterBase &rewriter, Location loc, ArrayRef<OpFoldResult> workgroupCount,
+    int maxWorkgroupParallelDims = kNumMaxParallelDims, bool reverse = true);
+
 /// Helper to perform LICM on loops nested within |target| that are guaranteed
 /// to have at least one trip. Additionally LICM on `scf.forall` ops with
 /// mapping attributes are excluded as their trip count is unclear until
@@ -187,7 +205,7 @@ void populateFoldSplitReductionAndWorkgroupMappingLoops(
 /// Apply the `promoteSubViews` transformation as a pattern.
 /// `filter` controls LinalgTransformMarker matching and update when specified.
 /// See `promoteSubViews` for more details.
-struct LinalgBasePromotionPattern : public RewritePattern {
+struct LinalgBasePromotionPattern : RewritePattern {
   /// Entry point to match any LinalgOp
   /// OpInterface. MatchAnyOpTag-based constructor
   /// with a mandatory `filter`.
@@ -208,10 +226,12 @@ struct LinalgBasePromotionPattern : public RewritePattern {
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    if (failed(filter.checkAndNotify(rewriter, op)))
+    if (failed(filter.checkAndNotify(rewriter, op))) {
       return failure();
-    if (failed(promoteSubviewsPrecondition(op, options)))
+    }
+    if (failed(promoteSubviewsPrecondition(op, options))) {
       return failure();
+    }
 
     // TODO: We cannot use root update here. This
     // pattern is creating other ops, so if the
@@ -241,7 +261,7 @@ private:
 };
 
 template <typename OpTy>
-struct LinalgPromotionPattern : public LinalgBasePromotionPattern {
+struct LinalgPromotionPattern : LinalgBasePromotionPattern {
   /// SFINAE: This constructor can only trigger for
   /// concrete ops that have a static
   /// `getOperationName` method.

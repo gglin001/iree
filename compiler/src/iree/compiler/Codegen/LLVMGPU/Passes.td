@@ -53,12 +53,6 @@ def LLVMGPUCastAddressSpaceFunctionPass :
   let summary = "Cast address space to generic in CallOp and FuncOp";
 }
 
-def LLVMGPUCastTypeToFitMMAPass : InterfacePass<"iree-llvmgpu-cast-type-to-fit-mma",
-                                                "mlir::FunctionOpInterface"> {
-  let summary = "Perform type extension/truncation over vector.contract types "
-                "to target GPU MMA intrinsics";
-}
-
 def LLVMGPUConfigureTensorLayoutsPass :
     InterfacePass<"iree-llvmgpu-configure-tensor-layouts", "mlir::FunctionOpInterface"> {
   let summary = "Pass to set layouts on tensors for later vector distribution";
@@ -95,7 +89,11 @@ def ROCDLPrefetchSharedMemoryPass :
     InterfacePass<"iree-llvmgpu-prefetch-shared-memory", "mlir::FunctionOpInterface"> {
       let summary = "Rotate scf.for loops to prefetch shared memory with distance 1. This pass is only applicable"
           "to ROCDL targets because its effectiveness on non-AMD GPUs lacks testing and evaluation.";
-  let dependentDialects = ["amdgpu::AMDGPUDialect"];
+  let dependentDialects = [
+    "::mlir::affine::AffineDialect",
+    "amdgpu::AMDGPUDialect",
+    "ROCDL::ROCDLDialect"
+  ];
   let options = [
     Option<"numStages", "num-stages", "unsigned",
            /*default=*/"2",
@@ -106,6 +104,11 @@ def ROCDLPrefetchSharedMemoryPass :
 def LLVMGPUSelectLoweringStrategyPass :
     Pass<"iree-llvmgpu-select-lowering-strategy", "ModuleOp"> {
   let summary = "Select a IREE::HAL::DispatchLoweringPassPipeline for lowering the target variant";
+  let options = [
+    Option<"gpuOptions", "gpu-options", "GPUCodegenOptions",
+      /*default=*/"GPUCodegenOptions::FromFlags::get()",
+      "Session-scoped GPU codegen options (tuning spec, etc.).">,
+  ];
 }
 
 def LLVMGPUTensorCoreVectorizationPass :

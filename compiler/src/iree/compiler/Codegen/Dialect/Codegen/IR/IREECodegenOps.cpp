@@ -6,20 +6,42 @@
 
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenOps.h"
 
+#include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenDialect.h"
 #include "llvm/ADT/SmallVectorExtras.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/DstBufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SMT/IR/SMTTypes.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Support/LLVM.h"
+
+// Custom parse/print helper for the knobs dictionary in constraints op.
+// Prints `knobs = { ... }` on its own line with newlines before and after.
+static mlir::ParseResult parseKnobsDictionary(mlir::OpAsmParser &parser,
+                                              mlir::DictionaryAttr &attr) {
+  if (parser.parseKeyword("knobs") || parser.parseEqual()) {
+    return mlir::failure();
+  }
+  return parser.parseAttribute(attr);
+}
+static void printKnobsDictionary(mlir::OpAsmPrinter &p, mlir::Operation *,
+                                 mlir::DictionaryAttr attr) {
+  p.printNewline();
+  p << " knobs = ";
+  p.printAttributeWithoutType(attr);
+  p.printNewline();
+}
 
 // clang-format off
 #define GET_OP_CLASSES
@@ -41,8 +63,9 @@ LogicalResult ExtractStridedMetadataOp::inferReturnTypes(
     ExtractStridedMetadataOp::Adaptor adaptor,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   auto sourceType = dyn_cast<MemRefType>(adaptor.getSource().getType());
-  if (!sourceType)
+  if (!sourceType) {
     return failure();
+  }
 
   unsigned sourceRank = sourceType.getRank();
   IndexType indexType = IndexType::get(context);
@@ -54,8 +77,9 @@ LogicalResult ExtractStridedMetadataOp::inferReturnTypes(
   // Offset.
   inferredReturnTypes.push_back(indexType);
   // Sizes and strides.
-  for (unsigned i = 0; i < sourceRank * 2; ++i)
+  for (unsigned i = 0; i < sourceRank * 2; ++i) {
     inferredReturnTypes.push_back(indexType);
+  }
   return success();
 }
 
@@ -281,8 +305,9 @@ LogicalResult InnerTiledOp::verify() {
   SmallVector<AffineMap, 4> indexingMaps = getIndexingMapsArray();
 
   // Verify that an indexing map was specified for each operand.
-  if (indexingMaps.size() != expectedNumIns + expectedNumOuts)
+  if (indexingMaps.size() != expectedNumIns + expectedNumOuts) {
     return emitOpError("expected an indexing map for each operand");
+  }
 
   // Verify that each index map has 'numIterators' inputs, no symbols, and
   // that the number of map outputs equals the rank of its associated
@@ -291,9 +316,10 @@ LogicalResult InnerTiledOp::verify() {
   for (const auto &it : llvm::enumerate(indexingMaps)) {
     auto index = it.index();
     auto map = it.value();
-    if (map.getNumSymbols() != 0)
+    if (map.getNumSymbols() != 0) {
       return emitOpError("expected indexing map ")
              << index << " to have no symbols";
+    }
     auto shapedType = opTypes[index];
     unsigned rank = shapedType.getRank();
     // Verify that the map has the right number of inputs, outputs, and indices.
@@ -369,9 +395,11 @@ LogicalResult InnerTiledOp::verify() {
 }
 
 static int64_t getResultIndex(AffineMap map, AffineExpr targetExpr) {
-  for (int64_t i = 0, e = map.getNumResults(); i < e; ++i)
-    if (targetExpr == map.getResult(i))
+  for (int64_t i = 0, e = map.getNumResults(); i < e; ++i) {
+    if (targetExpr == map.getResult(i)) {
       return i;
+    }
+  }
   return -1;
 }
 
@@ -393,4 +421,171 @@ std::optional<SmallVector<int64_t, 4>> InnerTiledOp::getShapeForUnroll() {
   SmallVector<int64_t, 4> shape;
   getIterationBounds(shape);
   return shape;
+}
+
+void InnerTiledOp::populateBoundsForShapedValueDim(
+    Value value, int64_t dim, ValueBoundsConstraintSet &cstr) {
+  // Result shapes equal the corresponding DPS init shapes.
+  auto resultIdx = cast<OpResult>(value).getResultNumber();
+  cstr.bound(value)[dim] == cstr.getExpr(getDpsInits()[resultIdx], dim);
+}
+
+//===----------------------------------------------------------------------===//
+// WorkgroupCountHintOp
+//===----------------------------------------------------------------------===//
+
+ParseResult WorkgroupCountHintOp::parse(OpAsmParser &parser,
+                                        OperationState &result) {
+  SmallVector<OpAsmParser::UnresolvedOperand, 3> dynamicSizes;
+  DenseI64ArrayAttr staticSizesAttr;
+
+  if (parseDynamicIndexList(parser, dynamicSizes, staticSizesAttr,
+                            /*valueTypes=*/{},
+                            /*delimiter=*/AsmParser::Delimiter::Paren)) {
+    return failure();
+  }
+
+  // All sizes are of index type. `parseDynamicIndexList` does not set the sizes
+  // correctly when used as a custom directive so manually infer it from the
+  // number of parsed sizes.
+  IndexType indexType = parser.getBuilder().getIndexType();
+  SmallVector<Type> dynamicSizeTypes(dynamicSizes.size(), indexType);
+
+  if (parser.resolveOperands(dynamicSizes, dynamicSizeTypes,
+                             parser.getCurrentLocation(), result.operands)) {
+    return failure();
+  }
+
+  result.addAttribute("static_sizes", staticSizesAttr);
+  if (parser.parseOptionalAttrDict(result.attributes)) {
+    return failure();
+  }
+
+  return success();
+}
+
+void WorkgroupCountHintOp::print(OpAsmPrinter &printer) {
+  printDynamicIndexList(printer, getOperation(), getSizes(), getStaticSizes(),
+                        /*valueTypes=*/{},
+                        /*delimiter=*/AsmParser::Delimiter::Paren);
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                /*elidedAttrs=*/{"static_sizes"});
+}
+
+void WorkgroupCountHintOp::build(OpBuilder &builder, OperationState &state,
+                                 ArrayRef<OpFoldResult> sizes) {
+  SmallVector<int64_t> staticSizes;
+  SmallVector<Value> dynamicSizes;
+  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes);
+  build(builder, state, dynamicSizes,
+        builder.getDenseI64ArrayAttr(staticSizes));
+}
+
+//===----------------------------------------------------------------------===//
+// ConstraintsOp
+//===----------------------------------------------------------------------===//
+
+/// Recursively check whether `name` appears as a knob name in `attr`.
+/// Checks IntKnobAttr/OneOfKnobAttr names and recurses into
+/// DictionaryAttr/ArrayAttr.
+static bool hasKnobName(Attribute attr, StringRef name) {
+  return TypeSwitch<Attribute, bool>(attr)
+      .Case<IntKnobAttr, OneOfKnobAttr>(
+          [&](auto knob) { return knob.getName().getValue() == name; })
+      .Case([&](DictionaryAttr dict) {
+        return llvm::any_of(dict, [&](NamedAttribute entry) {
+          return hasKnobName(entry.getValue(), name);
+        });
+      })
+      .Case([&](ArrayAttr array) {
+        return llvm::any_of(array, [&](Attribute element) {
+          return hasKnobName(element, name);
+        });
+      })
+      .Default(false);
+}
+
+LogicalResult ConstraintsOp::verify() {
+  Block &block = getBody().front();
+
+  // Check block arg count matches problem_dims count.
+  if (block.getNumArguments() != getProblemDims().size()) {
+    return emitOpError("expected ")
+           << getProblemDims().size() << " block arguments but got "
+           << block.getNumArguments();
+  }
+
+  // Check all block args are !smt.int.
+  smt::IntType smtIntType = smt::IntType::get(getContext());
+  for (auto [i, arg] : llvm::enumerate(block.getArguments())) {
+    if (arg.getType() != smtIntType) {
+      return emitOpError("block argument #")
+             << i << " must be !smt.int but got " << arg.getType();
+    }
+  }
+
+  // Verify knob ops: check names exist in the dict and reject duplicates.
+  // Note that we considered using SymbolTable for uniqueness, but the knobs
+  // dictionary contains attributes (not ops), so we'd still need custom
+  // verification for dictionary <--> KnobOp correspondence.
+  // Rejecting duplicates is not just pedantic -- when this op is lowered to
+  // SMT, each KnobOp becomes an `smt.declare_const`. The SMT dialect
+  // creates a fresh symbolic constant per declaration regardless of the name
+  // string, so two KnobOps with the same name would silently introduce two
+  // independent
+  // solver variables where one was intended, producing incorrect constraints.
+  DictionaryAttr knobs = getKnobsAttr();
+  llvm::StringMap<Location> seenKnobs;
+  for (auto knobOp : block.getOps<KnobOp>()) {
+    auto [it, inserted] =
+        seenKnobs.try_emplace(knobOp.getName(), knobOp.getLoc());
+    if (!inserted) {
+      InFlightDiagnostic diag = knobOp.emitOpError("duplicate knob name '")
+                                << knobOp.getName() << "'";
+      diag.attachNote(it->second) << "first occurrence here";
+      return diag;
+    }
+    if (!hasKnobName(knobs, knobOp.getName())) {
+      return knobOp.emitOpError("knob name '")
+             << knobOp.getName() << "' not found in knobs dict";
+    }
+  }
+
+  return success();
+}
+
+LogicalResult LookupOp::verify() {
+  if (getKeys().size() != getValues().size()) {
+    return emitOpError("keys and values must have the same size, got ")
+           << getKeys().size() << " keys and " << getValues().size()
+           << " values";
+  }
+  if (getKeys().empty()) {
+    return emitOpError("lookup table must be non-empty");
+  }
+  // Check for duplicate keys -- a duplicate would make the table ambiguous
+  // and could produce different behavior between direct evaluation and
+  // the chained smt.ite lowering.
+  llvm::SmallDenseSet<int64_t> seen;
+  for (int64_t key : getKeys()) {
+    if (!seen.insert(key).second) {
+      return emitOpError("duplicate key ") << key << " in lookup table";
+    }
+  }
+  return success();
+}
+
+LogicalResult AssertOp::verify() {
+  size_t placeholderCount = 0;
+  StringRef fmt = getMsg();
+  for (size_t pos = 0; (pos = fmt.find("{}", pos)) != StringRef::npos;
+       pos += 2) {
+    ++placeholderCount;
+  }
+  if (placeholderCount != getPrintArgs().size()) {
+    return emitOpError("format string has ")
+           << placeholderCount << " placeholder(s) but got "
+           << getPrintArgs().size() << " arg(s)";
+  }
+  return success();
 }

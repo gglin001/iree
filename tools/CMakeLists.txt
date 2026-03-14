@@ -71,7 +71,7 @@ iree_cc_binary(
     "iree-benchmark-executable-main.c"
   DEPS
     iree::base
-    iree::base::internal::flags
+    iree::base::tooling::flags
     iree::hal
     iree::io::file_handle
     iree::modules::hal::types
@@ -91,7 +91,7 @@ iree_cc_binary(
   DEPS
     benchmark
     iree::base
-    iree::base::internal::flags
+    iree::base::tooling::flags
     iree::hal
     iree::modules::hal::types
     iree::tooling::context_util
@@ -109,7 +109,7 @@ iree_cc_binary(
     "iree-check-module-main.cc"
   DEPS
     iree::base
-    iree::base::internal::flags
+    iree::base::tooling::flags
     iree::hal
     iree::modules::check
     iree::testing::gtest
@@ -128,7 +128,7 @@ iree_cc_binary(
     "iree-convert-parameters-main.c"
   DEPS
     iree::base
-    iree::base::internal::flags
+    iree::base::tooling::flags
     iree::hal
     iree::io::file_handle
     iree::io::formats::irpa
@@ -159,7 +159,7 @@ iree_cc_binary(
     "iree-create-parameters-main.c"
   DEPS
     iree::base
-    iree::base::internal::flags
+    iree::base::tooling::flags
     iree::hal
     iree::io::file_handle
     iree::io::formats::irpa
@@ -194,11 +194,12 @@ iree_cc_binary(
   DEPS
     flatcc::runtime
     iree::base
-    iree::base::internal::flags
+    iree::base::tooling::flags
     iree::base::internal::flatcc::debugging
     iree::base::internal::flatcc::parsing
     iree::io::file_handle
     iree::schemas::bytecode_module_def_c_fbs
+    iree::vm
     iree::vm::bytecode::module
   COVERAGE ${IREE_ENABLE_RUNTIME_COVERAGE}
   INSTALL_COMPONENT IREETools-Runtime
@@ -211,11 +212,35 @@ iree_cc_binary(
     "iree-dump-parameters-main.c"
   DEPS
     iree::base
-    iree::base::internal::flags
+    iree::base::tooling::flags
     iree::io::file_handle
     iree::io::parameter_index
     iree::io::scope_map
     iree::tooling::parameter_util
+  COVERAGE ${IREE_ENABLE_RUNTIME_COVERAGE}
+  INSTALL_COMPONENT IREETools-Runtime
+)
+
+iree_cc_binary(
+  NAME
+    iree-encode-parameters
+  SRCS
+    "iree-encode-parameters-main.c"
+  DEPS
+    iree::base
+    iree::base::tooling::flags
+    iree::hal
+    iree::io::file_handle
+    iree::io::formats::irpa
+    iree::io::parameter_index
+    iree::io::parameter_index_provider
+    iree::io::scope_map
+    iree::io::stream
+    iree::modules::hal
+    iree::tooling::context_util
+    iree::tooling::function_util
+    iree::tooling::parameter_util
+    iree::vm
   COVERAGE ${IREE_ENABLE_RUNTIME_COVERAGE}
   INSTALL_COMPONENT IREETools-Runtime
 )
@@ -247,11 +272,29 @@ iree_cc_binary(
     "iree-run-module-main.c"
   DEPS
     iree::base
-    iree::base::internal::flags
+    iree::base::tooling::flags
     iree::hal
     iree::tooling::context_util
     iree::tooling::run_module
     iree::vm
+  COVERAGE ${IREE_ENABLE_RUNTIME_COVERAGE}
+  INSTALL_COMPONENT IREETools-Runtime
+)
+
+iree_cc_binary(
+  NAME
+    iree-tokenize
+  SRCS
+    "iree-tokenize-main.c"
+  DEPS
+    iree::base
+    iree::base::tooling::flags
+    iree::base::internal::json
+    iree::io::file_handle
+    iree::tokenizer::tokenizer
+    iree::tokenizer::format::huggingface::tokenizer_json
+    iree::tokenizer::format::tiktoken::tiktoken
+    iree::tokenizer::vocab
   COVERAGE ${IREE_ENABLE_RUNTIME_COVERAGE}
   INSTALL_COMPONENT IREETools-Runtime
 )
@@ -405,7 +448,7 @@ if(IREE_BUILD_COMPILER)
       "iree-run-mlir-main.cc"
     DEPS
       iree::base
-      iree::base::internal::flags
+      iree::base::tooling::flags
       iree::compiler::bindings::c::headers
       iree::compiler::API::Impl
       iree::hal

@@ -4,7 +4,7 @@
 # See https://llvm.org/LICENSE.txt for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-cmake_minimum_required(VERSION 3.21...3.24)
+cmake_minimum_required(VERSION 3.26...3.29)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -21,6 +21,8 @@ if(DEFINED CACHE{CMAKE_CXX_STANDARD})
 endif()
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 set(IREE_IDE_FOLDER IREE)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -46,6 +48,7 @@ option(IREE_ENABLE_RUNTIME_TRACING "Enables instrumented runtime tracing." OFF)
 option(IREE_ENABLE_COMPILER_TRACING "Enables instrumented compiler tracing." OFF)
 option(IREE_ENABLE_RENDERDOC_PROFILING "Enables profiling HAL devices with the RenderDoc tool." OFF)
 option(IREE_ENABLE_THREADING "Builds IREE in with thread library support." ON)
+option(IREE_SYNCHRONIZATION_DISABLE_UNSAFE "Disables all synchronization primitives (for single-threaded bare-metal targets only)." OFF)
 option(IREE_ENABLE_CLANG_TIDY "Builds IREE in with clang tidy enabled on IREE's libraries." OFF)
 
 set(IREE_TRACING_PROVIDER_DEFAULT "tracy" CACHE STRING "Default tracing implementation.")
@@ -64,6 +67,14 @@ endif()
 set(IREE_ENABLE_CPUINFO_DEFAULT OFF)
 option(IREE_ENABLE_CPUINFO "Enables runtime use of cpuinfo for processor topology detection." ${IREE_ENABLE_CPUINFO_DEFAULT})
 
+# Enable libbacktrace for Linux stack traces by default on Linux.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(IREE_ENABLE_LIBBACKTRACE_DEFAULT ON)
+else()
+  set(IREE_ENABLE_LIBBACKTRACE_DEFAULT OFF)
+endif()
+option(IREE_ENABLE_LIBBACKTRACE "Enables libbacktrace for Linux stack traces." ${IREE_ENABLE_LIBBACKTRACE_DEFAULT})
+
 option(IREE_BUILD_COMPILER "Builds the IREE compiler." ON)
 option(IREE_BUILD_TESTS "Builds IREE unit tests." ON)
 option(IREE_BUILD_DOCS "Builds IREE documentation files." OFF)
@@ -71,6 +82,7 @@ option(IREE_BUILD_SAMPLES "Builds IREE sample projects." ON)
 option(IREE_BUILD_PYTHON_BINDINGS "Builds the IREE python bindings" OFF)
 option(IREE_BUILD_TRACY "Enables building the 'iree-tracy-capture' CLI tool and includes it in runtime Python bindings." OFF)
 option(IREE_BUILD_BUNDLED_LLVM "Builds the bundled llvm-project (vs using installed)" ON)
+option(IREE_BUILD_CLANG_TOOLS_EXTRA "Enables building the 'clang-tools-extra' LLVM targets." OFF)
 option(IREE_USE_SYSTEM_DEPS "Uses certain system libraries instead of building downloaded dependencies" OFF)
 
 if(IREE_USE_SYSTEM_DEPS)
@@ -412,7 +424,7 @@ endif()
 # chip because that would rely too much on guessing what the target chip is.
 # But silently continuing with ROCm testing disabled by default has also been
 # surprising.
-if ((IREE_HAL_DRIVER_HIP OR IREE_HAL_DRIVER_AMDGPU) AND NOT DEFINED CACHE{IREE_HIP_TEST_TARGET_CHIP})
+if ((IREE_HAL_DRIVER_HIP OR IREE_HAL_DRIVER_AMDGPU) AND NOT DEFINED CACHE{IREE_ROCM_TEST_TARGET_CHIP} AND NOT DEFINED CACHE{IREE_HIP_TEST_TARGET_CHIP})
   find_program(_ROCMINFO_COMMAND rocminfo)
   if (_ROCMINFO_COMMAND)
     execute_process(COMMAND ${_ROCMINFO_COMMAND} OUTPUT_VARIABLE _ROCMINFO_OUTPUT)
@@ -427,14 +439,21 @@ if ((IREE_HAL_DRIVER_HIP OR IREE_HAL_DRIVER_AMDGPU) AND NOT DEFINED CACHE{IREE_H
       # be conservative.
       message(FATAL_ERROR "At least one ROCm device detected, with architecture: ${_ROCMINFO_GFX_NAME}.\n"
                       "Explicitly either enable or disable ROCm testing.\n"
-                      "To enable ROCm testing for ${_ROCMINFO_GFX_NAME}:\n    cmake -DIREE_HIP_TEST_TARGET_CHIP=${_ROCMINFO_GFX_NAME}\n"
-                      "To disable ROCm testing:\n    cmake -DIREE_HIP_TEST_TARGET_CHIP=\n" )
+                      "To enable ROCm testing for ${_ROCMINFO_GFX_NAME}:\n    cmake -DIREE_ROCM_TEST_TARGET_CHIP=${_ROCMINFO_GFX_NAME}\n"
+                      "To disable ROCm testing:\n    cmake -DIREE_ROCM_TEST_TARGET_CHIP=\n" )
     endif()
   endif()
 endif()
-set(IREE_HIP_TEST_TARGET_CHIP "" CACHE STRING
-  "Target chip for HIP tests that need to compile device code. \
+set(IREE_ROCM_TEST_TARGET_CHIP "" CACHE STRING
+  "Target chip for ROCm tests that need to compile device code. \
    Defaults to empty string to disable tests.")
+# Backward compatibility: accept the old IREE_HIP_TEST_TARGET_CHIP name.
+set(IREE_HIP_TEST_TARGET_CHIP "" CACHE STRING
+  "Deprecated; use IREE_ROCM_TEST_TARGET_CHIP instead.")
+if(IREE_HIP_TEST_TARGET_CHIP AND NOT IREE_ROCM_TEST_TARGET_CHIP)
+  message(WARNING "IREE_HIP_TEST_TARGET_CHIP is deprecated; use IREE_ROCM_TEST_TARGET_CHIP instead.")
+  set(IREE_ROCM_TEST_TARGET_CHIP "${IREE_HIP_TEST_TARGET_CHIP}" CACHE STRING "" FORCE)
+endif()
 
 #-------------------------------------------------------------------------------
 # Compiler Target Options
@@ -515,11 +534,13 @@ option(IREE_ENABLE_ASAN "Enable address sanitizer" OFF)
 option(IREE_ENABLE_MSAN "Enable memory sanitizer" OFF)
 option(IREE_ENABLE_TSAN "Enable thread sanitizer" OFF)
 option(IREE_ENABLE_UBSAN "Enable undefined behavior sanitizer" OFF)
+option(IREE_ENABLE_FUZZING "Enable libFuzzer-based fuzz targets" OFF)
 option(IREE_ENABLE_SPLIT_DWARF "Enable gsplit-dwarf for debug information if the platform supports it" OFF)
 option(IREE_ENABLE_THIN_ARCHIVES "Enables thin ar archives (elf systems only). Disable for released static archives" OFF)
 option(IREE_LINK_COMPILER_SHARED_LIBRARY "Links IREE tools using the compiler compiled into a shared library" ON)
 option(IREE_ENABLE_WERROR_FLAG "Enable `-Werror` flag, treat error as warning" ON)
 option(IREE_ENABLE_POSITION_INDEPENDENT_CODE "Enable position independent code" TRUE)
+option(IREE_REVERSE_ITERATION "Reverse iteration over in unordered LLVM containers" OFF)
 
 if(IREE_LINK_COMPILER_SHARED_LIBRARY AND IREE_ENABLE_COMPILER_TRACING)
   message(SEND_ERROR
@@ -621,6 +642,7 @@ include(iree_copts)
 include(iree_cc_binary)
 include(iree_cc_library)
 include(iree_cc_test)
+include(iree_cc_fuzz)
 include(iree_import_binary)
 include(iree_install_support)
 include(iree_external_cmake_options)
@@ -630,6 +652,7 @@ include(iree_c_embed_data)
 include(iree_amdgpu_binary)
 include(iree_bitcode_library)
 include(iree_bytecode_module)
+include(iree_hal_executable)
 include(iree_c_module)
 include(iree_python)
 include(iree_lit_test)
@@ -715,15 +738,29 @@ if(IREE_BUILD_PYTHON_BINDINGS)
   # "Bootstrapping" by first looking for the optional Development component
   # seems to be robust generally.
   # See: https://reviews.llvm.org/D118148
-  # If building Python packages, we have a hard requirement on 3.9+.
-  find_package(Python3 3.9 COMPONENTS Interpreter Development NumPy)
-  find_package(Python3 3.9 COMPONENTS Interpreter Development.Module NumPy REQUIRED)
+  # If building Python packages, we have a hard requirement on 3.10+.
+  find_package(Python3 3.10 COMPONENTS Interpreter Development NumPy)
+  find_package(Python3 3.10 COMPONENTS Interpreter Development.Module Development.SABIModule NumPy REQUIRED)
   # Some parts of the build use FindPython instead of FindPython3. Why? No
   # one knows, but they are different. So make sure to bootstrap this one too.
   # Not doing this here risks them diverging, which on multi-Python systems,
   # can be troublesome. Note that nanobind requires FindPython.
   set(Python_EXECUTABLE "${Python3_EXECUTABLE}")
-  find_package(Python 3.9 COMPONENTS Interpreter Development.Module NumPy REQUIRED)
+  find_package(Python 3.10 COMPONENTS Interpreter Development.Module Development.SABIModule NumPy REQUIRED)
+
+  # Auto-detect IREE_ENABLE_PYTHON_STABLE_ABI: enable for CPython 3.12+ with
+  # GIL. Can be overridden by explicitly setting the cache variable.
+  if(NOT DEFINED CACHE{IREE_ENABLE_PYTHON_STABLE_ABI}
+     AND Python3_VERSION VERSION_GREATER_EQUAL "3.12"
+     AND Python3_INTERPRETER_ID STREQUAL "Python"
+     AND TARGET Python::SABIModule
+     AND NOT Python3_SOABI MATCHES "^cpython-[0-9]+t")
+    set(IREE_ENABLE_PYTHON_STABLE_ABI ON CACHE BOOL
+      "Build Python bindings with Stable ABI (abi3) for Python 3.12+")
+  endif()
+  if(IREE_ENABLE_PYTHON_STABLE_ABI)
+    message(STATUS "IREE Python Stable ABI (abi3) enabled")
+  endif()
 elseif(IREE_BUILD_COMPILER OR IREE_BUILD_TESTS)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   set(Python_EXECUTABLE "${Python3_EXECUTABLE}")
@@ -790,7 +827,7 @@ add_custom_target(iree-sample-deps
 )
 
 # Testing rules that require generation will add dependencies to this target.
-# This allows them to be EXCLUDE_FROM_ALL but still invokable.
+# This allows them to be EXCLUDE_FROM_ALL but still invocable.
 add_custom_target(iree-test-deps
   COMMENT
     "Building IREE test deps"
@@ -847,6 +884,11 @@ endif()
 #-------------------------------------------------------------------------------
 # MLIR/LLVM Dependency
 #-------------------------------------------------------------------------------
+
+# Cascade IREE_ENABLE_PYTHON_STABLE_ABI to MLIR.
+if(IREE_ENABLE_PYTHON_STABLE_ABI)
+  set(MLIR_ENABLE_PYTHON_STABLE_ABI ON CACHE BOOL "" FORCE)
+endif()
 
 # Both the IREE and MLIR Python bindings require nanobind. We initialize it here
 # at the top level so that everything uses ours consistently.
@@ -1000,6 +1042,9 @@ if(IREE_ENABLE_CPUINFO)
   endif()
 endif()
 
+# Platform-independent printf implementation (eyalroz/printf).
+add_subdirectory(build_tools/third_party/printf EXCLUDE_FROM_ALL)
+
 # This defines the iree-flatcc-cli target, so we don't use EXCLUDE_FROM_ALL.
 add_subdirectory(build_tools/third_party/flatcc)
 
@@ -1047,6 +1092,7 @@ if(IREE_HAL_DRIVER_CUDA)
 endif()
 
 if(IREE_HAL_DRIVER_HIP)
+  add_subdirectory(build_tools/third_party/hip-api-headers EXCLUDE_FROM_ALL)
   add_subdirectory(build_tools/third_party/rccl EXCLUDE_FROM_ALL)
 endif()
 
@@ -1134,6 +1180,10 @@ if(IREE_BUILD_PYTHON_BINDINGS)
   set(_PYTHONPATH_ENV_PS1 "$env:PYTHONPATH = '$<SHELL_PATH:${CMAKE_CURRENT_BINARY_DIR}/compiler/bindings/python;${CMAKE_CURRENT_BINARY_DIR}/runtime/bindings/python>'\n")
   file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/.env.ps1" CONTENT "${_PYTHONPATH_ENV_PS1}")
 endif()
+
+# Build libbacktrace from source for Linux stack traces.
+# Creates an empty target if disabled or not on Linux.
+add_subdirectory(build_tools/third_party/libbacktrace EXCLUDE_FROM_ALL)
 
 if(IREE_BUILD_BINDINGS_TFLITE)
   add_subdirectory(runtime/bindings/tflite)
@@ -1263,7 +1313,7 @@ endif(IREE_ENABLE_RUNTIME_COVERAGE)
 # environment variable "DESTDIST" on a per invocation basis (i.e. to place under
 # a versioned path, etc).
 #
-# The `iree-install-dist` target includes everthing that is typically included in
+# The `iree-install-dist` target includes everything that is typically included in
 # a distribution tarball.
 #-------------------------------------------------------------------------------
 

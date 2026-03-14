@@ -31,7 +31,7 @@ template <typename StoreLoadLikeOp, Value (*getSrcMemRef)(StoreLoadLikeOp),
               Value /*srcMemRef*/, ArrayRef<Value> /*indices*/),
           SmallVector<OpFoldResult> (*getViewSizeForEachDim)(
               RewriterBase & /*rewriter*/, StoreLoadLikeOp /*storeLoadOp*/)>
-struct StoreLoadLikeOpRewriter : public OpRewritePattern<StoreLoadLikeOp> {
+struct StoreLoadLikeOpRewriter : OpRewritePattern<StoreLoadLikeOp> {
   using OpRewritePattern<StoreLoadLikeOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(StoreLoadLikeOp storeLoadLikeOp,
@@ -40,8 +40,9 @@ struct StoreLoadLikeOpRewriter : public OpRewritePattern<StoreLoadLikeOp> {
     auto ldTy = cast<MemRefType>(srcMemRef.getType());
     unsigned storeLoadRank = ldTy.getRank();
     // Don't waste compile time if there is nothing to rewrite.
-    if (storeLoadRank == 0)
+    if (storeLoadRank == 0) {
       return failure();
+    }
 
     // If our load already has only zeros as indices there is nothing
     // to do.

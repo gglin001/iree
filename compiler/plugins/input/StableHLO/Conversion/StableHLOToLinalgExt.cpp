@@ -51,8 +51,9 @@ Type convertIntegerToSignless(IntegerType intType) {
 }
 
 std::optional<Type> convertRank0TensorToScalar(RankedTensorType tensorType) {
-  if (tensorType.getRank() != 0)
+  if (tensorType.getRank() != 0) {
     return std::nullopt;
+  }
   Type elementType = tensorType.getElementType();
   if (auto intType = dyn_cast<IntegerType>(elementType)) {
     elementType = convertIntegerToSignless(intType);
@@ -72,8 +73,9 @@ Value materializeCast(OpBuilder &builder, Type toType, ValueRange inputs,
   assert(inputs.size() == 1 && "too many inputs to type conversion");
   Value fromValue = inputs[0];
   auto fromType = dyn_cast<RankedTensorType>(fromValue.getType());
-  if (!fromType)
+  if (!fromType) {
     return Value();
+  }
 
   if (auto intFromType = dyn_cast<IntegerType>(fromType.getElementType())) {
     Type castType = getElementTypeOrSelf(toType);
@@ -88,8 +90,9 @@ Value materializeCast(OpBuilder &builder, Type toType, ValueRange inputs,
     }
   }
 
-  if (fromType.getRank() != 0)
+  if (fromType.getRank() != 0) {
     return fromValue;
+  }
 
   Type extractType = getElementTypeOrSelf(toType);
   return builder.createOrFold<tensor::ExtractOp>(loc, extractType, fromValue);
@@ -131,11 +134,13 @@ struct LinalgExtRegionHLOOpConversion final : OpConversionPattern<OpTy> {
   LogicalResult
   matchAndRewrite(OpTy op, typename OpTy::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!isInBodyOfLinalgExtOps(op))
+    if (!isInBodyOfLinalgExtOps(op)) {
       return failure();
+    }
     TensorType origRetType = dyn_cast<TensorType>(op.getType());
-    if (!origRetType)
+    if (!origRetType) {
       return failure();
+    }
     SmallVector<Value> scalarArgs;
     Type newRetType = getElementTypeOrSelf(
         this->typeConverter->convertType(origRetType.getElementType()));
@@ -152,8 +157,9 @@ struct LinalgExtRegionReturnOpConversion final
   LogicalResult
   matchAndRewrite(mlir::stablehlo::ReturnOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!isInBodyOfLinalgExtOps(op))
+    if (!isInBodyOfLinalgExtOps(op)) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<IREE::LinalgExt::YieldOp>(
         op, adaptor.getOperands());
     return success();
@@ -222,23 +228,28 @@ struct ScatterOpConversion final
     auto indexDepth = indicesType.getShape().back();
     auto scatterDimsToOperandDims = dimNumbers.getScatterDimsToOperandDims();
 
-    if (indicesRank != 2)
+    if (indicesRank != 2) {
       return false;
-    if (indexVectorDim != indicesRank - 1)
+    }
+    if (indexVectorDim != indicesRank - 1) {
       return false;
-    if (scatterDimsToOperandDims.size() != indexDepth)
+    }
+    if (scatterDimsToOperandDims.size() != indexDepth) {
       return false;
+    }
 
     auto insertedWindowDims = dimNumbers.getInsertedWindowDims();
     for (auto [idx, dim] : llvm::enumerate(insertedWindowDims)) {
-      if (idx != dim)
+      if (idx != dim) {
         return false;
+      }
     }
 
     // Check that there is only one batch dimension in the updates.
     for (auto [idx, dim] : llvm::enumerate(dimNumbers.getUpdateWindowDims())) {
-      if (idx + 1 != dim)
+      if (idx + 1 != dim) {
         return false;
+      }
     }
 
     return true;
@@ -247,12 +258,15 @@ struct ScatterOpConversion final
   LogicalResult
   matchAndRewrite(mlir::stablehlo::ScatterOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!hasCanonicalDimensionNumbers(op))
+    if (!hasCanonicalDimensionNumbers(op)) {
       return failure();
-    if (llvm::size(op.getInputs()) != 1)
+    }
+    if (llvm::size(op.getInputs()) != 1) {
       return op.emitError("NYI variadic operands scatter");
-    if (llvm::size(op.getUpdates()) != 1)
+    }
+    if (llvm::size(op.getUpdates()) != 1) {
       return op.emitError("NYI variadic updates scatter");
+    }
 
     ImplicitLocOpBuilder b(op.getLoc(), rewriter);
 
@@ -269,8 +283,8 @@ struct ScatterOpConversion final
     }
 
     auto scatterOp = IREE::LinalgExt::ScatterOp::create(
-        rewriter, op.getLoc(), originalType, ValueRange{updates, indices},
-        ValueRange{original}, scatterDimMap, op.getUniqueIndices());
+        rewriter, op.getLoc(), originalType, updates, indices, original,
+        scatterDimMap, op.getUniqueIndices());
 
     rewriter.inlineRegionBefore(op.getUpdateComputation(),
                                 scatterOp.getRegion(),
@@ -300,26 +314,53 @@ struct FftOpConversion final : OpConversionPattern<mlir::stablehlo::FftOp> {
   LogicalResult
   matchAndRewrite(mlir::stablehlo::FftOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Only handle 2^n fft length.
-    if (!llvm::all_equal(op.getFftLength())) {
-      return rewriter.notifyMatchFailure(op, "non-splat length");
+
+    // Only handle 1D ffts.
+    if (op.getFftLength().size() != 1) {
+      return rewriter.notifyMatchFailure(op, "only 1D FFTs supported");
     }
     int64_t fftLength = op.getFftLength().front();
     if (!llvm::isPowerOf2_64(fftLength)) {
       return rewriter.notifyMatchFailure(
           op, "expected FFT length to be a power of two");
     }
+    mlir::stablehlo::FftType fftType = op.getFftType();
+    FailureOr<std::pair<Value, Value>> rewriteRes;
+    if (fftType == mlir::stablehlo::FftType::RFFT) {
+      rewriteRes = IREE::LinalgExt::rewriteRfft(op, adaptor.getOperand(),
+                                                fftLength, rewriter);
+    } else if (fftType == mlir::stablehlo::FftType::FFT) {
+      rewriteRes = IREE::LinalgExt::rewriteFft(
+          op, adaptor.getOperand(), fftLength,
+          IREE::LinalgExt::FFTDirection::Forward,
+          IREE::LinalgExt::FFTNormalization::NoNormalize, rewriter);
+    } else if (fftType == mlir::stablehlo::FftType::IFFT) {
+      rewriteRes = IREE::LinalgExt::rewriteFft(
+          op, adaptor.getOperand(), fftLength,
+          IREE::LinalgExt::FFTDirection::Backward,
+          IREE::LinalgExt::FFTNormalization::Normalize, rewriter);
+    } else if (fftType == mlir::stablehlo::FftType::IRFFT) {
+      rewriteRes = IREE::LinalgExt::rewriteIrfft(op, adaptor.getOperand(),
+                                                 fftLength, rewriter);
+    } else {
+      // Not implemented.
+      return failure();
+    }
 
-    auto rewriteRes = IREE::LinalgExt::rewriteFft(op, adaptor.getOperand(),
-                                                  fftLength, rewriter);
     if (failed(rewriteRes)) {
       return failure();
     }
 
     auto [real, imag] = rewriteRes.value();
 
-    rewriter.replaceOpWithNewOp<mlir::stablehlo::ComplexOp>(op, op.getType(),
-                                                            real, imag);
+    // For IRFFT, return only the real part (output is real-valued)
+    if (fftType == mlir::stablehlo::FftType::IRFFT) {
+      rewriter.replaceOp(op, real);
+    } else {
+      // For other FFT types, return complex output
+      rewriter.replaceOpWithNewOp<mlir::stablehlo::ComplexOp>(op, op.getType(),
+                                                              real, imag);
+    }
     return success();
   }
 };
@@ -335,8 +376,9 @@ struct ReverseOpConversion final
   matchAndRewrite(mlir::stablehlo::ReverseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto ty = dyn_cast<RankedTensorType>(adaptor.getOperands()[0].getType());
-    if (!ty)
+    if (!ty) {
       return failure();
+    }
 
     Value input = op.getOperand();
     auto inputTy = cast<ShapedType>(input.getType());
@@ -426,8 +468,9 @@ struct ScanOpConversion final
     auto window = llvm::to_vector(op.getWindowDimensions());
     llvm::SmallVector<int64_t, 4> reduceAxes;
     for (int i = 0, s = window.size(); i < s; ++i) {
-      if (window[i] == 1)
+      if (window[i] == 1) {
         continue;
+      }
       if (window[i] == input0Ty.getDimSize(i)) {
         reduceAxes.push_back(i);
         continue;
@@ -454,8 +497,9 @@ struct ScanOpConversion final
     }
 
     for (int i = 0, s = padding.size(); i < s; i += 2) {
-      if (i == reduceAxis * 2)
+      if (i == reduceAxis * 2) {
         continue;
+      }
       if (padding[i] != 0 || padding[i + 1] != 0) {
         return rewriter.notifyMatchFailure(op,
                                            "padding along non-reduction axis");
@@ -484,8 +528,9 @@ struct ScanOpConversion final
     llvm::SmallVector<int64_t> initDims;
     llvm::SmallVector<Value> initDynDims;
     for (int i = 0; i < input0Ty.getRank(); ++i) {
-      if (i == reduceAxis)
+      if (i == reduceAxis) {
         continue;
+      }
       initDims.push_back(input0Ty.getDimSize(i));
       if (ShapedType::isDynamic(initDims.back())) {
         initDynDims.push_back(
@@ -522,9 +567,29 @@ struct ScanOpConversion final
       outputTys.push_back(output.getType());
     }
 
+    // IREE::LinalgExt::ScanOp only supports purely inclusive (prefix) scans.
+    // To support suffix (postfix) scans, we can reverse the input, perform a
+    // prefix scan, and then reverse the output.
+    auto createReverse = [&](Value val, int64_t axis) -> Value {
+      auto valTy = llvm::cast<mlir::RankedTensorType>(val.getType());
+      SmallVector<int64_t> dimensions;
+      dimensions.push_back(axis);
+      return mlir::stablehlo::ReverseOp::create(
+          rewriter, op.getLoc(), valTy, val,
+          rewriter.getDenseI64ArrayAttr(dimensions));
+    };
+    llvm::SmallVector<Value> scanInputs;
+    if (isPostfix) {
+      for (auto input : inputs) {
+        scanInputs.push_back(createReverse(input, reduceAxis));
+      }
+    } else {
+      scanInputs = inputs;
+    }
+
     auto scanOp = IREE::LinalgExt::ScanOp::create(
-        rewriter, op.getLoc(), outputTys, inputs, outputs,
-        rewriter.getI64IntegerAttr(reduceAxis), rewriter.getBoolAttr(1));
+        rewriter, op.getLoc(), outputTys, scanInputs[0], outputs[0], outputs[1],
+        rewriter.getI64IntegerAttr(reduceAxis), rewriter.getBoolAttr(true));
 
     rewriter.inlineRegionBefore(op.getRegion(), scanOp.getRegion(),
                                 scanOp.getRegion().begin());
@@ -536,7 +601,12 @@ struct ScanOpConversion final
     rewriter.applySignatureConversion(&scanOp.getRegion().front(),
                                       signatureConverter);
 
-    rewriter.replaceOp(op, scanOp.getResult(0));
+    Value result = scanOp.getResult(0);
+    if (isPostfix) {
+      result = createReverse(result, reduceAxis);
+    }
+
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -563,7 +633,7 @@ struct TopkOpConversion final : OpConversionPattern<chlo::TopKOp> {
 
     Type valueElementType = inputValuesType.getElementType();
     Type indicesElementType = outputIndicesType.getElementType();
-    // Only handle integer types for indicies. Index type is not supported.
+    // Only handle integer types for indices. Index type is not supported.
     if (!isa<IntegerType>(indicesElementType)) {
       return rewriter.notifyMatchFailure(
           op, "Output indices must be of integer type.");
@@ -609,8 +679,8 @@ struct TopkOpConversion final : OpConversionPattern<chlo::TopKOp> {
       newResultTypes.push_back(op->getResultTypes()[i]);
     }
     auto topkOp = rewriter.replaceOpWithNewOp<IREE::LinalgExt::TopkOp>(
-        op, newResultTypes, ValueRange{operand},
-        ValueRange{negInfTensor, posInfTensor}, kDim);
+        op, newResultTypes, /*values=*/operand, /*indices=*/Value(),
+        /*output_values=*/negInfTensor, /*output_indices=*/posInfTensor, kDim);
 
     // Define the region of TopK with a GT comparison
     SmallVector<Type> types(2, valueElementType);

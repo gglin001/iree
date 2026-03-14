@@ -60,8 +60,7 @@ static std::string getDeviceNamePrefix(IREE::Util::GlobalOpInterface deviceOp) {
 }
 
 struct MemoizeDeviceQueriesPass
-    : public IREE::HAL::impl::MemoizeDeviceQueriesPassBase<
-          MemoizeDeviceQueriesPass> {
+    : IREE::HAL::impl::MemoizeDeviceQueriesPassBase<MemoizeDeviceQueriesPass> {
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
 
@@ -85,8 +84,9 @@ struct MemoizeDeviceQueriesPass
         // we can't memoize the query today.
         auto deviceGlobals =
             deviceAnalysis.lookupDeviceGlobals(queryOp.getDevice());
-        if (!deviceGlobals || deviceGlobals->size() != 1)
+        if (!deviceGlobals || deviceGlobals->size() != 1) {
           return WalkResult::advance();
+        }
         IREE::Util::GlobalOpInterface deviceGlobalOp = deviceGlobals->front();
 
         // Construct key used to dedupe/lookup the query.

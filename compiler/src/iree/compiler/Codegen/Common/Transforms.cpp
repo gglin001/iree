@@ -7,9 +7,12 @@
 #include "iree/compiler/Codegen/Common/Transforms.h"
 #include "iree/compiler/Codegen/Common/CombineLayoutTransformation.h"
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.h"
+#include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallVectorExtras.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 
 #define DEBUG_TYPE "iree-codegen-common-transforms"
@@ -48,7 +51,6 @@ struct FuseTilableForallConsumers final
 
     tensor::ParallelInsertSliceOp producerSlice;
     LoopLikeOpInterface sliceOwner;
-    Value fusionOperand;
     for (auto operand : dpsOp.getDpsInputs()) {
       auto forallProducer = operand.getDefiningOp<scf::ForallOp>();
       if (!forallProducer) {
@@ -57,34 +59,13 @@ struct FuseTilableForallConsumers final
       if (forallProducer->getBlock() != tilableOp->getBlock()) {
         continue;
       }
-      Value iterArg = forallProducer.getTiedBlockArgument(
-          forallProducer.getTiedOpOperand(cast<OpResult>(operand)));
-
-      for (auto user : iterArg.getUsers()) {
-        auto sliceOp = dyn_cast<tensor::ParallelInsertSliceOp>(user);
-        if (sliceOp && sliceOp.getDest() == iterArg) {
-          producerSlice = sliceOp;
-          sliceOwner = forallProducer;
-          fusionOperand = operand;
-          break;
-        }
-      }
-      if (producerSlice) {
-        break;
-      }
+      sliceOwner = forallProducer;
+      break;
     }
 
-    if (!producerSlice) {
+    if (!sliceOwner) {
       return rewriter.notifyMatchFailure(tilableOp,
                                          "no scf.forall producer to fuse into");
-    }
-
-    for (auto operand : tilableOp->getOperands()) {
-      if (operand != fusionOperand && operand.getDefiningOp() == sliceOwner) {
-        return rewriter.notifyMatchFailure(tilableOp,
-                                           "unimplemented: Cannot fuse op with "
-                                           "multiple uses of producer loop");
-      }
     }
 
     // The `tileAndFuseConsumerOfSlices` transform will fail if there are any
@@ -116,8 +97,7 @@ struct FuseTilableForallConsumers final
     }
 
     FailureOr<scf::SCFFuseConsumerOfSliceResult> fuseConsumerResults =
-        scf::tileAndFuseConsumerOfSlices(rewriter, producerSlice.getOperation(),
-                                         {sliceOwner});
+        scf::tileAndFuseConsumer(rewriter, tilableOp, {sliceOwner});
     if (failed(fuseConsumerResults)) {
       return failure();
     }
@@ -137,44 +117,45 @@ void populateFuseTilableForallConsumersPattern(RewritePatternSet &patterns) {
 
 namespace {
 
-struct FoldRelayoutOpIntoMapScatterPattern
-    : public OpRewritePattern<IREE::LinalgExt::MapScatterOp> {
+struct FoldRelayoutOpIntoMapStorePattern
+    : OpRewritePattern<IREE::LinalgExt::MapStoreOp> {
   using Base::Base;
 
-  LogicalResult matchAndRewrite(IREE::LinalgExt::MapScatterOp mapScatterOp,
+  LogicalResult matchAndRewrite(IREE::LinalgExt::MapStoreOp mapStoreOp,
                                 PatternRewriter &rewriter) const override {
-    Operation *op = mapScatterOp.getInput().getDefiningOp();
+    Operation *op = mapStoreOp.getInput().getDefiningOp();
     if (!op) {
       return failure();
     }
     // Folding tensor.pad is handled by a separate pattern.
-    if (!isSupportedRelayoutOp(op) || isa<tensor::PadOp>(op)) {
+    if (!isSupportedSingleInputRelayoutOpForResult(op) ||
+        isa<tensor::PadOp>(op)) {
       return failure();
     }
-    if (failed(foldIntoMapScatter(rewriter, op, mapScatterOp))) {
+    if (failed(foldIntoMapStore(rewriter, op, mapStoreOp))) {
       return failure();
     }
     return success();
   }
 };
 
-struct FoldPadOpIntoMapScatterPattern
-    : public OpRewritePattern<IREE::LinalgExt::MapScatterOp> {
+struct FoldPadOpIntoMapStorePattern
+    : OpRewritePattern<IREE::LinalgExt::MapStoreOp> {
   using Base::Base;
-  FoldPadOpIntoMapScatterPattern(MLIRContext *context,
-                                 PadDistributionConfigFn configFn,
-                                 PatternBenefit benefit = 1)
-      : OpRewritePattern<IREE::LinalgExt::MapScatterOp>(context, benefit),
+  FoldPadOpIntoMapStorePattern(MLIRContext *context,
+                               PadDistributionConfigFn configFn,
+                               PatternBenefit benefit = 1)
+      : OpRewritePattern<IREE::LinalgExt::MapStoreOp>(context, benefit),
         padDistributionConfigFn(std::move(configFn)) {}
 
-  LogicalResult matchAndRewrite(IREE::LinalgExt::MapScatterOp mapScatterOp,
+  LogicalResult matchAndRewrite(IREE::LinalgExt::MapStoreOp mapStoreOp,
                                 PatternRewriter &rewriter) const override {
-    auto padOp = mapScatterOp.getInput().getDefiningOp<tensor::PadOp>();
+    auto padOp = mapStoreOp.getInput().getDefiningOp<tensor::PadOp>();
     if (!padOp) {
       return failure();
     }
-    if (failed(foldPadIntoMapScatter(rewriter, padOp, mapScatterOp,
-                                     padDistributionConfigFn))) {
+    if (failed(foldPadIntoMapStore(rewriter, padOp, mapStoreOp,
+                                   padDistributionConfigFn))) {
       return failure();
     }
     return success();
@@ -189,10 +170,10 @@ private:
 void populateCombineRelayoutOpPatterns(
     RewritePatternSet &patterns,
     PadDistributionConfigFn padDistributionConfigFn) {
-  patterns.add<FoldRelayoutOpIntoMapScatterPattern>(patterns.getContext());
+  patterns.add<FoldRelayoutOpIntoMapStorePattern>(patterns.getContext());
   if (padDistributionConfigFn) {
-    patterns.add<FoldPadOpIntoMapScatterPattern>(patterns.getContext(),
-                                                 padDistributionConfigFn);
+    patterns.add<FoldPadOpIntoMapStorePattern>(patterns.getContext(),
+                                               padDistributionConfigFn);
   }
 }
 
@@ -249,8 +230,9 @@ swapExpandShapeWithSlice(RewriterBase &rewriter,
 
   auto isZeroOffsetAndFullSize = [](OpFoldResult offset, OpFoldResult sliceSize,
                                     OpFoldResult size) {
-    if (!isZeroInteger(offset))
+    if (!isZeroInteger(offset)) {
       return false;
+    }
     FailureOr<bool> maybeEqual =
         ValueBoundsConstraintSet::areEqual(sliceSize, size);
     return llvm::succeeded(maybeEqual) && maybeEqual.value();
@@ -295,8 +277,9 @@ swapExpandShapeWithSlice(RewriterBase &rewriter,
     // Offset = cumulative product of leading unit extracted dims.
     for (; i < e; ++i) {
       int64_t expandedDim = indices[i];
-      if (!isOneInteger(sizes[expandedDim]))
+      if (!isOneInteger(sizes[expandedDim])) {
         break;
+      }
 
       basis.push_back(outputShape[expandedDim]);
       delinOffsets.push_back(offsets[expandedDim]);
@@ -352,8 +335,12 @@ swapExpandShapeWithSlice(RewriterBase &rewriter,
 namespace {
 
 struct SwapExpandShapeWithSlicePattern
-    : public OpRewritePattern<tensor::ExtractSliceOp> {
-  using Base::Base;
+    : OpRewritePattern<tensor::ExtractSliceOp> {
+  SwapExpandShapeWithSlicePattern(MLIRContext *context,
+                                  linalg::ControlFusionFn controlFn,
+                                  PatternBenefit benefit = 1)
+      : OpRewritePattern<tensor::ExtractSliceOp>(context, benefit),
+        controlFn(std::move(controlFn)) {}
 
   LogicalResult matchAndRewrite(tensor::ExtractSliceOp sliceOp,
                                 PatternRewriter &rewriter) const override {
@@ -367,14 +354,127 @@ struct SwapExpandShapeWithSlicePattern
                                          "unsupported: non-unit stride");
     }
 
+    // The control function receives the source operand of the extract_slice
+    // (which uses the expand_shape result).
+    OpOperand &srcOperand = sliceOp.getSourceMutable();
+    if (controlFn && !controlFn(&srcOperand)) {
+      return rewriter.notifyMatchFailure(sliceOp,
+                                         "rejected by control function");
+    }
+
     return swapExpandShapeWithSlice(rewriter, expandOp, sliceOp);
+  }
+
+private:
+  linalg::ControlFusionFn controlFn;
+};
+
+} // namespace
+
+void populateSwapExtractWithExpandPattern(RewritePatternSet &patterns,
+                                          linalg::ControlFusionFn controlFn) {
+  patterns.add<SwapExpandShapeWithSlicePattern>(patterns.getContext(),
+                                                std::move(controlFn));
+}
+
+namespace {
+
+/// Pattern to fold extract_slice(broadcast) into the broadcast input when the
+/// extract_slice is rank-reducing and only extracts along the broadcasted
+/// dimensions (with size 1), leaving all non-broadcasted dimensions intact.
+/// This is valid because the broadcast only duplicates data along the
+/// broadcasted dimension, and extracting a single slice from that dimension
+/// gives back the original input.
+///
+/// Example:
+///   %broadcast = linalg.broadcast ins(%in : tensor<4x1xf16>)
+///                                 outs(%out : tensor<4x1x1xf16>) dimensions =
+///                                 [2]
+///   %extract = tensor.extract_slice %broadcast[0, 0, 0] [4, 1, 1] [1, 1, 1]
+///              : tensor<4x1x1xf16> to tensor<4x1xf16>
+/// ->
+///   %extract is replaced by %in (tensor<4x1xf16>)
+struct FoldExtractSliceOfBroadcast final
+    : OpRewritePattern<tensor::ExtractSliceOp> {
+  using Base::Base;
+
+  LogicalResult matchAndRewrite(tensor::ExtractSliceOp extractOp,
+                                PatternRewriter &rewriter) const override {
+    auto broadcastOp =
+        extractOp.getSource().getDefiningOp<linalg::BroadcastOp>();
+    if (!broadcastOp) {
+      return rewriter.notifyMatchFailure(
+          extractOp, "source is not a linalg.broadcast operation");
+    }
+
+    if (!extractOp.hasUnitStride()) {
+      return rewriter.notifyMatchFailure(extractOp,
+                                         "extract_slice has non-unit stride");
+    }
+
+    auto inputType =
+        dyn_cast<RankedTensorType>(broadcastOp.getInput().getType());
+    auto broadcastOutputType =
+        dyn_cast<RankedTensorType>(broadcastOp.getInit().getType());
+    auto extractResultType =
+        dyn_cast<RankedTensorType>(extractOp.getResult().getType());
+    if (!inputType || !broadcastOutputType || !extractResultType) {
+      return rewriter.notifyMatchFailure(
+          extractOp, "operand or result types are not RankedTensorType");
+    }
+
+    // Extract result type must match broadcast input type.
+    if (inputType != extractResultType) {
+      return rewriter.notifyMatchFailure(
+          extractOp, "extract result type does not match broadcast input type");
+    }
+
+    // Verify that we're extracting from offset [0, 0, ..., 0] with the same
+    // shape as the input (essentially undoing the broadcast).
+    SmallVector<OpFoldResult> offsets = extractOp.getMixedOffsets();
+    SmallVector<OpFoldResult> sizes = extractOp.getMixedSizes();
+    if (!llvm::all_of(offsets, isZeroInteger)) {
+      return rewriter.notifyMatchFailure(
+          extractOp, "extract_slice offsets are not all zeros");
+    }
+
+    // Sizes should match input dimensions (accounting for broadcast dims).
+    ArrayRef<int64_t> broadcastDims = broadcastOp.getDimensions();
+    int64_t broadcastRank = broadcastOutputType.getRank();
+
+    // Verify that for broadcast dimensions, the size is 1.
+    if (!llvm::all_of(broadcastDims, [&](int64_t broadcastDim) {
+          return isOneInteger(sizes[broadcastDim]);
+        })) {
+      return rewriter.notifyMatchFailure(
+          extractOp, "broadcast dimensions do not all have size 1");
+    }
+
+    // Collect the indices of dimensions in the broadcast output that were not
+    // broadcasted (i.e., dimensions that existed in the original input).
+    auto nonBroadcastDims = llvm::filter_to_vector(
+        llvm::seq<int64_t>(0, broadcastRank),
+        [&](int64_t i) { return !llvm::is_contained(broadcastDims, i); });
+
+    // Verify that for non-broadcast dimensions, sizes match input shape.
+    if (llvm::any_of(llvm::enumerate(nonBroadcastDims), [&](auto pair) {
+          auto [idx, inputDim] = pair;
+          int64_t inputDimSize = inputType.getDimSize(idx);
+          return !isConstantIntValue(sizes[inputDim], inputDimSize);
+        })) {
+      return rewriter.notifyMatchFailure(
+          extractOp, "non-broadcast dimension sizes do not match input shape");
+    }
+
+    rewriter.replaceOp(extractOp, broadcastOp.getInput());
+    return success();
   }
 };
 
 } // namespace
 
-void populateSwapExtractWithExpandPattern(RewritePatternSet &patterns) {
-  patterns.add<SwapExpandShapeWithSlicePattern>(patterns.getContext());
+void populateFoldExtractSliceOfBroadcastPattern(RewritePatternSet &patterns) {
+  patterns.add<FoldExtractSliceOfBroadcast>(patterns.getContext());
 }
 
 /// Note the following pattern is adapted from the upstream pattern
@@ -457,10 +557,20 @@ static LogicalResult
 swapCollapseShapeWithSlice(RewriterBase &rewriter,
                            tensor::CollapseShapeOp collapseShapeOp,
                            tensor::ExtractSliceOp sliceOp) {
+  // Limit the pattern to work with extract_slice and collapse_shape ops in
+  // different blocks.
+  // TODO(vivian): remove this check once we have a better handle on fusion of
+  // extract_slice with scf.forall loop.
+  if (sliceOp->getBlock() == collapseShapeOp->getBlock()) {
+    return rewriter.notifyMatchFailure(
+        sliceOp, "unsupported: extract_slice and collapse_shape ops are within "
+                 "the same block");
+  }
+
   // FIXME: this is a workaround for the fact that this inf loops due to the
   // creation of `affine::AffineDelinearizeIndexOp` but still returns failure.
   SmallVector<Operation *> createdOps;
-  auto scope = llvm::make_scope_exit([&]() {
+  auto scope = llvm::scope_exit([&]() {
     for (Operation *op : createdOps) {
       if (op->use_empty()) {
         rewriter.eraseOp(op);
@@ -629,8 +739,9 @@ swapCollapseShapeWithSlice(RewriterBase &rewriter,
     for (; idx < reassocGroupSize; ++idx) {
       int64_t expandedShapeSize = srcShape[reversedReassocIndices[idx]];
 
-      if (currentCollapsedsize < expandedShapeSize)
+      if (currentCollapsedsize < expandedShapeSize) {
         break;
+      }
 
       // We need to make sure that the slice size can be set to the shape size
       // and the offset to 0.
@@ -700,7 +811,7 @@ swapCollapseShapeWithSlice(RewriterBase &rewriter,
 namespace {
 
 struct SwapCollapseShapeWithSlicePattern
-    : public OpRewritePattern<tensor::ExtractSliceOp> {
+    : OpRewritePattern<tensor::ExtractSliceOp> {
   using Base::Base;
 
   LogicalResult matchAndRewrite(tensor::ExtractSliceOp sliceOp,
@@ -726,6 +837,25 @@ struct SwapCollapseShapeWithSlicePattern
 
 void populateSwapExtractWithCollapsePattern(RewritePatternSet &patterns) {
   patterns.add<SwapCollapseShapeWithSlicePattern>(patterns.getContext());
+}
+
+namespace {
+
+struct RemoveOptimizationBarrier final
+    : OpRewritePattern<IREE::Util::OptimizationBarrierOp> {
+  using Base::Base;
+
+  LogicalResult matchAndRewrite(IREE::Util::OptimizationBarrierOp barrierOp,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOp(barrierOp, barrierOp.getOperands());
+    return success();
+  }
+};
+
+} // namespace
+
+void populateRemoveOptimizationBarrierPatterns(RewritePatternSet &patterns) {
+  patterns.insert<RemoveOptimizationBarrier>(patterns.getContext());
 }
 
 } // namespace mlir::iree_compiler

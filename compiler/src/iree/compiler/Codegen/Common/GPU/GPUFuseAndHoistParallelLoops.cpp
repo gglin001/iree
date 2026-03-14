@@ -175,6 +175,11 @@ struct FuseTilableDestinationProducers final : OpRewritePattern<scf::ForallOp> {
       tileableProducer = forallOp.getTiedLoopInit(iterArg)
                              ->get()
                              .getDefiningOp<TilingInterface>();
+      // Pad fusion is handled separately as we dont want zero slice guards that
+      // happen by default.
+      if (tileableProducer && isa<tensor::PadOp>(tileableProducer)) {
+        tileableProducer = nullptr;
+      }
       if (tileableProducer) {
         break;
       }
@@ -266,7 +271,9 @@ struct FuseTilableSliceProducers final
       return failure();
     }
     auto tilableProducer = sliceOp.getSource().getDefiningOp<TilingInterface>();
-    if (!tilableProducer) {
+    // Pad fusion is handled separately as we dont want zero slice guards that
+    // happen by default.
+    if (!tilableProducer || isa<tensor::PadOp>(tilableProducer)) {
       return failure();
     }
 
@@ -358,6 +365,7 @@ void GPUFuseAndHoistParallelLoopsPass::runOnOperation() {
     patterns.add<FuseNestedLaneAndWarpForalls>(context);
     populateForallLoopHoistingPattern(patterns);
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
+      funcOp->emitOpError("failed to apply fusion + hoisting patterns (set 1)");
       return signalPassFailure();
     }
   }
@@ -375,10 +383,21 @@ void GPUFuseAndHoistParallelLoopsPass::runOnOperation() {
     populateFuseTilableForallConsumersPattern(patterns);
     patterns.add<FuseCollapseShapeConsumers>(context);
     patterns.add<FuseExtractSliceConsumers>(context);
-    populateSwapExtractWithExpandPattern(patterns);
+    // Only swap expand_shape with extract_slice when they are in different
+    // blocks. This acts as a fusion pattern for the expand_shape, which should
+    // only apply when they are in different blocks (i.e., one inside a loop,
+    // and one outside). Swapping in other cases can interfere with later
+    // optimizations that fold the slice into consumer load operations.
+    auto swapControlFn = [](OpOperand *operand) {
+      Operation *producer = operand->get().getDefiningOp();
+      Operation *consumer = operand->getOwner();
+      return producer->getBlock() != consumer->getBlock();
+    };
+    populateSwapExtractWithExpandPattern(patterns, swapControlFn);
     tensor::populateFoldTensorEmptyPatterns(patterns);
     scf::ForallOp::getCanonicalizationPatterns(patterns, context);
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
+      funcOp->emitOpError("failed to apply fusion + hoisting patterns (set 2)");
       return signalPassFailure();
     }
   }
@@ -392,7 +411,14 @@ void GPUFuseAndHoistParallelLoopsPass::runOnOperation() {
     patterns.add<FuseTilableSliceProducers>(context);
     tensor::populateFoldTensorEmptyPatterns(patterns);
     scf::ForallOp::getCanonicalizationPatterns(patterns, context);
+    auto zeroSliceGuard = [](tensor::ExtractSliceOp) -> std::optional<bool> {
+      // Do not use zero slice guard.
+      return false;
+    };
+    patterns.add<linalg::ExtractSliceOfPadTensorSwapPattern>(context,
+                                                             zeroSliceGuard);
     if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
+      funcOp->emitOpError("failed to apply fusion + hoisting patterns (set 3)");
       return signalPassFailure();
     }
   }

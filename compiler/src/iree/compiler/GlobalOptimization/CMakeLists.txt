@@ -41,7 +41,7 @@ iree_cc_library(
     "Utils.h"
   SRCS
     "CleanupNumericNarrowing.cpp"
-    "Convert1X1FilterConv2DToMatmul.cpp"
+    "ConvertConv2DToImg2Col.cpp"
     "ConvertStridedContractionToContraction.cpp"
     "DataLayoutPropagation.cpp"
     "DecomposeConcat.cpp"

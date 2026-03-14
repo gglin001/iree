@@ -36,7 +36,7 @@ struct ExprHoistingOptions {
   using RegisterDialectsFn = std::function<void(DialectRegistry &)>;
 
   // Hook to register extra dependent dialects needed for types implementing
-  // the `HoistableTypeInterace`.
+  // the `HoistableTypeInterface`.
   std::optional<RegisterDialectsFn> registerDependentDialectsFn = std::nullopt;
 
   // Threshold for controlling the maximum allowed increase in the stored size
@@ -73,6 +73,7 @@ createHoistIntoGlobalsPass(const ExprHoistingOptions &options);
 #define GEN_PASS_DECL_STRIPDEBUGOPSPASS
 #define GEN_PASS_DECL_TESTCONVERSIONPASS
 #define GEN_PASS_DECL_TESTFLOATRANGEANALYSISPASS
+#define GEN_PASS_DECL_TESTINTEGERDIVISIBILITYANALYSISPASS
 #define GEN_PASS_DECL_VERIFYINITIALIZATIONORDERPASS
 #define GEN_PASS_DECL_VERIFYSTRUCTUREDCONTROLFLOWPASS
 #include "iree/compiler/Dialect/Util/Transforms/Passes.h.inc" // IWYU pragma: keep

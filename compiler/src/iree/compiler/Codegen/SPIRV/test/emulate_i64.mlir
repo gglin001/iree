@@ -52,7 +52,6 @@ func.func @buffer_types() attributes {hal.executable.target = #executable_target
     max_workgroup_counts = [65535, 65535, 65535]>>
 }>
 func.func @splat_i64_with_assume() attributes {hal.executable.target = #executable_target_vulkan_spirv_fb} {
-  %c64 = arith.constant 64 : index
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %0 = hal.interface.constant.load layout(<constants = 1, bindings = [#hal.pipeline.binding<storage_buffer, Indirect>], flags = Indirect>) ordinal(0) : i32
@@ -96,7 +95,7 @@ func.func @emulate_1d_vector() attributes {hal.executable.target = #executable_t
   %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) alignment(64) offset(%c0) : memref<?xvector<4xi32>, #spirv.storage_class<StorageBuffer>>{%c36864}
   %workgroup_id_x = hal.interface.workgroup.id[0] : index
   %workgroup_id_y = hal.interface.workgroup.id[1] : index
-  %thread_id_x = gpu.thread_id  x
+  %thread_id_x = gpu.thread_id x
   %3 = arith.muli %workgroup_id_x, %c32 : index
   %4 = arith.addi %thread_id_x, %3 : index
   %5 = memref.load %0[%4] : memref<?xvector<4xi32>, #spirv.storage_class<StorageBuffer>>

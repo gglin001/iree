@@ -66,7 +66,7 @@ static LogicalResult tileReductionLoops(mlir::FunctionOpInterface funcOp) {
 
 static LogicalResult tileToSerialLoops(mlir::FunctionOpInterface funcOp) {
   {
-    // Tile again at the workgroup level since redution dimension were
+    // Tile again at the workgroup level since reduction dimension were
     // ignored. Dimensions already tiled will be ignore since we tile to the
     // same size.
     if (failed(tileReductionLoops(funcOp))) {
@@ -75,8 +75,9 @@ static LogicalResult tileToSerialLoops(mlir::FunctionOpInterface funcOp) {
   }
 
   {
-    RewritePatternSet wgTilingCanonicalizationPatterns =
-        linalg::getLinalgTilingCanonicalizationPatterns(funcOp.getContext());
+    RewritePatternSet wgTilingCanonicalizationPatterns(funcOp.getContext());
+    linalg::populateLinalgTilingCanonicalizationPatterns(
+        wgTilingCanonicalizationPatterns);
     populateAffineMinSCFCanonicalizationPattern(
         wgTilingCanonicalizationPatterns);
     scf::populateSCFForLoopCanonicalizationPatterns(
@@ -115,13 +116,15 @@ calculateDistributedTileSize(ArrayRef<int64_t> numElements, OpBuilder &builder,
   unsigned idIdx = 0;
   std::reverse(distributedDim.begin(), distributedDim.end());
   for (unsigned depth : partitionedLoops) {
-    if (depth >= blockTileSize.size())
+    if (depth >= blockTileSize.size()) {
       continue;
+    }
     tileSizesVal[depth] = arith::ConstantIndexOp::create(
         builder, operation->getLoc(),
         llvm::divideCeil(blockTileSize[depth], distributedDim[idIdx++]));
-    if (idIdx == kNumMaxParallelDims)
+    if (idIdx == kNumMaxParallelDims) {
       break;
+    }
   }
   return tileSizesVal;
 }
@@ -262,8 +265,9 @@ public:
     }
 
     {
-      RewritePatternSet promotionCanonicalization =
-          linalg::getLinalgTilingCanonicalizationPatterns(context);
+      RewritePatternSet promotionCanonicalization(context);
+      linalg::populateLinalgTilingCanonicalizationPatterns(
+          promotionCanonicalization);
       if (failed(applyPatternsGreedily(funcOp,
                                        std::move(promotionCanonicalization)))) {
         return signalPassFailure();
@@ -289,8 +293,9 @@ public:
     }
     {
       // Apply canonicalization patterns.
-      RewritePatternSet threadTilingCanonicalizationPatterns =
-          linalg::getLinalgTilingCanonicalizationPatterns(context);
+      RewritePatternSet threadTilingCanonicalizationPatterns(context);
+      linalg::populateLinalgTilingCanonicalizationPatterns(
+          threadTilingCanonicalizationPatterns);
       populateAffineMinSCFCanonicalizationPattern(
           threadTilingCanonicalizationPatterns);
       if (failed(applyPatternsGreedily(

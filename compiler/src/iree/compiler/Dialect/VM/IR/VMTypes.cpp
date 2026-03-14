@@ -27,7 +27,7 @@ namespace mlir::iree_compiler::IREE::VM {
 
 namespace detail {
 
-struct ListTypeStorage : public TypeStorage {
+struct ListTypeStorage : TypeStorage {
   ListTypeStorage(Type elementType) : elementType(elementType) {}
 
   /// The hash key used for uniquing.
@@ -82,7 +82,7 @@ Type ListType::getElementType() { return getImpl()->elementType; }
 
 namespace detail {
 
-struct RefTypeStorage : public TypeStorage {
+struct RefTypeStorage : TypeStorage {
   RefTypeStorage(Type objectType) : objectType(cast<Type>(objectType)) {}
 
   /// The hash key used for uniquing.
@@ -152,8 +152,9 @@ Attribute VMDialect::parseAttribute(DialectAsmParser &parser, Type type) const {
   Attribute genAttr;
   OptionalParseResult parseResult =
       generatedAttributeParser(parser, &mnemonic, type, genAttr);
-  if (parseResult.has_value())
+  if (parseResult.has_value()) {
     return genAttr;
+  }
   parser.emitError(parser.getNameLoc())
       << "unknown HAL attribute: " << mnemonic;
   return {};

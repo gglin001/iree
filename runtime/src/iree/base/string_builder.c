@@ -7,6 +7,7 @@
 #include "iree/base/string_builder.h"
 
 #include "iree/base/alignment.h"
+#include "iree/base/printf.h"
 
 // Minimum alignment for storage buffer allocations.
 #define IREE_STRING_BUILDER_ALIGNMENT 128
@@ -94,9 +95,16 @@ IREE_API_EXPORT iree_status_t iree_string_builder_reserve(
   }
 
   // Grow by 2x. Note that the current capacity may be zero.
-  iree_host_size_t new_capacity = iree_max(
-      builder->capacity * 2,
-      iree_host_align(minimum_capacity, IREE_STRING_BUILDER_ALIGNMENT));
+  iree_host_size_t doubled_capacity = 0;
+  if (!iree_host_size_checked_mul(builder->capacity, 2, &doubled_capacity)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "capacity overflow");
+  }
+  iree_host_size_t aligned_minimum = 0;
+  if (!iree_host_size_checked_align(
+          minimum_capacity, IREE_STRING_BUILDER_ALIGNMENT, &aligned_minimum)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "capacity overflow");
+  }
+  iree_host_size_t new_capacity = iree_max(doubled_capacity, aligned_minimum);
   IREE_RETURN_IF_ERROR(iree_allocator_realloc(builder->allocator, new_capacity,
                                               (void**)&builder->buffer));
   builder->buffer[builder->size] = 0;
@@ -108,8 +116,12 @@ IREE_API_EXPORT iree_status_t iree_string_builder_reserve_for_append(
     iree_string_builder_t* builder,
     iree_host_size_t minimum_additional_capacity, char** out_buffer,
     iree_host_size_t* out_capacity) {
-  iree_host_size_t new_capacity =
-      builder->size + minimum_additional_capacity + /*NUL=*/1;
+  iree_host_size_t new_capacity = 0;
+  if (!iree_host_size_checked_add(builder->size, minimum_additional_capacity,
+                                  &new_capacity) ||
+      !iree_host_size_checked_add(new_capacity, /*NUL=*/1, &new_capacity)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "capacity overflow");
+  }
   IREE_RETURN_IF_ERROR(iree_string_builder_reserve(builder, new_capacity));
   *out_buffer = builder->buffer + builder->size;
   *out_capacity = builder->capacity - builder->size - /*NUL=*/1;
@@ -130,8 +142,14 @@ IREE_API_EXPORT iree_status_t iree_string_builder_append_inline(
     iree_string_builder_t* builder, iree_host_size_t count, char** out_head) {
   *out_head = NULL;
   if (!iree_string_builder_is_calculating_size(builder)) {
-    IREE_RETURN_IF_ERROR(iree_string_builder_reserve(
-        builder, builder->size + count + /*NUL=*/1));
+    iree_host_size_t required_capacity = 0;
+    if (!iree_host_size_checked_add(builder->size, count, &required_capacity) ||
+        !iree_host_size_checked_add(required_capacity, /*NUL=*/1,
+                                    &required_capacity)) {
+      return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "capacity overflow");
+    }
+    IREE_RETURN_IF_ERROR(
+        iree_string_builder_reserve(builder, required_capacity));
     *out_head = &builder->buffer[builder->size];
   }
   builder->size += count;
@@ -142,8 +160,15 @@ IREE_API_EXPORT iree_status_t iree_string_builder_append_string(
     iree_string_builder_t* builder, iree_string_view_t value) {
   // Ensure capacity for the value + NUL terminator.
   if (!iree_string_builder_is_calculating_size(builder)) {
+    iree_host_size_t required_capacity = 0;
+    if (!iree_host_size_checked_add(builder->size, value.size,
+                                    &required_capacity) ||
+        !iree_host_size_checked_add(required_capacity, /*NUL=*/1,
+                                    &required_capacity)) {
+      return iree_make_status(IREE_STATUS_OUT_OF_RANGE, "capacity overflow");
+    }
     IREE_RETURN_IF_ERROR(
-        iree_string_builder_reserve(builder, builder->size + value.size + 1));
+        iree_string_builder_reserve(builder, required_capacity));
     // Only copy the bytes if we are not doing a size calculation.
     memcpy(builder->buffer + builder->size, value.data, value.size);
     builder->buffer[builder->size + value.size] = 0;  // NUL
@@ -158,49 +183,73 @@ IREE_API_EXPORT iree_status_t iree_string_builder_append_cstring(
                                            iree_make_cstring_view(value));
 }
 
-static iree_status_t iree_string_builder_append_format_impl(
-    iree_string_builder_t* builder, const char* format, va_list varargs_0,
-    va_list varargs_1) {
-  // Try to directly print into the buffer we have. This may work if we have
-  // capacity but otherwise will yield us the size we need to grow our buffer.
-  int n = vsnprintf(builder->buffer ? builder->buffer + builder->size : NULL,
-                    builder->buffer ? builder->capacity - builder->size : 0,
-                    format, varargs_0);
-  if (IREE_UNLIKELY(n < 0)) {
-    return iree_make_status(IREE_STATUS_INTERNAL, "printf try failed");
-  }
-  if (n < builder->capacity - builder->size) {
-    // Printed into the buffer.
-    builder->size += n;
-    return iree_ok_status();
-  }
+// State threaded through the fctprintf callback during formatting.
+typedef struct iree_string_builder_printf_state_t {
+  iree_string_builder_t* builder;
+  iree_status_t status;
+} iree_string_builder_printf_state_t;
 
-  if (!iree_string_builder_is_calculating_size(builder)) {
-    // Reserve new minimum capacity.
-    IREE_RETURN_IF_ERROR(iree_string_builder_reserve(
-        builder, iree_string_builder_size(builder) + n + /*NUL*/ 1));
+// Per-character callback from iree_vfctprintf that appends to the builder.
+// Handles both size-calculation mode (no buffer, just counting) and normal mode
+// (writing characters and growing the buffer as needed).
+static void iree_string_builder_printf_out(char character, void* user_data) {
+  iree_string_builder_printf_state_t* state =
+      (iree_string_builder_printf_state_t*)user_data;
+  iree_string_builder_t* builder = state->builder;
 
-    // Try printing again.
-    vsnprintf(builder->buffer ? builder->buffer + builder->size : NULL,
-              builder->buffer ? builder->capacity - builder->size : 0, format,
-              varargs_1);
+  // Size-calculation mode: just count characters, no buffer operations.
+  if (iree_string_builder_is_calculating_size(builder)) {
+    builder->size++;
+    return;
   }
 
-  builder->size += n;
-  return iree_ok_status();
+  // Bail if a previous callback already failed (allocation error).
+  if (!iree_status_is_ok(state->status)) return;
+
+  // Ensure capacity for this character + NUL terminator.
+  if (builder->size + 1 >= builder->capacity) {
+    state->status = iree_string_builder_reserve(builder, builder->size + 2);
+    if (!iree_status_is_ok(state->status)) return;
+  }
+  builder->buffer[builder->size++] = character;
 }
 
 IREE_API_EXPORT iree_status_t IREE_PRINTF_ATTRIBUTE(2, 3)
     iree_string_builder_append_format(iree_string_builder_t* builder,
                                       const char* format, ...) {
-  va_list varargs_0, varargs_1;
-  va_start(varargs_0, format);
-  va_start(varargs_1, format);
-  iree_status_t status = iree_string_builder_append_format_impl(
-      builder, format, varargs_0, varargs_1);
-  va_end(varargs_1);
-  va_end(varargs_0);
-  return status;
+  va_list varargs;
+  va_start(varargs, format);
+  iree_string_builder_printf_state_t state = {builder, iree_ok_status()};
+  iree_vfctprintf(iree_string_builder_printf_out, &state, format, varargs);
+  va_end(varargs);
+  // NUL-terminate the buffer (fctprintf does not emit a terminator).
+  if (!iree_string_builder_is_calculating_size(builder) && builder->buffer) {
+    builder->buffer[builder->size] = '\0';
+  }
+  return state.status;
+}
+
+// Callback for iree_string_builder_append_status that appends chunks to a
+// string builder.
+static bool iree_string_builder_append_status_output(iree_string_view_t chunk,
+                                                     void* user_data) {
+  iree_string_builder_t* builder = (iree_string_builder_t*)user_data;
+  iree_status_t status = iree_string_builder_append_string(builder, chunk);
+  if (!iree_status_is_ok(status)) {
+    iree_status_ignore(status);
+    return false;
+  }
+  return true;
+}
+
+IREE_API_EXPORT iree_status_t iree_string_builder_append_status(
+    iree_string_builder_t* builder, iree_status_t status) {
+  if (!iree_status_format_to(status, iree_string_builder_append_status_output,
+                             builder)) {
+    return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                            "failed to append formatted status to builder");
+  }
+  return iree_ok_status();
 }
 
 IREE_API_EXPORT void iree_string_pair_builder_initialize(
@@ -221,11 +270,9 @@ IREE_API_EXPORT void iree_string_pair_builder_deinitialize(
 IREE_API_EXPORT iree_status_t iree_string_pair_builder_add(
     iree_string_pair_builder_t* builder, iree_string_pair_t pair) {
   if (builder->pairs_size == builder->pairs_capacity) {
-    // Resize.
-    builder->pairs_capacity = iree_max(8, builder->pairs_capacity * 2);
-    IREE_RETURN_IF_ERROR(iree_allocator_realloc(
-        builder->allocator, builder->pairs_capacity * sizeof(builder->pairs[0]),
-        (void**)&builder->pairs));
+    IREE_RETURN_IF_ERROR(iree_allocator_grow_array(
+        builder->allocator, 8, sizeof(builder->pairs[0]),
+        &builder->pairs_capacity, (void**)&builder->pairs));
   }
   builder->pairs[builder->pairs_size++] = pair;
   return iree_ok_status();
@@ -235,7 +282,7 @@ IREE_API_EXPORT iree_status_t
 iree_string_pair_builder_add_int32(iree_string_pair_builder_t* builder,
                                    iree_string_view_t key, int32_t value) {
   char temp[32];
-  snprintf(temp, sizeof(temp), "%d", value);
+  iree_snprintf(temp, sizeof(temp), "%d", value);
   iree_string_view_t value_string = iree_make_cstring_view(temp);
   IREE_RETURN_IF_ERROR(
       iree_string_pair_builder_emplace_string(builder, &value_string));
@@ -246,15 +293,9 @@ iree_string_pair_builder_add_int32(iree_string_pair_builder_t* builder,
 IREE_API_EXPORT iree_status_t iree_string_pair_builder_emplace_string(
     iree_string_pair_builder_t* builder, iree_string_view_t* inout_string) {
   if (builder->temp_strings_size == builder->temp_strings_capacity) {
-    // Resize.
-    iree_host_size_t new_capacity =
-        iree_max(8, builder->temp_strings_capacity * 2);
-    char** realloced = builder->temp_strings;
-    IREE_RETURN_IF_ERROR(iree_allocator_realloc(
-        builder->allocator, new_capacity * sizeof(builder->temp_strings[0]),
-        (void**)&realloced));
-    builder->temp_strings_capacity = new_capacity;
-    builder->temp_strings = realloced;
+    IREE_RETURN_IF_ERROR(iree_allocator_grow_array(
+        builder->allocator, 8, sizeof(builder->temp_strings[0]),
+        &builder->temp_strings_capacity, (void**)&builder->temp_strings));
   }
 
   char* alloced = NULL;

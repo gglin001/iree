@@ -8,6 +8,7 @@
 
 #include "iree/compiler/Dialect/Util/IR/UtilOps.h"
 #include "iree/compiler/Dialect/Util/IR/UtilTypes.h"
+#include "iree/compiler/Dialect/VM/Conversion/BuiltinRegistry.h"
 #include "iree/compiler/Dialect/VM/Conversion/TypeConverter.h"
 #include "iree/compiler/Dialect/VM/IR/VMOps.h"
 #include "mlir/IR/Attributes.h"
@@ -42,6 +43,11 @@ void populateUtilStatusToVMPatterns(MLIRContext *context,
                                     ConversionTarget &conversionTarget,
                                     TypeConverter &typeConverter,
                                     RewritePatternSet &patterns);
+void populateUtilStringToVMPatterns(MLIRContext *context,
+                                    ConversionTarget &conversionTarget,
+                                    TypeConverter &typeConverter,
+                                    BuiltinRegistry &builtins,
+                                    RewritePatternSet &patterns);
 void populateUtilStructuralToVMPatterns(MLIRContext *context,
                                         ConversionTarget &conversionTarget,
                                         TypeConverter &typeConverter,
@@ -54,7 +60,7 @@ namespace {
 // util.null
 //===----------------------------------------------------------------------===//
 
-struct NullOpConversion : public OpConversionPattern<IREE::Util::NullOp> {
+struct NullOpConversion : OpConversionPattern<IREE::Util::NullOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Util::NullOp op, OpAdaptor adaptor,
@@ -69,7 +75,7 @@ struct NullOpConversion : public OpConversionPattern<IREE::Util::NullOp> {
 // util.cmp.eq
 //===----------------------------------------------------------------------===//
 
-struct CmpEQOpConversion : public OpConversionPattern<IREE::Util::CmpEQOp> {
+struct CmpEQOpConversion : OpConversionPattern<IREE::Util::CmpEQOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Util::CmpEQOp op, OpAdaptor adaptor,
@@ -88,7 +94,7 @@ struct CmpEQOpConversion : public OpConversionPattern<IREE::Util::CmpEQOp> {
 // util.cmp.ne
 //===----------------------------------------------------------------------===//
 
-struct CmpNEOpConversion : public OpConversionPattern<IREE::Util::CmpNEOp> {
+struct CmpNEOpConversion : OpConversionPattern<IREE::Util::CmpNEOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Util::CmpNEOp op, OpAdaptor adaptor,
@@ -103,16 +109,34 @@ struct CmpNEOpConversion : public OpConversionPattern<IREE::Util::CmpNEOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// util.optimization_barrier
+//===----------------------------------------------------------------------===//
+
+struct OptimizationBarrierOpConversion
+    : OpConversionPattern<IREE::Util::OptimizationBarrierOp> {
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(IREE::Util::OptimizationBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<IREE::VM::OptimizationBarrierOp>(
+        op, adaptor.getOperands());
+    return success();
+  }
+};
+
 } // namespace
 
 void populateUtilToVMPatterns(MLIRContext *context,
                               ConversionTarget &conversionTarget,
                               TypeConverter &typeConverter,
                               ImportTable &importTable,
+                              BuiltinRegistry &builtins,
                               RewritePatternSet &patterns) {
   patterns.insert<NullOpConversion>(typeConverter, context);
   patterns.insert<CmpEQOpConversion>(typeConverter, context);
   patterns.insert<CmpNEOpConversion>(typeConverter, context);
+  patterns.insert<OptimizationBarrierOpConversion>(typeConverter, context);
 
   populateUtilAlignmentToVMPatterns(context, conversionTarget, typeConverter,
                                     patterns);
@@ -126,6 +150,8 @@ void populateUtilToVMPatterns(MLIRContext *context,
                                patterns);
   populateUtilStatusToVMPatterns(context, conversionTarget, typeConverter,
                                  patterns);
+  populateUtilStringToVMPatterns(context, conversionTarget, typeConverter,
+                                 builtins, patterns);
   populateUtilStructuralToVMPatterns(context, conversionTarget, typeConverter,
                                      importTable, patterns);
 }

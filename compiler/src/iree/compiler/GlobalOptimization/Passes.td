@@ -14,9 +14,13 @@ def CleanupNumericNarrowingPass :
   let summary = "Cleans up any numeric narrowing ops inserted by iree-global-opt-infer-numeric-narrowing.";
 }
 
-def Convert1X1FilterConv2DToMatmulPass:
-    Pass<"iree-global-opt-convert-1x1-filter-conv2d-to-matmul", ""> {
-  let summary = "Convert linalg convolution ops with 1x1 kernels into linalg matrix multiplication ops.";
+def ConvertConv2DToImg2ColPass :
+    Pass<"iree-global-opt-convert-conv2d-to-img2col", ""> {
+  let summary = "Convert linalg convolution ops to matmul img2col based implementation";
+  let dependentDialects = [
+    "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect",
+  ];
 }
 
 def ConvertStridedContractionToContractionPass:
@@ -121,6 +125,8 @@ def PropagateLinalgTransposePass :
             /*default=*/"false", "enable propagation through convolutions">,
     Option<"enableEdgeReshapePropagation", "enable-edge-reshape-propagation", "bool",
             /*default=*/"false", "Enable propagation of reshapes on the edges of the program">,
+    Option<"enableSinkTransposeThroughPad", "enable-sink-transpose-through-pad", "bool",
+            /*default=*/"false", "Enable sinking transpose through pad operations">,
   ];
 }
 

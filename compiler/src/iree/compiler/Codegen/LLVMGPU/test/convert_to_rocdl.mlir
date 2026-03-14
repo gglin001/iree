@@ -1,5 +1,5 @@
 // RUN: iree-opt --split-input-file --iree-gpu-test-target=gfx908 --iree-convert-to-rocdl %s | FileCheck %s
-// RUN: iree-opt --split-input-file --iree-gpu-test-target=gfx908 --iree-convert-to-rocdl --iree-hip-index-bits=32 %s | FileCheck %s --check-prefix=INDEX32
+// RUN: iree-opt --split-input-file --iree-gpu-test-target=gfx908 --iree-convert-to-rocdl --iree-rocm-index-bits=32 %s | FileCheck %s --check-prefix=INDEX32
 
 // Test that that standard and GPU ops are converted to LLVM and NVVM.
 #pipeline_layout = #hal.pipeline.layout<bindings = [
@@ -10,7 +10,6 @@
 ]>
 builtin.module {
   func.func @abs_ex_dispatch_0() {
-    %c0 = arith.constant 0 : index
     %0 = hal.interface.binding.subspan layout(#pipeline_layout) binding(0) flags(ReadOnly) : memref<16xf32>
     %1 = hal.interface.binding.subspan layout(#pipeline_layout) binding(1) : memref<16xf32>
     %2 = hal.interface.binding.subspan layout(#pipeline_layout) binding(2) : memref<16xf32>
@@ -39,7 +38,7 @@ builtin.module {
 
 
 // -----
-// Test that maximum and minum are converted to max and min on rocm
+// Test that maximum and minimum are converted to max and min on rocm
 #pipeline_layout = #hal.pipeline.layout<bindings = [
   #hal.pipeline.binding<storage_buffer>,
   #hal.pipeline.binding<storage_buffer>,
@@ -63,20 +62,20 @@ builtin.module {
 // CHECK:  llvm.intr.vector.reduce.fmax({{.*}})  : (vector<2xf32>) -> f32
 
 // -----
-// Test that gpu barriers be lowered to `s_waitcnt lgkmcnt(0)\0As_barrier` on rocm
+// Test that gpu barriers be lowered to mmra fences
 #pipeline_layout = #hal.pipeline.layout<bindings = [
   #hal.pipeline.binding<storage_buffer>
 ]>
 builtin.module {
   func.func @simple_barrier() {
-    gpu.barrier
+    gpu.barrier memfence [#gpu.address_space<workgroup>]
     return
   }
 }
 // CHECK: #[[$MMRA:.+]] = #llvm.mmra_tag<"amdgpu-synchronize-as":"local">
 // CHECK-LABEL: llvm.func @simple_barrier
 // CHECK: llvm.fence syncscope("workgroup") release {llvm.mmra = #[[$MMRA]]}
-// CHECK: llvm.inline_asm has_side_effects asm_dialect = att ";;;WARNING: BREAKS DEBUG WATCHES\0As_barrier", ""  : () -> ()
+// CHECK: rocdl.s.barrier
 // CHECK: llvm.fence syncscope("workgroup") acquire {llvm.mmra = #[[$MMRA]]}
 
 // -----
@@ -139,7 +138,7 @@ module {
     %c8 = arith.constant 8 : index
     %c4 = arith.constant 4 : index
     %c0 = arith.constant 0 : index
-    %thread_id_x = gpu.thread_id  x upper_bound 64
+    %thread_id_x = gpu.thread_id x upper_bound 64
     %0 = hal.interface.binding.subspan layout(<constants = 1, bindings = [#hal.pipeline.binding<storage_buffer, ReadOnly>, #hal.pipeline.binding<storage_buffer, ReadOnly>, #hal.pipeline.binding<storage_buffer, ReadOnly>, #hal.pipeline.binding<storage_buffer, "ReadOnly|Indirect">, #hal.pipeline.binding<storage_buffer, Indirect>], flags = Indirect>) binding(0) alignment(64) offset(%c0) flags(ReadOnly) : memref<131072x192xf16, #gpu.address_space<global>>
     %1 = hal.interface.binding.subspan layout(<constants = 1, bindings = [#hal.pipeline.binding<storage_buffer, ReadOnly>, #hal.pipeline.binding<storage_buffer, ReadOnly>, #hal.pipeline.binding<storage_buffer, ReadOnly>, #hal.pipeline.binding<storage_buffer, "ReadOnly|Indirect">, #hal.pipeline.binding<storage_buffer, Indirect>], flags = Indirect>) binding(1) alignment(64) offset(%c0) flags(ReadOnly) : memref<131072x192xf16, #gpu.address_space<global>>
     %2 = hal.interface.binding.subspan layout(<constants = 1, bindings = [#hal.pipeline.binding<storage_buffer, ReadOnly>, #hal.pipeline.binding<storage_buffer, ReadOnly>, #hal.pipeline.binding<storage_buffer, ReadOnly>, #hal.pipeline.binding<storage_buffer, "ReadOnly|Indirect">, #hal.pipeline.binding<storage_buffer, Indirect>], flags = Indirect>) binding(2) alignment(64) offset(%c0) flags(ReadOnly) : memref<402653184xi8, #gpu.address_space<global>>
@@ -331,3 +330,15 @@ builtin.module {
 //   CHECK-DAG: llvm.getelementptr %[[A0]][0, 0, 0, 0]
 //   CHECK-DAG: %[[A:.+]] = llvm.mlir.addressof @__shared_memory__
 //   CHECK-DAG: llvm.getelementptr %[[A]][0, 0, 0, 0]
+
+// -----
+
+builtin.module {
+  func.func @global_subgroup_barrier() {
+    iree_gpu.global_subgroup_barrier
+    return
+  }
+}
+
+// CHECK-LABEL: llvm.func @global_subgroup_barrier
+//       CHECK:   llvm.inline_asm has_side_effects asm_dialect = att ";;;WARNING: BREAKS DEBUG WATCHES{{.*}}s_barrier"

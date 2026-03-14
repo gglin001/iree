@@ -37,8 +37,7 @@ namespace mlir::iree_compiler::DispatchCreation {
 
 namespace {
 
-struct SinkReshapesPass final
-    : public impl::SinkReshapesPassBase<SinkReshapesPass> {
+struct SinkReshapesPass final : impl::SinkReshapesPassBase<SinkReshapesPass> {
   using Base::Base;
   void runOnOperation() override;
 };
@@ -63,7 +62,8 @@ static bool shouldBubbleCollapseShapeOp(tensor::CollapseShapeOp collapseOp,
   if (!producer) {
     return false;
   }
-  return IREE::Flow::isClonableIntoDispatchOp(opOperand->get().getDefiningOp());
+  return IREE::Flow::isCloneableIntoDispatchOp(
+      opOperand->get().getDefiningOp());
 }
 
 /// Control function to check if a `tensor.expand_shape` (which is producer of

@@ -66,17 +66,23 @@ iree_cc_library(
     MLIRLinalgDialect
     MLIRMemRefDialect
     MLIRParser
+    MLIRPass
     MLIRSCFDialect
     MLIRSCFTransforms
+    MLIRSMT
     MLIRSupport
     MLIRTensorDialect
     MLIRTilingInterface
     MLIRTransformDialect
     MLIRTransformDialectTransforms
+    MLIRValueBoundsOpInterface
     MLIRVectorInterfaces
     MLIRViewLikeInterface
+    iree::compiler::Codegen::Dialect::PCF::IR
     iree::compiler::Codegen::Interfaces::UKernelOpInterface
+    iree::compiler::Codegen::Utils::CodegenOptions
     iree::compiler::Dialect::Util::IR
+    iree::compiler::Utils
   PUBLIC
 )
 

@@ -132,7 +132,7 @@ outlineDispatchExternOp(std::string name,
 } // namespace
 
 struct OutlineDispatchExternsPass
-    : public IREE::Flow::impl::OutlineDispatchExternsPassBase<
+    : IREE::Flow::impl::OutlineDispatchExternsPassBase<
           OutlineDispatchExternsPass> {
   void runOnOperation() override {
     SymbolTable moduleSymbolTable(getOperation());
@@ -141,7 +141,7 @@ struct OutlineDispatchExternsPass
       SmallVector<Operation *> deadOps;
       auto outlineOps = [&](Operation *op) {
         return TypeSwitch<Operation *, WalkResult>(op)
-            .Case<IREE::HAL::DispatchExternOp>([&](auto dispatchExternOp) {
+            .Case([&](IREE::HAL::DispatchExternOp dispatchExternOp) {
               if (failed(outlineDispatchExternOp("extern_dispatch",
                                                  dispatchExternOp,
                                                  moduleSymbolTable))) {
@@ -152,10 +152,12 @@ struct OutlineDispatchExternsPass
             })
             .Default(WalkResult::advance());
       };
-      if (funcOp.walk(outlineOps).wasInterrupted())
+      if (funcOp.walk(outlineOps).wasInterrupted()) {
         return signalPassFailure();
-      for (auto *deadOp : deadOps)
+      }
+      for (auto *deadOp : deadOps) {
         deadOp->erase();
+      }
     }
   }
 };

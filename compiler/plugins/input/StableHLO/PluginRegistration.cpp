@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "compiler/plugins/input/StableHLO/Conversion/Passes.h"
+#include "iree/compiler/Dialect/Flow/IR/FlowDialect.h"
 #include "iree/compiler/PluginAPI/Client.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Shape/IR/Shape.h"
@@ -57,8 +58,8 @@ static bool checkOpForTuples(Operation *op) {
 // The StableHLO plugin provides dialects, passes and opt-in options.
 // Therefore, it is appropriate for default activation.
 struct StableHLOSession
-    : public PluginSession<StableHLOSession, StableHLOOptions,
-                           PluginActivationPolicy::DefaultActivated> {
+    : PluginSession<StableHLOSession, StableHLOOptions,
+                    PluginActivationPolicy::DefaultActivated> {
   static void registerPasses() {
     // TODO(scotttodd): register other StableHLO passes?
     registerStableHLOConversionPasses();
@@ -70,6 +71,7 @@ struct StableHLOSession
     registry.insert<mlir::chlo::ChloDialect>();
     registry.insert<mlir::stablehlo::StablehloDialect>();
     registry.insert<mlir::vhlo::VhloDialect>();
+    registry.insert<IREE::Flow::FlowDialect>();
   }
 
   bool extendCustomInputConversionPassPipeline(

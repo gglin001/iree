@@ -51,8 +51,9 @@ ireeCodegenGetTunerRootOpsBinding(MlirModule module) {
 }
 
 static std::vector<int64_t> getIntArrayAttrValues(MlirAttribute attr) {
-  if (mlirAttributeIsNull(attr) || !mlirAttributeIsAArray(attr))
+  if (mlirAttributeIsNull(attr) || !mlirAttributeIsAArray(attr)) {
     return {};
+  }
 
   std::vector<int64_t> result;
   size_t n = mlirArrayAttrGetNumElements(attr);
@@ -198,6 +199,42 @@ NB_MODULE(_ireeCompilerDialects, m) {
             return parameters.translationInfo;
           });
 
+  //===-------------------------------------------------------------------===//
+  // CodegenRootOpAttr
+  //===-------------------------------------------------------------------===//
+
+  mlir_attribute_subclass(iree_codegen_module, "RootOpAttr",
+                          ireeAttributeIsACodegenRootOpAttr,
+                          ireeCodegenRootOpAttrGetTypeID)
+      .def_classmethod(
+          "get",
+          [](const py::object &, int64_t set, MlirContext ctx) {
+            return ireeCodegenRootOpAttrGet(ctx, set);
+          },
+          "cls"_a, "set"_a = 0, py::kw_only(), "ctx"_a = py::none(),
+          "Gets an #iree_codegen.root_op attribute.")
+      .def_property_readonly("set", ireeCodegenRootOpAttrGetSet);
+
+  //===-------------------------------------------------------------------===//
+  // CodegenOneOfKnobAttr
+  //===-------------------------------------------------------------------===//
+
+  mlir_attribute_subclass(iree_codegen_module, "OneOfKnobAttr",
+                          ireeAttributeIsACodegenOneOfKnobAttr,
+                          ireeCodegenOneOfKnobAttrGetTypeID)
+      .def_property_readonly("name",
+                             [](MlirAttribute self) -> MlirStringRef {
+                               return mlirStringAttrGetValue(
+                                   ireeCodegenOneOfKnobAttrGetName(self));
+                             })
+      .def_property_readonly("options", [](MlirAttribute self) {
+        intptr_t n = 0;
+        ireeCodegenOneOfKnobAttrGetOptions(self, &n, nullptr);
+        std::vector<MlirAttribute> opts(n);
+        ireeCodegenOneOfKnobAttrGetOptions(self, &n, opts.data());
+        return opts;
+      });
+
   //===--------------------------------------------------------------------===//
 
   auto iree_gpu_module =
@@ -234,15 +271,14 @@ NB_MODULE(_ireeCompilerDialects, m) {
                           ireeGPUPipelineOptionsAttrGetTypeID)
       .def_classmethod(
           "get",
-          [](const py::object &, std::optional<bool> prefetchSharedMemory,
+          [](const py::object &, std::optional<int64_t> prefetchNumStages,
              std::optional<bool> noReduceSharedMemoryBankConflicts,
              std::optional<bool> useIgemmConvolution,
              std::optional<MlirAttribute> reorderWorkgroupsStrategy,
              MlirContext ctx) {
             return ireeGPUPipelineOptionsAttrGet(
                 ctx,
-                prefetchSharedMemory.has_value() ? &*prefetchSharedMemory
-                                                 : nullptr,
+                prefetchNumStages.has_value() ? &*prefetchNumStages : nullptr,
                 noReduceSharedMemoryBankConflicts.has_value()
                     ? &*noReduceSharedMemoryBankConflicts
                     : nullptr,
@@ -252,18 +288,19 @@ NB_MODULE(_ireeCompilerDialects, m) {
                     ? &*reorderWorkgroupsStrategy
                     : nullptr);
           },
-          "cls"_a, "prefetch_shared_memory"_a = py::none(),
+          "cls"_a, "prefetch_num_stages"_a = py::none(),
           "no_reduce_shared_memory_bank_conflicts"_a = py::none(),
           "use_igemm_convolution"_a = py::none(),
           "reorder_workgroups_strategy"_a = py::none(), py::kw_only(),
           "ctx"_a = py::none(),
           "Gets an #iree_gpu.pipeline_options from parameters.")
       .def_property_readonly(
-          "prefetch_shared_memory",
-          [](MlirAttribute self) -> std::optional<bool> {
-            auto attr = ireeGPUPipelineOptionsAttrGetPrefetchSharedMemory(self);
-            if (!mlirAttributeIsNull(attr))
-              return mlirBoolAttrGetValue(attr);
+          "prefetch_num_stages",
+          [](MlirAttribute self) -> std::optional<int64_t> {
+            auto attr = ireeGPUPipelineOptionsAttrGetPrefetchNumStages(self);
+            if (!mlirAttributeIsNull(attr)) {
+              return mlirIntegerAttrGetValueInt(attr);
+            }
             return std::nullopt;
           })
       .def_property_readonly(
@@ -272,16 +309,18 @@ NB_MODULE(_ireeCompilerDialects, m) {
             auto attr =
                 ireeGPUPipelineOptionsAttrGetNoReduceSharedMemoryBankConflicts(
                     self);
-            if (!mlirAttributeIsNull(attr))
+            if (!mlirAttributeIsNull(attr)) {
               return mlirBoolAttrGetValue(attr);
+            }
             return std::nullopt;
           })
       .def_property_readonly(
           "use_igemm_convolution",
           [](MlirAttribute self) -> std::optional<bool> {
             auto attr = ireeGPUPipelineOptionsAttrGetUseIgemmConvolution(self);
-            if (!mlirAttributeIsNull(attr))
+            if (!mlirAttributeIsNull(attr)) {
               return mlirBoolAttrGetValue(attr);
+            }
             return std::nullopt;
           })
       .def_property_readonly(
@@ -289,8 +328,9 @@ NB_MODULE(_ireeCompilerDialects, m) {
           [](MlirAttribute self) -> std::optional<MlirAttribute> {
             auto attr =
                 ireeGPUPipelineOptionsAttrGetReorderWorkgroupsStrategy(self);
-            if (!mlirAttributeIsNull(attr))
+            if (!mlirAttributeIsNull(attr)) {
               return attr;
+            }
             return std::nullopt;
           });
 
@@ -318,7 +358,8 @@ NB_MODULE(_ireeCompilerDialects, m) {
                              })
       .def_property_readonly("mma", [](MlirAttribute self) -> MlirAttribute {
         uint32_t value = ireeGPUMMAIntrinsicAttrGetValue(self);
-        return ireeGPUMMAAttrGet(mlirAttributeGetContext(self), value);
+        return ireeGPUMMAAttrGet(mlirAttributeGetContext(self), value,
+                                 /*colMajor=*/false);
       });
 
   //===-------------------------------------------------------------------===//
@@ -329,11 +370,14 @@ NB_MODULE(_ireeCompilerDialects, m) {
                           ireeAttributeIsAGPUMMAAttr, ireeGPUMMAAttrGetTypeID)
       .def_classmethod(
           "get",
-          [](const py::object &, uint32_t value, MlirContext ctx) {
-            return ireeGPUMMAAttrGet(ctx, value);
+          [](const py::object &, uint32_t value, bool colMajor,
+             MlirContext ctx) {
+            return ireeGPUMMAAttrGet(ctx, value, colMajor);
           },
-          "cls"_a, "value"_a, "ctx"_a = py::none(),
-          "Gets an #iree_gpu.mma from parameters.")
+          // col_major defaults to false for backward compatibility.
+          "cls"_a, "value"_a, "col_major"_a = false, py::kw_only(),
+          "ctx"_a = py::none(), "Gets an #iree_gpu.mma from parameters.")
+      .def_property_readonly("col_major", ireeGPUMMAAttrGetColMajor)
       .def_property_readonly(
           "abc_element_types",
           [](MlirAttribute self) -> py::tuple {
@@ -402,7 +446,8 @@ NB_MODULE(_ireeCompilerDialects, m) {
           })
       .def_property_readonly("mma", [](MlirAttribute self) -> MlirAttribute {
         uint32_t value = ireeGPUVirtualMMAIntrinsicAttrGetValue(self);
-        return ireeGPUVirtualMMAAttrGet(mlirAttributeGetContext(self), value);
+        return ireeGPUVirtualMMAAttrGet(mlirAttributeGetContext(self), value,
+                                        /*colMajor=*/false);
       });
 
   //===-------------------------------------------------------------------===//
@@ -414,11 +459,14 @@ NB_MODULE(_ireeCompilerDialects, m) {
                           ireeGPUVirtualMMAAttrGetTypeID)
       .def_classmethod(
           "get",
-          [](const py::object &, uint32_t value, MlirContext ctx) {
-            return ireeGPUVirtualMMAAttrGet(ctx, value);
+          [](const py::object &, uint32_t value, bool colMajor,
+             MlirContext ctx) {
+            return ireeGPUVirtualMMAAttrGet(ctx, value, colMajor);
           },
-          "cls"_a, "value"_a, "ctx"_a = py::none(),
-          "Gets an #iree_gpu.virtualmma from parameters.")
+          // col_major defaults to false for backward compatibility.
+          "cls"_a, "value"_a, "col_major"_a = false, py::kw_only(),
+          "ctx"_a = py::none(), "Gets an #iree_gpu.virtualmma from parameters.")
+      .def_property_readonly("col_major", ireeGPUVirtualMMAAttrGetColMajor)
       .def_property_readonly(
           "abc_element_types",
           [](MlirAttribute self) -> py::tuple {
@@ -481,13 +529,14 @@ NB_MODULE(_ireeCompilerDialects, m) {
             if (!mlirAttributeIsNull(basisInfo.mappingAttr)) {
               mapping = getIntArrayAttrValues(basisInfo.mappingAttr);
             }
-            return std::make_tuple(counts, mapping);
+            return std::tuple(counts, mapping);
           })
       .def_property_readonly(
           "mma_kind", [](MlirAttribute self) -> std::optional<MlirAttribute> {
             auto attr = ireeGPULoweringConfigAttrGetMmaKind(self);
-            if (!mlirAttributeIsNull(attr))
+            if (!mlirAttributeIsNull(attr)) {
               return attr;
+            }
             return std::nullopt;
           });
 
@@ -514,7 +563,7 @@ NB_MODULE(_ireeCompilerDialects, m) {
             for (py::handle item : mmaIntrinsicObjs) {
               if (!py::isinstance(item, mmaIntrinsicClass) &&
                   !py::isinstance(item, virtualMmaIntrinsicClass)) {
-                throw py::type_error("All items must be MMA atributes");
+                throw py::type_error("All items must be MMA attributes");
               }
               mmaIntrinsicVals.push_back(
                   py::cast<mma_intrinsic_enum_t>(item.attr("value")));
@@ -540,9 +589,8 @@ NB_MODULE(_ireeCompilerDialects, m) {
           "executable_target_attr"_a,
           "Get GPU target information from an executable target attribute")
       .def_prop_ro("arch",
-                   [](const ireeGPUTargetInfo &self) -> std::string {
-                     MlirStringRef strRef = mlirIdentifierStr(self.arch);
-                     return std::string(strRef.data, strRef.length);
+                   [](const ireeGPUTargetInfo &self) -> MlirStringRef {
+                     return mlirIdentifierStr(self.arch);
                    })
       .def_prop_ro("subgroup_size_choices",
                    [](const ireeGPUTargetInfo &self) -> std::vector<int64_t> {
@@ -628,13 +676,37 @@ NB_MODULE(_ireeCompilerDialects, m) {
       });
 
   iree_gpu_module.def(
-      "get_single_subgroup_layout",
-      [](MlirAttribute attr, int fragment) {
-        return ireeGPUGetSingleSubgroupLayout(attr, fragment);
-      },
+      "get_single_subgroup_layout", ireeGPUGetSingleSubgroupLayout,
       "Returns the single subgroup layout (element, thread, outer, "
       "tstrides) for a given MMA or VirtualMMA intrinsic and fragment. ",
       py::arg("attr"), py::arg("fragment"));
+
+  //===-------------------------------------------------------------------===//
+  // Binding to XOR shuffle utility functions
+  //===-------------------------------------------------------------------===//
+
+  iree_gpu_module.def(
+      "get_xor_shuffle_bounds",
+      [](MlirAttribute mmaIntrinsic,
+         int operandIndex) -> std::optional<std::tuple<int64_t, int64_t>> {
+        int64_t minAccessElems = 0, totalTileElems = 0;
+        if (ireeGPUGetXorShuffleBounds(mmaIntrinsic, operandIndex,
+                                       &minAccessElems, &totalTileElems)) {
+          return std::tuple(minAccessElems, totalTileElems);
+        }
+        return std::nullopt;
+      },
+      "Returns the bounds for valid XOR shuffle parameters (min_access_elems, "
+      "total_tile_elems) for the given MMA intrinsic and operand index. See "
+      "GPUUtils for sweep semantics. Returns (min_access_elems, "
+      "total_tile_elems) or None on failure.",
+      py::arg("mmaIntrinsic"), py::arg("operand_index"));
+
+  iree_gpu_module.def(
+      "is_xor_shuffle_valid", ireeGPUIsXORShuffleValid,
+      "Returns true if the XOR shuffle is valid for the given parameters.",
+      py::arg("num_row_elems"), py::arg("num_access_elems"),
+      py::arg("total_tile_elems"));
 
   //===-------------------------------------------------------------------===//
   // Binding to utility function getExecutableVariantOps
@@ -770,4 +842,45 @@ NB_MODULE(_ireeCompilerDialects, m) {
       "Gets IGEMM details for a linalg operation. "
       "Returns None if failed to infer IGEMM convolution details.",
       py::arg("linalg_op"));
+
+  //===-------------------------------------------------------------------===//
+  // Binding to utility function ireeCodegenGetScaledContractionDetails
+  //===-------------------------------------------------------------------===//
+  iree_codegen_module.def("isa_scaled_contraction_op",
+                          &ireeCodegenMlirOperationIsAScaledContractionOp,
+                          "Checks if the given operation is an IREE LinalgExt "
+                          "scaled contraction op.",
+                          py::arg("op"));
+
+  //===-------------------------------------------------------------------===//
+  // Binding to struct ireeCodegenScaledContractionDimensions
+  //===-------------------------------------------------------------------===//
+  py::class_<ireeCodegenScaledContractionDimensions>(
+      iree_codegen_module, "ScaledContractionDimensions")
+      .def_prop_ro("batch",
+                   [](const ireeCodegenScaledContractionDimensions &self) {
+                     return getIntArrayAttrValues(self.batch);
+                   })
+      .def_prop_ro("m",
+                   [](const ireeCodegenScaledContractionDimensions &self) {
+                     return getIntArrayAttrValues(self.m);
+                   })
+      .def_prop_ro("n",
+                   [](const ireeCodegenScaledContractionDimensions &self) {
+                     return getIntArrayAttrValues(self.n);
+                   })
+      .def_prop_ro("k",
+                   [](const ireeCodegenScaledContractionDimensions &self) {
+                     return getIntArrayAttrValues(self.k);
+                   })
+      .def_prop_ro("kB",
+                   [](const ireeCodegenScaledContractionDimensions &self) {
+                     return getIntArrayAttrValues(self.kB);
+                   });
+
+  iree_codegen_module.def(
+      "infer_scaled_contraction_dimensions",
+      &ireeCodegenInferScaledContractionDimensions,
+      "Infers the scaled contraction dimensions for a given operation.",
+      py::arg("op"));
 }

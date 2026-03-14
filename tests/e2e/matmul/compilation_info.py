@@ -27,17 +27,22 @@ class MMASchedule:
     def get_subgroup_basis(self) -> str:
         return f"[[{self.m_count}, {self.n_count}, 1], [0, 1, 2]]"
 
+    def get_subgroup_tile(self) -> str:
+        """Returns subgroup tile sizes for TileAndFuse pipeline."""
+        return f"[{self.m_count}, {self.n_count}, 0]"
+
 
 # Enumerates of the collections of compilation info that we can generate tests
 # for. The values are the accepted values for the --compilation_info= flag.
 @enum.unique
 class CompilationInfoId(enum.Enum):
     NONE = ""
-    LLVMGPUMatmulTensorCore = "LLVMGPUMatmulTensorCore"
-    LLVMGPUMatmulTensorCoreMmaSync = "LLVMGPUMatmulTensorCoreMmaSync"
     LLVMGPUVectorDistributeMFMA = "LLVMGPUVectorDistributeMFMA"
     LLVMGPUVectorDistributeWMMAR3 = "LLVMGPUVectorDistributeWMMAR3"
     LLVMGPUVectorDistributeWMMAR4 = "LLVMGPUVectorDistributeWMMAR4"
+    LLVMGPUVectorDistributeWMMA1250 = "LLVMGPUVectorDistributeWMMA1250"
+    LLVMGPUVectorDistributeCUDA = "LLVMGPUVectorDistributeCUDA"
+    LLVMGPUTileAndFuseCUDA = "LLVMGPUTileAndFuseCUDA"
     SPIRVCooperativeMatrixVectorize = "SPIRVCooperativeMatrixVectorize"
     SPIRVVectorizeMali = "SPIRVVectorizeMali"
     SPIRVVectorizeNVIDIA = "SPIRVVectorizeNVIDIA"
@@ -56,8 +61,7 @@ class CompilationInfo:
     def workgroup_size_str(self):
         return "workgroup_size = [" + ", ".join(map(str, self.workgroup_size)) + "]"
 
-    def get_compilation_info_attr(self) -> str:
-        ...
+    def get_compilation_info_attr(self) -> str: ...
 
 
 @dataclasses.dataclass
@@ -76,13 +80,32 @@ class IREEGPUCompilationInfo(CompilationInfo):
         if self.subgroup_size is not None:
             subgroup_size_str = f"subgroup_size = {self.subgroup_size}"
 
+        if compiler_pipeline == "LLVMGPUTileAndFuse":
+            # Add convert_acc_gemm for NVIDIA mma.sync intrinsics
+            convert_acc_gemm = ""
+            if self.mma_schedule.intrinsic.startswith("NV_MMA_SYNC"):
+                convert_acc_gemm = "convert_acc_gemm, "
+            lowering_config = (
+                f"  lowering_config = #iree_gpu.lowering_config<{{"
+                f"  mma_kind = #iree_gpu.mma_layout<{self.mma_schedule.intrinsic}>, "
+                f"  subgroup = {self.mma_schedule.get_subgroup_tile()}, "
+                f"  {convert_acc_gemm}"
+                f"  promote_operands = [0, 1], "
+                f"  workgroup = {self.workgroup_tile}, "
+                f"  reduction = {self.reduction_tile} }}>,\n"
+            )
+        else:
+            lowering_config = (
+                f"  lowering_config = #iree_gpu.lowering_config<{{"
+                f"  mma_kind = #iree_gpu.mma_layout<{self.mma_schedule.intrinsic}>, "
+                f"  subgroup_basis = {self.mma_schedule.get_subgroup_basis()}, "
+                f"  workgroup = {self.workgroup_tile}, "
+                f"  reduction = {self.reduction_tile} }}>,\n"
+            )
+
         return (
             "#iree_codegen.compilation_info<\n"
-            f"  lowering_config = #iree_gpu.lowering_config<{{"
-            f"  mma_kind = #iree_gpu.mma_layout<{self.mma_schedule.intrinsic}>, "
-            f"  subgroup_basis = {self.mma_schedule.get_subgroup_basis()}, "
-            f"  workgroup = {self.workgroup_tile}, "
-            f"  reduction = {self.reduction_tile} }}>,\n"
+            f"{lowering_config}"
             f"  translation_info = #iree_codegen.translation_info<pipeline = {compiler_pipeline} {self.workgroup_size_str()}\n"
             f"  {subgroup_size_str}>>\n"
         )
@@ -177,6 +200,8 @@ def get_rocm_test_compilation_infos(
         intrinsic = "WMMAR3"
     elif compilation_info_id == CompilationInfoId.LLVMGPUVectorDistributeWMMAR4:
         intrinsic = "WMMAR4"
+    elif compilation_info_id == CompilationInfoId.LLVMGPUVectorDistributeWMMA1250:
+        intrinsic = "WMMA1250"
     else:
         raise ValueError("Unknown pipeline for rocm")
 
@@ -271,9 +296,46 @@ def get_rocm_test_compilation_infos(
             MMASchedule("WMMAR4_I32_16x16x16_I8", 2, 4, 2, 1, 2),
             MMASchedule("WMMAR4_I32_16x16x16_I8", 4, 2, 4, 2, 2),
         ]
+    elif intrinsic == "WMMA1250":
+        # gfx1250 WMMA intrinsics: 16x16 tiles with various K sizes.
+        # F16: K=32, F8E4M3FN: K=64 or K=128, I8: K=64
+        schedules = [
+            MMASchedule("WMMA_F32_16x16x32_F16", 1, 1, 1, 1, 1),
+            MMASchedule("WMMA_F32_16x16x32_F16", 1, 1, 1, 1, 2),
+            MMASchedule("WMMA_F32_16x16x32_F16", 1, 1, 1, 2, 1),
+            MMASchedule("WMMA_F32_16x16x32_F16", 1, 1, 2, 1, 1),
+            MMASchedule("WMMA_F32_16x16x32_F16", 2, 2, 1, 1, 1),
+            MMASchedule("WMMA_F32_16x16x32_F16", 2, 4, 2, 1, 2),
+            MMASchedule("WMMA_F32_16x16x32_F16", 4, 2, 4, 2, 2),
+            # K=64 F8E4M3FN
+            MMASchedule("WMMA_F32_16x16x64_F8E4M3FN", 1, 1, 1, 1, 1),
+            MMASchedule("WMMA_F32_16x16x64_F8E4M3FN", 1, 1, 1, 1, 2),
+            MMASchedule("WMMA_F32_16x16x64_F8E4M3FN", 1, 1, 1, 2, 1),
+            MMASchedule("WMMA_F32_16x16x64_F8E4M3FN", 1, 1, 2, 1, 1),
+            MMASchedule("WMMA_F32_16x16x64_F8E4M3FN", 2, 2, 1, 1, 1),
+            MMASchedule("WMMA_F32_16x16x64_F8E4M3FN", 2, 4, 2, 1, 2),
+            MMASchedule("WMMA_F32_16x16x64_F8E4M3FN", 4, 2, 4, 2, 2),
+            # K=128 F8E4M3FN
+            MMASchedule("WMMA_F32_16x16x128_F8E4M3FN", 1, 1, 1, 1, 1),
+            MMASchedule("WMMA_F32_16x16x128_F8E4M3FN", 1, 1, 1, 1, 2),
+            MMASchedule("WMMA_F32_16x16x128_F8E4M3FN", 1, 1, 1, 2, 1),
+            MMASchedule("WMMA_F32_16x16x128_F8E4M3FN", 1, 1, 2, 1, 1),
+            MMASchedule("WMMA_F32_16x16x128_F8E4M3FN", 2, 2, 1, 1, 1),
+            MMASchedule("WMMA_F32_16x16x128_F8E4M3FN", 2, 4, 2, 1, 2),
+            MMASchedule("WMMA_F32_16x16x128_F8E4M3FN", 4, 2, 4, 2, 2),
+            # I8
+            MMASchedule("WMMA_I32_16x16x64_I8", 1, 1, 1, 1, 1),
+            MMASchedule("WMMA_I32_16x16x64_I8", 1, 1, 1, 1, 2),
+            MMASchedule("WMMA_I32_16x16x64_I8", 1, 1, 1, 2, 1),
+            MMASchedule("WMMA_I32_16x16x64_I8", 1, 1, 2, 1, 1),
+            MMASchedule("WMMA_I32_16x16x64_I8", 2, 2, 1, 1, 1),
+            MMASchedule("WMMA_I32_16x16x64_I8", 2, 4, 2, 1, 2),
+            MMASchedule("WMMA_I32_16x16x64_I8", 4, 2, 4, 2, 2),
+        ]
     else:
         raise NotImplementedError("unhandled intrinsic case")
 
+    # WMMAR3, WMMAR4, WMMA1250 all use 32.
     subgroup_size = 64 if intrinsic == "MFMA" else 32
 
     infos = []
@@ -328,6 +390,24 @@ def get_rocm_test_compilation_infos(
             wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
             wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
             wg_tile_k = schedule.k_tile_count * 16
+        elif schedule.intrinsic == "WMMA_F32_16x16x32_F16":
+            # gfx1250: M=16, N=16, K=32
+            wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
+            wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
+            wg_tile_k = schedule.k_tile_count * 32
+        elif schedule.intrinsic in (
+            "WMMA_F32_16x16x64_F8E4M3FN",
+            "WMMA_I32_16x16x64_I8",
+        ):
+            # gfx1250: M=16, N=16, K=64
+            wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
+            wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
+            wg_tile_k = schedule.k_tile_count * 64
+        elif schedule.intrinsic == "WMMA_F32_16x16x128_F8E4M3FN":
+            # gfx1250: M=16, N=16, K=128
+            wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
+            wg_tile_n = schedule.n_count * schedule.n_tile_count * 16
+            wg_tile_k = schedule.k_tile_count * 128
         else:
             raise NotImplementedError("unhandled intrinsic case")
 
@@ -347,9 +427,73 @@ def get_rocm_test_compilation_infos(
     return infos
 
 
+def get_cuda_test_compilation_infos(
+    compilation_info_id: CompilationInfoId,
+    lhs_rhs_type: MatrixElemTypeId,
+    acc_type: Optional[MatrixElemTypeId] = None,
+):
+    """Generate compilation infos for CUDA/NVIDIA GPU tests."""
+    # Only F16 input is supported for NV_MMA_SYNC intrinsics
+    if lhs_rhs_type != MatrixElemTypeId.F16:
+        return []
+
+    # Determine the pipeline based on compilation_info_id
+    if compilation_info_id == CompilationInfoId.LLVMGPUVectorDistributeCUDA:
+        pipeline = "LLVMGPUVectorDistribute"
+    elif compilation_info_id == CompilationInfoId.LLVMGPUTileAndFuseCUDA:
+        pipeline = "LLVMGPUTileAndFuse"
+    else:
+        raise ValueError("Unknown pipeline for CUDA")
+
+    if acc_type == MatrixElemTypeId.F16:
+        intrinsic = "NV_MMA_SYNC_F16_16x8x16_F16"
+    else:
+        # Default to F32 accumulator
+        intrinsic = "NV_MMA_SYNC_F32_16x8x16_F16"
+
+    schedules = [
+        # Basic single subgroup configurations
+        MMASchedule(intrinsic, 1, 1, 1, 1, 1),
+        MMASchedule(intrinsic, 1, 1, 1, 1, 2),
+        MMASchedule(intrinsic, 1, 1, 1, 2, 1),
+        MMASchedule(intrinsic, 1, 1, 2, 1, 1),
+        # Multiple subgroups
+        MMASchedule(intrinsic, 2, 2, 1, 1, 1),
+        MMASchedule(intrinsic, 2, 2, 2, 2, 2),
+        MMASchedule(intrinsic, 2, 4, 2, 1, 2),
+        MMASchedule(intrinsic, 4, 2, 4, 2, 2),
+    ]
+
+    subgroup_size = 32
+
+    infos = []
+    for schedule in schedules:
+        # NV_MMA_SYNC intrinsics: M=16, N=8, K=16
+        wg_tile_m = schedule.m_count * schedule.m_tile_count * 16
+        wg_tile_n = schedule.n_count * schedule.n_tile_count * 8
+        wg_tile_k = schedule.k_tile_count * 16
+
+        workgroup_tile = [wg_tile_m, wg_tile_n, 0]
+        reduction_tile = [0, 0, wg_tile_k]
+        workgroup_size = [schedule.n_count * subgroup_size, schedule.m_count, 1]
+        infos.append(
+            IREEGPUCompilationInfo(
+                workgroup_tile=workgroup_tile,
+                reduction_tile=reduction_tile,
+                dispatch_lowering_pass_pipeline=pipeline,
+                workgroup_size=workgroup_size,
+                mma_schedule=schedule,
+                subgroup_size=subgroup_size,
+            )
+        )
+    return infos
+
+
 # Returns the list of CompilationInfo's to use for the CompilationInfoId.
 def get_test_compilation_infos(
-    compilation_info_id: CompilationInfoId, lhs_rhs_type: MatrixElemTypeId
+    compilation_info_id: CompilationInfoId,
+    lhs_rhs_type: MatrixElemTypeId,
+    acc_type: Optional[MatrixElemTypeId] = None,
 ) -> typing.List[typing.Optional[CompilationInfo]]:
     if compilation_info_id == CompilationInfoId.NONE:
         return [None]
@@ -358,8 +502,17 @@ def get_test_compilation_infos(
         CompilationInfoId.LLVMGPUVectorDistributeMFMA,
         CompilationInfoId.LLVMGPUVectorDistributeWMMAR3,
         CompilationInfoId.LLVMGPUVectorDistributeWMMAR4,
+        CompilationInfoId.LLVMGPUVectorDistributeWMMA1250,
     ]:
         return get_rocm_test_compilation_infos(compilation_info_id, lhs_rhs_type)
+
+    if compilation_info_id in [
+        CompilationInfoId.LLVMGPUVectorDistributeCUDA,
+        CompilationInfoId.LLVMGPUTileAndFuseCUDA,
+    ]:
+        return get_cuda_test_compilation_infos(
+            compilation_info_id, lhs_rhs_type, acc_type
+        )
 
     software_pipeline_depth = 0
     tile_workgroup_size_pairs = []
@@ -373,34 +526,6 @@ def get_test_compilation_infos(
         tile_workgroup_size_pairs = get_all_spirv_tile_workgroup_size_pairs(32)
     elif compilation_info_id == CompilationInfoId.SPIRVVectorizeMali:
         tile_workgroup_size_pairs = get_all_spirv_tile_workgroup_size_pairs(4)
-    elif (
-        compilation_info_id == CompilationInfoId.LLVMGPUMatmulTensorCore
-        or compilation_info_id == CompilationInfoId.LLVMGPUMatmulTensorCoreMmaSync
-    ):
-        tile_workgroup_size_pairs = []
-        ## WarpShape = 2x2
-        tile_workgroup_size_pairs.append(
-            TileWorkgroupSizePair([[32, 32, 16]], [64, 2, 1])
-        )
-        tile_workgroup_size_pairs.append(
-            TileWorkgroupSizePair([[64, 64, 64]], [64, 2, 1])
-        )
-
-        ## WarpShape = 4x1
-        tile_workgroup_size_pairs.append(
-            TileWorkgroupSizePair([[32, 32, 32]], [64, 1, 1])
-        )
-
-        ## WarpShape = 2x2 with large tiles using larger Shared Memory capacity.
-        if lhs_rhs_type == MatrixElemTypeId.F16:
-            tile_workgroup_size_pairs.append(
-                TileWorkgroupSizePair([[128, 128, 64]], [64, 2, 1])
-            )
-        elif lhs_rhs_type == MatrixElemTypeId.F32:
-            tile_workgroup_size_pairs.append(
-                TileWorkgroupSizePair([[128, 128, 16]], [64, 2, 1])
-            )
-        software_pipeline_depth = 3
 
     compilation_infos = []
     for tile_workgroup_size_pair in tile_workgroup_size_pairs:

@@ -22,17 +22,17 @@ func.func @simple_generic(%3: tensor<64x256xf32>, %4: tensor<64x256xf32>, %5: te
 
 // -----
 
-func.func @map_scatter(%arg0: tensor<2x32xf32>, %arg1: tensor<64x256xf32>) -> tensor<64x256xf32> {
+func.func @map_store(%arg0: tensor<2x32xf32>, %arg1: tensor<64x256xf32>) -> tensor<64x256xf32> {
   %true = arith.constant true
-  %0 = iree_linalg_ext.map_scatter %arg0 into %arg1 {
+  %0 = iree_linalg_ext.map_store %arg0 into %arg1 {
   ^bb0(%arg2: index, %arg3: index):
     iree_linalg_ext.yield %arg2, %arg3, %true : index, index, i1
   } : tensor<2x32xf32> into tensor<64x256xf32> -> tensor<64x256xf32>
   return %0 : tensor<64x256xf32>
 }
-// map_scatter should use a quarter of the vector size.
+// map_store should use a quarter of the vector size.
 
-// CHECK-LABEL: func.func @map_scatter
+// CHECK-LABEL: func.func @map_store
 //   CHECK-DAG:   %[[C0:.+]] = arith.constant 0 : index
 //   CHECK-DAG:   %[[C2:.+]] = arith.constant 2 : index
 //   CHECK-DAG:   %[[C32:.+]] = arith.constant 32 : index
@@ -40,7 +40,7 @@ func.func @map_scatter(%arg0: tensor<2x32xf32>, %arg1: tensor<64x256xf32>) -> te
 //   CHECK-DAG:   %[[C16:.+]] = arith.constant 16 : index
 //       CHECK:   scf.for %{{.*}} = %[[C0]] to %[[C2]] step %[[C1]]
 //       CHECK:     scf.for %{{.*}} = %[[C0]] to %[[C32]] step %[[C16]]
-//       CHECK:       iree_linalg_ext.map_scatter
+//       CHECK:       iree_linalg_ext.map_store
 //       CHECK:         tensor<1x16xf32> into tensor<64x256xf32>
 
 // -----
@@ -55,7 +55,7 @@ func.func @fuse_destination(%3: tensor<64x64xf32>, %4: tensor<64x64xf32>) -> ten
 }
 
 // CHECK-LABEL: func.func @fuse_destination
-//       CHECK:   %[[EMPTY:.+]] = tensor.empty() : tensor<64x64xf32>
+//       CHECK:   tensor.empty() : tensor<64x64xf32>
 //       CHECK:   scf.for %{{.*}} = %c0 to %c64 step %c1
 //       CHECK:     linalg.fill {{.*}} -> tensor<1x64xf32>
 
@@ -174,7 +174,7 @@ func.func @dynamic_reduction_dim(%arg0: tensor<?x?xf32>, %arg1: tensor<1x?xf32>,
 // CHECK-LABEL: func.func @dynamic_reduction_dim
 //  CHECK-SAME:   %[[ARG0:[A-Za-z0-9]+]]: tensor<?x?xf32>
 //       CHECK:   %[[DIM:.+]] = tensor.dim %[[ARG0]], %c0 : tensor<?x?xf32>
-//       CHECK:   scf.for %[[I:.+]] = %c0 to %[[DIM]] step %c1
+//       CHECK:   scf.for {{.+}} = %c0 to %[[DIM]] step %c1
 //       CHECK:     linalg.generic
 //  CHECK-SAME:       ins(%{{.*}}: tensor<1x?xf32>, tensor<1x?xf32>)
 //  CHECK-SAME:       outs(%{{.*}}: tensor<1x1xf32>)

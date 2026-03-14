@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/LoweringPatterns.h"
 #include "mlir/Dialect/Vector/Transforms/VectorDistribution.h"
@@ -62,14 +63,18 @@ static bool isUniformLoad(Operation *op) {
   using namespace IREE::HAL;
 
   auto loadOp = dyn_cast<memref::LoadOp>(op);
-  if (!loadOp)
+  if (!loadOp) {
     return false;
-  if (!hasGlobalMemoryAddressSpace(loadOp.getMemRefType()))
+  }
+  if (!hasGlobalMemoryAddressSpace(loadOp.getMemRefType())) {
     return false;
+  }
   auto space = loadOp.getMemRefType().getMemorySpace();
   auto descTypeAttr = dyn_cast_if_present<DescriptorTypeAttr>(space);
-  if (descTypeAttr && descTypeAttr.getValue() == DescriptorType::UniformBuffer)
+  if (descTypeAttr &&
+      descTypeAttr.getValue() == DescriptorType::UniformBuffer) {
     return true;
+  }
 
   auto subspan = loadOp.getMemRef().getDefiningOp<InterfaceBindingSubspanOp>();
   if (auto fatBufferCast =
@@ -77,16 +82,20 @@ static bool isUniformLoad(Operation *op) {
     subspan =
         fatBufferCast.getSource().getDefiningOp<InterfaceBindingSubspanOp>();
   }
-  if (!subspan)
+  if (!subspan) {
     return false;
+  }
 
   descTypeAttr = dyn_cast_if_present<DescriptorTypeAttr>(
       cast<MemRefType>(subspan.getResult().getType()).getMemorySpace());
-  if (descTypeAttr && descTypeAttr.getValue() == DescriptorType::UniformBuffer)
+  if (descTypeAttr &&
+      descTypeAttr.getValue() == DescriptorType::UniformBuffer) {
     return true;
+  }
   if (auto flags = subspan.getDescriptorFlags()) {
-    if (bitEnumContainsAll(*flags, IREE::HAL::DescriptorFlags::ReadOnly))
+    if (bitEnumContainsAll(*flags, IREE::HAL::DescriptorFlags::ReadOnly)) {
       return true;
+    }
   }
   return false;
 }
@@ -97,18 +106,24 @@ static void moveScalarAndBindingUniformCode(gpu::WarpExecuteOnLane0Op warpOp) {
   /// Hoist ops without side effect as well as special binding ops.
   auto canBeHoisted = [](Operation *op,
                          function_ref<bool(Value)> definedOutside) {
-    if (op->getNumRegions() != 0)
+    if (op->getNumRegions() != 0) {
       return false;
-    if (!llvm::all_of(op->getOperands(), definedOutside))
+    }
+    if (!llvm::all_of(op->getOperands(), definedOutside)) {
       return false;
-    if (isMemoryEffectFree(op))
+    }
+    if (isMemoryEffectFree(op)) {
       return true;
+    }
 
     if (isa<IREE::HAL::InterfaceBindingSubspanOp,
-            IREE::HAL::InterfaceConstantLoadOp, memref::AssumeAlignmentOp>(op))
+            IREE::HAL::InterfaceConstantLoadOp, memref::AssumeAlignmentOp>(
+            op)) {
       return true;
-    if (isUniformLoad(op))
+    }
+    if (isUniformLoad(op)) {
       return true;
+    }
     // Shared memory is already scoped to the workgroup and can safely be
     // hoisted out of the the warp op.
     if (auto allocOp = dyn_cast<memref::AllocOp>(op)) {
@@ -144,8 +159,9 @@ static void moveScalarAndBindingUniformCode(gpu::WarpExecuteOnLane0Op warpOp) {
   }
 
   // Move all the ops marked as uniform outside of the region.
-  for (Operation *op : opsToMove)
+  for (Operation *op : opsToMove) {
     op->moveBefore(warpOp);
+  }
 }
 
 /// Pattern to convert single element vector.insert to broadcast, this is a
@@ -155,8 +171,9 @@ struct InsertToBroadcast final : OpRewritePattern<vector::InsertOp> {
 
   LogicalResult matchAndRewrite(vector::InsertOp insertOp,
                                 PatternRewriter &rewriter) const override {
-    if (insertOp.getDestVectorType().getNumElements() != 1)
+    if (insertOp.getDestVectorType().getNumElements() != 1) {
       return failure();
+    }
     rewriter.replaceOpWithNewOp<vector::BroadcastOp>(
         insertOp, insertOp.getDestVectorType(), insertOp.getValueToStore());
     return success();
@@ -173,11 +190,13 @@ struct WarpOpBarrier final : OpRewritePattern<gpu::WarpExecuteOnLane0Op> {
         warpOp.getBodyRegion().getBlocks().begin()->getTerminator());
     Operation *lastNode = yield->getPrevNode();
     auto barrierOp = dyn_cast_if_present<gpu::BarrierOp>(lastNode);
-    if (!barrierOp)
+    if (!barrierOp) {
       return failure();
+    }
 
     rewriter.setInsertionPointAfter(warpOp);
-    (void)gpu::BarrierOp::create(rewriter, barrierOp.getLoc());
+    gpu::BarrierOp::create(rewriter, barrierOp.getLoc(),
+                           barrierOp.getAddressSpacesAttr());
     rewriter.eraseOp(barrierOp);
     return success();
   }
@@ -211,7 +230,11 @@ struct VectorReductionToGPUPass final
     // TODO: Remove once MultiDimReduce is supported by distribute patterns.
     {
       RewritePatternSet patterns(ctx);
-      vector::populateVectorMultiReductionLoweringPatterns(
+      vector::populateVectorMultiReductionReorderPatterns(
+          patterns, vector::VectorMultiReductionLowering::InnerReduction);
+      vector::populateVectorMultiReductionFlatteningPatterns(
+          patterns, vector::VectorMultiReductionLowering::InnerReduction);
+      vector::populateVectorMultiReductionUnrollingPatterns(
           patterns, vector::VectorMultiReductionLowering::InnerReduction);
       // Add clean up patterns after lowering of multidimreduce lowering.
       patterns.add<InsertToBroadcast>(ctx);
@@ -232,24 +255,79 @@ struct VectorReductionToGPUPass final
     }
     SmallVector<int64_t> &workgroupSize = maybeWorkgroupSize.value();
     assert(workgroupSize[1] == 1 && workgroupSize[2] == 1);
-    // 2. Create the warp op and move the function body into it.
+    // 2. Create the warp op and move the body into it.
+    //
+    // When the function body contains a workgroup-level scf.forall, wrap the
+    // forall body rather than the function body. The forall body is
+    // structurally equivalent to the function body on the non-forall path
+    // (same vector ops, just with the forall induction var instead of
+    // hal.interface.workgroup.id). Wrapping the function body would place the
+    // forall inside the warp op, where distribution patterns cannot propagate
+    // through the forall region boundary, leaving vectors at full size.
     const int groupSize = workgroupSize[0];
     Location loc = funcOp.getLoc();
     OpBuilder builder(funcOp);
-    auto threadX = gpu::ThreadIdOp::create(builder, loc, builder.getIndexType(),
-                                           gpu::Dimension::x);
-    auto cstGroupSize = arith::ConstantIndexOp::create(builder, loc, groupSize);
-    auto warpOp = gpu::WarpExecuteOnLane0Op::create(
-        builder, loc, TypeRange(), threadX.getResult(), groupSize);
-    warpOp.getWarpRegion().takeBody(funcOp.getFunctionBody());
-    Block &newBlock = funcOp.getFunctionBody().emplaceBlock();
-    threadX->moveBefore(&newBlock, newBlock.end());
-    cstGroupSize->moveBefore(&newBlock, newBlock.end());
-    warpOp->moveBefore(&newBlock, newBlock.end());
-    warpOp.getWarpRegion().getBlocks().back().back().moveBefore(&newBlock,
-                                                                newBlock.end());
-    builder.setInsertionPointToEnd(&warpOp.getWarpRegion().getBlocks().back());
-    gpu::YieldOp::create(builder, loc);
+
+    // Check for a workgroup-level scf.forall.
+    scf::ForallOp workgroupForall;
+    for (auto &op : funcOp.getFunctionBody().front()) {
+      if (auto forall = dyn_cast<scf::ForallOp>(&op)) {
+        if (forallOpHasMappingType<IREE::Codegen::WorkgroupMappingAttr>(
+                forall)) {
+          workgroupForall = forall;
+          break;
+        }
+      }
+    }
+
+    gpu::WarpExecuteOnLane0Op warpOp;
+    if (workgroupForall) {
+      Block *forallBody = workgroupForall.getBody();
+      Operation *terminator = forallBody->getTerminator();
+
+      builder.setInsertionPoint(terminator);
+      auto threadX = gpu::ThreadIdOp::create(
+          builder, loc, builder.getIndexType(), gpu::Dimension::x);
+      auto cstGroupSize =
+          arith::ConstantIndexOp::create(builder, loc, groupSize);
+      warpOp = gpu::WarpExecuteOnLane0Op::create(
+          builder, loc, TypeRange(), threadX.getResult(), groupSize);
+
+      // Move all existing forall body ops into the warp region. The create
+      // call above produces a region with one empty block; use that block.
+      Block &warpBody = warpOp.getWarpRegion().front();
+      SmallVector<Operation *> opsToMove;
+      for (auto &op : *forallBody) {
+        if (&op == threadX.getOperation() ||
+            &op == cstGroupSize.getOperation() ||
+            &op == warpOp.getOperation() || &op == terminator) {
+          continue;
+        }
+        opsToMove.push_back(&op);
+      }
+      for (auto *op : opsToMove) {
+        op->moveBefore(&warpBody, warpBody.end());
+      }
+      builder.setInsertionPointToEnd(&warpBody);
+      gpu::YieldOp::create(builder, loc);
+    } else {
+      auto threadX = gpu::ThreadIdOp::create(
+          builder, loc, builder.getIndexType(), gpu::Dimension::x);
+      auto cstGroupSize =
+          arith::ConstantIndexOp::create(builder, loc, groupSize);
+      warpOp = gpu::WarpExecuteOnLane0Op::create(
+          builder, loc, TypeRange(), threadX.getResult(), groupSize);
+      warpOp.getWarpRegion().takeBody(funcOp.getFunctionBody());
+      Block &newBlock = funcOp.getFunctionBody().emplaceBlock();
+      threadX->moveBefore(&newBlock, newBlock.end());
+      cstGroupSize->moveBefore(&newBlock, newBlock.end());
+      warpOp->moveBefore(&newBlock, newBlock.end());
+      warpOp.getWarpRegion().getBlocks().back().back().moveBefore(
+          &newBlock, newBlock.end());
+      builder.setInsertionPointToEnd(
+          &warpOp.getWarpRegion().getBlocks().back());
+      gpu::YieldOp::create(builder, loc);
+    }
 
     debugPrint(funcOp, "after step #2: wrapping code with the warp execute op");
 
@@ -274,8 +352,9 @@ struct VectorReductionToGPUPass final
       };
       auto distributionFn = [](Value val) {
         auto vecType = dyn_cast<VectorType>(val.getType());
-        if (!vecType)
+        if (!vecType) {
           return AffineMap::get(val.getContext());
+        }
         // Create an identity dim map of rank |vecRank|. This greedily divides
         // threads along the outermost vector dimensions to the innermost ones.
         int64_t vecRank = vecType.getRank();
@@ -305,9 +384,11 @@ struct VectorReductionToGPUPass final
       RewritePatternSet patterns(ctx);
       vector::WarpExecuteOnLane0LoweringOptions options;
       options.warpAllocationFn = allocateGlobalSharedMemory;
-      options.warpSyncronizationFn = [](Location loc, OpBuilder &builder,
-                                        gpu::WarpExecuteOnLane0Op warpOp) {
-        gpu::BarrierOp::create(builder, loc);
+      options.warpSynchronizationFn = [](Location loc, OpBuilder &builder,
+                                         gpu::WarpExecuteOnLane0Op warpOp) {
+        // There's no communication via global memory occurring, so we only need
+        // to fence on workgroup memory.
+        gpu::BarrierOp::create(builder, loc, gpu::AddressSpace::Workgroup);
       };
       vector::populateWarpExecuteOnLane0OpToScfForPattern(patterns, options);
       (void)applyPatternsGreedily(getOperation(), std::move(patterns));

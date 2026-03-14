@@ -91,14 +91,20 @@ IREE_API_EXPORT iree_status_t iree_runtime_session_create_with_device(
 
   // Add the HAL module; it is always required when using the runtime API.
   // Lower-level usage of the VM can avoid the HAL if it's not required.
+  iree_hal_device_group_t* device_group = NULL;
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_device_group_create_from_device(device, host_allocator,
+                                                      &device_group);
+  }
   iree_vm_module_t* hal_module = NULL;
   if (iree_status_is_ok(status)) {
-    status = iree_hal_module_create(
-        iree_runtime_instance_vm_instance(instance),
-        iree_hal_module_device_policy_default(), /*device_count=*/1, &device,
-        IREE_HAL_MODULE_FLAG_NONE, iree_hal_module_debug_sink_stdio(stderr),
-        host_allocator, &hal_module);
+    status = iree_hal_module_create(iree_runtime_instance_vm_instance(instance),
+                                    iree_hal_module_device_policy_default(),
+                                    device_group, IREE_HAL_MODULE_FLAG_NONE,
+                                    iree_hal_module_debug_sink_stdio(stderr),
+                                    host_allocator, &hal_module);
   }
+  iree_hal_device_group_release(device_group);
   if (iree_status_is_ok(status)) {
     status = iree_vm_context_register_modules(
         session->context, /*module_count=*/1, /*modules=*/&hal_module);
@@ -213,9 +219,9 @@ iree_runtime_session_append_bytecode_module_from_memory(
   // make sure all code paths guarantee it has been freed.
   iree_vm_module_t* module = NULL;
   iree_status_t status = iree_vm_bytecode_module_create(
-      iree_runtime_instance_vm_instance(session->instance), flatbuffer_data,
-      flatbuffer_allocator, iree_runtime_session_host_allocator(session),
-      &module);
+      iree_runtime_instance_vm_instance(session->instance),
+      IREE_VM_BYTECODE_MODULE_FLAG_NONE, flatbuffer_data, flatbuffer_allocator,
+      iree_runtime_session_host_allocator(session), &module);
   if (iree_status_is_ok(status)) {
     // Append may fail and we still need to clean up the module.
     status = iree_runtime_session_append_module(session, module);

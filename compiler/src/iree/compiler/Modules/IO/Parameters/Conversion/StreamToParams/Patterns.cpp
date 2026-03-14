@@ -23,7 +23,7 @@ namespace mlir::iree_compiler {
 namespace {
 
 struct CmdParameterLoadOpPattern
-    : public OpConversionPattern<IREE::Stream::CmdParameterLoadOp> {
+    : OpConversionPattern<IREE::Stream::CmdParameterLoadOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Stream::CmdParameterLoadOp loadOp, OpAdaptor adaptor,
@@ -54,7 +54,7 @@ struct CmdParameterLoadOpPattern
                                      rewriter.getType<IREE::HAL::BufferType>());
     auto newOp = IREE::IO::Parameters::LoadOp::create(
         rewriter, loc, newResultTypes, device, queueAffinity, waitFence,
-        signalFence, adaptor.getSourceScopeAttr(), adaptor.getSourceKeysAttr(),
+        signalFence, adaptor.getSourceScope(), adaptor.getSourceKeys(),
         adaptor.getSourceOffsets(), resolveOp.getMemoryTypes(),
         resolveOp.getBufferUsage(), adaptor.getResultSizes());
 
@@ -67,7 +67,7 @@ struct CmdParameterLoadOpPattern
 };
 
 struct CmdParameterReadOpPattern
-    : public OpConversionPattern<IREE::Stream::CmdParameterReadOp> {
+    : OpConversionPattern<IREE::Stream::CmdParameterReadOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Stream::CmdParameterReadOp readOp, OpAdaptor adaptor,
@@ -85,8 +85,7 @@ struct CmdParameterReadOpPattern
     // Queue operation (a read is just a gather with a single span).
     IREE::IO::Parameters::GatherOp::create(
         rewriter, loc, device, queueAffinity, waitFence, signalFence,
-        adaptor.getSourceScopeAttr(),
-        rewriter.getArrayAttr(adaptor.getSourceKeyAttr()),
+        adaptor.getSourceScope(), ValueRange{adaptor.getSourceKey()},
         ValueRange{adaptor.getSourceOffset()}, adaptor.getTarget(),
         ValueRange{adaptor.getTargetOffset()},
         ValueRange{adaptor.getTargetLength()});
@@ -97,7 +96,7 @@ struct CmdParameterReadOpPattern
 };
 
 struct CmdParameterWriteOpPattern
-    : public OpConversionPattern<IREE::Stream::CmdParameterWriteOp> {
+    : OpConversionPattern<IREE::Stream::CmdParameterWriteOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Stream::CmdParameterWriteOp writeOp, OpAdaptor adaptor,
@@ -116,8 +115,8 @@ struct CmdParameterWriteOpPattern
     IREE::IO::Parameters::ScatterOp::create(
         rewriter, loc, device, queueAffinity, waitFence, signalFence,
         adaptor.getSource(), ValueRange{adaptor.getSourceOffset()},
-        ValueRange{adaptor.getSourceLength()}, adaptor.getTargetScopeAttr(),
-        rewriter.getArrayAttr(adaptor.getTargetKeyAttr()),
+        ValueRange{adaptor.getSourceLength()}, adaptor.getTargetScope(),
+        ValueRange{adaptor.getTargetKey()},
         ValueRange{adaptor.getTargetOffset()});
 
     rewriter.replaceOp(writeOp, {signalFence});
@@ -126,7 +125,7 @@ struct CmdParameterWriteOpPattern
 };
 
 struct CmdParameterGatherOpPattern
-    : public OpConversionPattern<IREE::Stream::CmdParameterGatherOp> {
+    : OpConversionPattern<IREE::Stream::CmdParameterGatherOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Stream::CmdParameterGatherOp gatherOp,
@@ -145,7 +144,7 @@ struct CmdParameterGatherOpPattern
     // Queue operation.
     IREE::IO::Parameters::GatherOp::create(
         rewriter, loc, device, queueAffinity, waitFence, signalFence,
-        adaptor.getSourceScopeAttr(), adaptor.getSourceKeysAttr(),
+        adaptor.getSourceScope(), adaptor.getSourceKeys(),
         adaptor.getSourceOffsets(), adaptor.getTarget(),
         adaptor.getTargetOffsets(), adaptor.getTargetLengths());
 
@@ -155,7 +154,7 @@ struct CmdParameterGatherOpPattern
 };
 
 struct CmdParameterScatterOpPattern
-    : public OpConversionPattern<IREE::Stream::CmdParameterScatterOp> {
+    : OpConversionPattern<IREE::Stream::CmdParameterScatterOp> {
   using Base::Base;
   LogicalResult
   matchAndRewrite(IREE::Stream::CmdParameterScatterOp scatterOp,
@@ -175,8 +174,8 @@ struct CmdParameterScatterOpPattern
     IREE::IO::Parameters::ScatterOp::create(
         rewriter, loc, device, queueAffinity, waitFence, signalFence,
         adaptor.getSource(), adaptor.getSourceOffsets(),
-        adaptor.getSourceLengths(), adaptor.getTargetScopeAttr(),
-        adaptor.getTargetKeysAttr(), adaptor.getTargetOffsets());
+        adaptor.getSourceLengths(), adaptor.getTargetScope(),
+        adaptor.getTargetKeys(), adaptor.getTargetOffsets());
 
     rewriter.replaceOp(scatterOp, {signalFence});
     return success();

@@ -20,7 +20,7 @@ def IREECodegen_InnerTiledSemanticsAttrInterface
     1. Expanded vs opaque tile shapes.
     2. On GPU: distributed vs undistributed tile shapes.
     Having this split into a separate interface allows mutating those
-    attribtutes separately.
+    attributes separately.
   }];
 
   let methods =
@@ -81,7 +81,7 @@ def IREECodegen_InnerTileDescAttrInterface :
     >,
     InterfaceMethod<
       /*desc=*/[{
-        Returns the number of accumulator initilizer operands this inner tiled
+        Returns the number of accumulator initializer operands this inner tiled
         operation requires. This is equivalent to the expected number of results.
       }],
       /*retTy=*/"int64_t",
@@ -213,7 +213,7 @@ def IREECodegen_InnerTileDescAttrInterface :
 
         Context: Some intrinsics require pre-distribution reshapes of the inner tile
         so that distribution to threads works correctly. The motivating example is when
-        the data has the form [outer per-lane] x [distributed accross lanes] x [inner per-lane].
+        the data has the form [outer per-lane] x [distributed across lanes] x [inner per-lane].
         For instance, the i-th value in the M dimension of the matrix could be
         located at vector index `[i / 8, i % 4]` of thread `32 * ((i / 8) % 2)`,
         which means the length 32 M dimension has to be retiled to 4x8 so that the
@@ -246,6 +246,30 @@ def IREECodegen_InnerTileDescAttrInterface :
       /*methodBody=*/"",
       /*defaultImplementation=*/[{
         return failure();
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
+        Returns a vector where each element is a vector of iterator types for
+        each dimension of each operand.
+        These dimensions are taken from the unexpanded, undistributed tile
+        shapes of each operand.
+        For example in a matmul C = A * B:
+        - LHS (operand 0): {"parallel", "reduction"}
+        - RHS (operand 1): {"reduction", "parallel"}
+        - ACC (operand 2): {"parallel", "parallel"}
+        Returns: {
+          {"parallel", "reduction"},
+          {"reduction", "parallel"},
+          {"parallel", "parallel"}
+        }
+      }],
+      /*retType=*/"::llvm::SmallVector<::llvm::SmallVector<::mlir::utils::IteratorType>>",
+      /*methodName=*/"getOperandIteratorTypes",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return {};
       }]
     >,
   ];
@@ -548,7 +572,26 @@ def IREECodegen_PackedLayoutMaterializerAttr :
         assert(false && "unimplemented interface method");
         return MaterializeEncodingInfo{};
       }]
-    >
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
+        Verifies that the packed layout encoding is valid for a tensor with the
+        given shape and element type. This is called by the VerifiableTensorEncoding
+        interface to validate that the encoding configuration (e.g., innerDimsPos,
+        innerTileSizes) is consistent with the tensor rank and properties.
+      }],
+      /*retTy=*/"::llvm::LogicalResult",
+      /*methodName=*/"verifyPackedLayoutWithType",
+      /*args=*/(ins
+        "::mlir::ArrayRef<int64_t>":$shape,
+        "::mlir::Type":$elementType,
+        "::llvm::function_ref<::mlir::InFlightDiagnostic()>":$emitError),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        assert(false && "unimplemented interface method");
+        return failure();
+      }]
+    >,
   ];
 }
 
@@ -599,6 +642,11 @@ def IREECodegen_AnySwizzleAttr : Attr<Or<[
   let returnType = [{ IREE::Codegen::SwizzleAttrInterface }];
   let convertFromStorage = "$_self";
 }
+
+// Parameter type for use in AttrDef parameters lists.
+def IREECodegen_SwizzleAttrParameter : AttrParameter<
+  "IREE::Codegen::SwizzleAttrInterface",
+  "swizzling descriptor attribute">;
 
 def IREECodegen_UKernelProviderInterface :
   AttrInterface<"UKernelProviderInterface"> {
@@ -701,6 +749,26 @@ def IREECodegen_UKernelProviderInterface :
         return {};
       }]
     >,
+  ];
+}
+
+def IREECodegen_PipelineAttrInterface :
+    AttrInterface<"PipelineAttrInterface"> {
+  let cppNamespace = "::mlir::iree_compiler::IREE::Codegen";
+  let description = [{
+    Attribute interface for building a pass pipeline. Implementations populate
+    the provided OpPassManager with the desired pass pipeline.
+  }];
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/[{
+        Populates the given pass manager with a pass pipeline.
+      }],
+      /*retTy=*/"::mlir::LogicalResult",
+      /*methodName=*/"buildPipeline",
+      /*args=*/(ins "::mlir::OpPassManager &":$pm)
+    >
   ];
 }
 

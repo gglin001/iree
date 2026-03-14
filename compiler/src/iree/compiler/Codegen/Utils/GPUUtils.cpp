@@ -18,6 +18,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/InterleavedRange.h"
 #include "mlir/Dialect/AMDGPU/IR/AMDGPUDialect.h"
+#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -122,27 +123,32 @@ bool canPerformVectorAccessUsingAllThreads(ArrayRef<int64_t> shape,
   // Verify that each dimension of the shape can be distributed on the
   // threads
   // For zero dim tensor, consider it's too small to access using all threads.
-  if (shape.size() == 0)
+  if (shape.empty()) {
     return false;
+  }
   int64_t threadsAvailable = threadCount;
   for (const auto &[index, dim] : llvm::enumerate(llvm::reverse(shape))) {
     int64_t numElementPerThread = index == 0 ? vectorSize : 1;
     int64_t numThreads = dim / numElementPerThread;
-    if (numThreads == 0)
+    if (numThreads == 0) {
       return false;
+    }
     if (numThreads > threadsAvailable) {
       // If there are no enough remaining threads to distribute the current
       // dimension, try to use all remaining threads. But we still need to make
       // sure all work can be distributed to these threads evenly.
-      if (numThreads % threadsAvailable != 0)
+      if (numThreads % threadsAvailable != 0) {
         return false;
+      }
       numThreads = threadsAvailable;
     }
-    if (threadsAvailable % numThreads != 0)
+    if (threadsAvailable % numThreads != 0) {
       return false;
+    }
     threadsAvailable = threadsAvailable / numThreads;
-    if (threadsAvailable == 1)
+    if (threadsAvailable == 1) {
       break;
+    }
   }
   return threadsAvailable == 1;
 }
@@ -200,8 +206,9 @@ FailureOr<scf::SCFTileSizeComputationFunction>
 getGPUScfTileSizeComputeFn(mlir::FunctionOpInterface funcOp, int tilingLevel) {
   FailureOr<SmallVector<int64_t>> tileSizes =
       getGPUTileSize(funcOp, tilingLevel);
-  if (failed(tileSizes))
+  if (failed(tileSizes)) {
     return failure();
+  }
   scf::SCFTileSizeComputationFunction computeFn =
       [tileSizes](OpBuilder &builder,
                   Operation *op) -> SmallVector<OpFoldResult> {
@@ -230,16 +237,18 @@ std::optional<Value> allocateWorkgroupMemory(OpBuilder &builder,
 
   mlir::FunctionOpInterface funcOp =
       subview->getParentOfType<mlir::FunctionOpInterface>();
-  if (!funcOp)
+  if (!funcOp) {
     return std::nullopt;
+  }
 
   // The subview size bounds are expected to be constant; they specify the shape
   // of the allocation.
   SmallVector<int64_t, 2> shape;
   for (Value bound : sizeBounds) {
     APInt value;
-    if (!matchPattern(bound, m_ConstantInt(&value)))
+    if (!matchPattern(bound, m_ConstantInt(&value))) {
       return std::nullopt;
+    }
     shape.push_back(value.getSExtValue());
   }
 
@@ -272,10 +281,12 @@ static bool propagateCopyDestIntoProducerFill(memref::CopyOp copyOp) {
     }
 
     auto fillOp = dyn_cast<linalg::FillOp>(prevOp);
-    if (!fillOp)
+    if (!fillOp) {
       break;
-    if (fillOp.output() != copyOp.getSource())
+    }
+    if (fillOp.output() != copyOp.getSource()) {
       break;
+    }
     // Move the fillOp and change the destination to the copy destination.
     fillOp->moveBefore(copyOp);
     fillOp.getOutputsMutable().assign(copyOp.getTarget());
@@ -327,10 +338,12 @@ propagateCopySourceIntoConsumerGeneric(memref::CopyOp copyOp,
     auto consumer = dyn_cast<linalg::GenericOp>(nextOp);
     if (!consumer || consumer.getNumDpsInits() != 1 ||
         !consumer.getMatchingIndexingMap(consumer.getDpsInitOperand(0))
-             .isIdentity())
+             .isIdentity()) {
       break;
-    if (*consumer.getOutputs().begin() != copyOp.getTarget())
+    }
+    if (*consumer.getOutputs().begin() != copyOp.getTarget()) {
       break;
+    }
     insertInputValueIntoGeneric(copyOp.getSource(), consumer);
     toDelete.push_back(consumer);
     return true;
@@ -346,12 +359,14 @@ void propagateSharedMemoryCopy(mlir::FunctionOpInterface funcOp) {
   funcOp.walk([&toDelete](memref::CopyOp copyOp) {
     if (hasMarker(copyOp, getCopyToWorkgroupMemoryMarker())) {
       if (propagateCopyDestIntoProducerFill(copyOp) ||
-          propagateCopySourceIntoConsumerGeneric(copyOp, toDelete))
+          propagateCopySourceIntoConsumerGeneric(copyOp, toDelete)) {
         toDelete.push_back(copyOp.getOperation());
+      }
     }
   });
-  for (Operation *op : toDelete)
+  for (Operation *op : toDelete) {
     op->erase();
+  }
 }
 
 void insertBarriersAroundSharedMemoryCopy(mlir::FunctionOpInterface funcOp) {
@@ -363,12 +378,14 @@ void insertBarriersAroundSharedMemoryCopy(mlir::FunctionOpInterface funcOp) {
       Operation *prevOp = copyOp->getPrevNode();
       if (!prevOp || !hasMarker(prevOp, getCopyToWorkgroupMemoryMarker())) {
         builder.setInsertionPoint(copyOp);
-        gpu::BarrierOp::create(builder, copyOp->getLoc());
+        gpu::BarrierOp::create(builder, copyOp->getLoc(),
+                               gpu::AddressSpace::Workgroup);
       }
       Operation *nextOp = copyOp->getNextNode();
       if (!nextOp || !hasMarker(nextOp, getCopyToWorkgroupMemoryMarker())) {
         builder.setInsertionPointAfter(copyOp);
-        gpu::BarrierOp::create(builder, copyOp->getLoc());
+        gpu::BarrierOp::create(builder, copyOp->getLoc(),
+                               gpu::AddressSpace::Workgroup);
       }
     }
   });
@@ -461,16 +478,18 @@ static Value warpReduction(Location loc, OpBuilder &builder, Value input,
   // integer type.
   auto unpack = [loc, &builder, needsPacking, equivIntType,
                  origInputType](Value packedVal) -> Value {
-    if (!needsPacking)
+    if (!needsPacking) {
       return packedVal;
+    }
     auto asInt = arith::TruncIOp::create(builder, loc, equivIntType, packedVal);
     return arith::BitcastOp::create(builder, loc, origInputType, asInt);
   };
 
   auto pack = [loc, &builder, needsPacking, equivIntType,
                shuffleIntType](Value unpackedVal) -> Value {
-    if (!needsPacking)
+    if (!needsPacking) {
       return unpackedVal;
+    }
     auto asInt =
         arith::BitcastOp::create(builder, loc, equivIntType, unpackedVal);
     return arith::ExtUIOp::create(builder, loc, shuffleIntType, asInt);
@@ -630,7 +649,7 @@ Value emitGPUGroupReduction(Location loc, OpBuilder &builder, Value input,
       memref::StoreOp::create(b, l, laneVal, alloc, indices);
       scf::YieldOp::create(b, l);
     });
-    gpu::BarrierOp::create(builder, loc);
+    gpu::BarrierOp::create(builder, loc, gpu::AddressSpace::Workgroup);
     // Further reduce the outputs from each warps with a single warp reduce.
     Value memrefSize =
         arith::ConstantIndexOp::create(builder, loc, numWarp - 1);
@@ -667,8 +686,9 @@ std::optional<SmallVector<int64_t>> getWmmaNativeVectorSize(Operation *op) {
     return nativeSize;
   }
   if (auto writeOp = dyn_cast<vector::TransferWriteOp>(op)) {
-    if (writeOp.getVectorType().getRank() < 2)
+    if (writeOp.getVectorType().getRank() < 2) {
       return std::nullopt;
+    }
     SmallVector<int64_t> nativeSize(writeOp.getVectorType().getRank() - 2, 1);
     nativeSize.append({m, n});
     return nativeSize;
@@ -679,11 +699,13 @@ std::optional<SmallVector<int64_t>> getWmmaNativeVectorSize(Operation *op) {
     VectorType sliceType;
     for (Operation *users : op->getUsers()) {
       auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
-      if (!extract)
+      if (!extract) {
         return std::nullopt;
+      }
       auto vecType = cast<VectorType>(extract.getResult().getType());
-      if (sliceType && sliceType != vecType)
+      if (sliceType && sliceType != vecType) {
         return std::nullopt;
+      }
       sliceType = vecType;
     }
     return llvm::to_vector(sliceType.getShape());
@@ -692,8 +714,9 @@ std::optional<SmallVector<int64_t>> getWmmaNativeVectorSize(Operation *op) {
     if (auto vecType = dyn_cast<VectorType>(op->getResultTypes()[0])) {
       // TODO: The condition for unrolling elementwise should be restricted
       // only to operations that need unrolling (connected to the contract).
-      if (vecType.getRank() < 2)
+      if (vecType.getRank() < 2) {
         return std::nullopt;
+      }
 
       // First check whether there is a slice to infer the shape from. This is
       // required for cases where the accumulator type differs from the input
@@ -702,15 +725,18 @@ std::optional<SmallVector<int64_t>> getWmmaNativeVectorSize(Operation *op) {
       VectorType sliceType;
       for (Operation *users : op->getUsers()) {
         auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
-        if (!extract)
+        if (!extract) {
           return std::nullopt;
+        }
         auto vecType = cast<VectorType>(extract.getResult().getType());
-        if (sliceType && sliceType != vecType)
+        if (sliceType && sliceType != vecType) {
           return std::nullopt;
+        }
         sliceType = vecType;
       }
-      if (sliceType)
+      if (sliceType) {
         return llvm::to_vector(sliceType.getShape());
+      }
 
       // Else unroll for trailing elementwise.
       SmallVector<int64_t> nativeSize(vecType.getRank() - 2, 1);
@@ -722,6 +748,240 @@ std::optional<SmallVector<int64_t>> getWmmaNativeVectorSize(Operation *op) {
   return std::nullopt;
 }
 
+static FailureOr<int64_t>
+getOperandBitwidth(IREE::Codegen::InnerTileDescAttrInterface intrinsic,
+                   int operandIndex) {
+  SmallVector<Type> elementTypes;
+  intrinsic.getElementTypes(elementTypes);
+  assert(operandIndex > 0 && "operand index must be positive");
+  return elementTypes[operandIndex].getIntOrFloatBitWidth();
+}
+
+/// Returns the number of elements along the K dimensions (all reduction
+/// dimensions) of the given intrinsic. For intrinsics with multiple K
+/// dimensions, returns the product of all K dimensions. This is determined by
+/// looking at all reduction dimensions in the undistributed tile shape.
+static FailureOr<int64_t>
+getKSize(IREE::Codegen::InnerTileDescAttrInterface intrinsic) {
+  int64_t kSize = 1;
+  int64_t lhsOperandIndex = 0;
+  SmallVector<VectorType> undistributedTypes;
+  intrinsic.getUndistributedTileTypes(undistributedTypes);
+  ArrayRef<int64_t> shape = undistributedTypes[lhsOperandIndex].getShape();
+  SmallVector<utils::IteratorType> lhsIteratorTypes =
+      intrinsic.getOperandIteratorTypes()[lhsOperandIndex];
+  for (auto [dim, iteratorType] : llvm::zip_equal(shape, lhsIteratorTypes)) {
+    if (iteratorType == utils::IteratorType::reduction) {
+      kSize *= dim;
+    }
+  }
+  return kSize;
+}
+
+/// Returns the number of elements each thread accesses for the given intrinsic
+/// and operand index. This is determined by the `element` field of the
+/// subgroup layout.
+static FailureOr<int64_t>
+getNumAccessElems(IREE::Codegen::InnerTileDescAttrInterface intrinsic,
+                  int operandIndex) {
+  IREE::GPU::MMASingleSubgroupLayout layout =
+      IREE::GPU::getSingleSubgroupLayout(intrinsic, operandIndex);
+  return llvm::product_of(layout.element);
+}
+
+/// Returns the total number of elements in the shape of the given intrinsic
+/// with the given operand index. This is the product of all dimensions in the
+/// distributed shape: outer × thread × element.
+static FailureOr<int64_t>
+getTotalTileElems(IREE::Codegen::InnerTileDescAttrInterface intrinsic,
+                  int operandIndex) {
+  IREE::GPU::MMASingleSubgroupLayout layout =
+      IREE::GPU::getSingleSubgroupLayout(intrinsic, operandIndex);
+  return llvm::product_of(layout.outer) * llvm::product_of(layout.thread) *
+         llvm::product_of(layout.element);
+}
+
+static FailureOr<XorShuffleParams> getXorShuffleParamsForGfx950(
+    IREE::GPU::TargetAttr target,
+    IREE::Codegen::InnerTileDescAttrInterface intrinsic) {
+  if (auto smma = dyn_cast<IREE::GPU::ScaledMMAAttr>(intrinsic)) {
+    switch (smma.getIntrinsic()) {
+    case IREE::GPU::ScaledMMAIntrinsic::MFMA_SCALE_F32_16x16x128_B32:
+      return XorShuffleParams({/*rowElems=*/256,
+                               /*accessElems=*/32});
+    default:
+      // TODO(muzasyed): Add more intrinsics for gfx950.
+      return failure();
+    }
+  }
+  return failure();
+}
+
+/// Validate the XOR shuffle parameters for the given intrinsic and operand
+/// index. If the parameters produce an XOR Shuffle that is not valid, return
+/// failure. Else, return the swizzle parameters.
+static FailureOr<XorShuffleParams>
+validateXorShuffle(FailureOr<XorShuffleParams> swizzle,
+                   IREE::Codegen::InnerTileDescAttrInterface intrinsic,
+                   int operandIndex) {
+  FailureOr<int64_t> maybeTotalTileElems =
+      getTotalTileElems(intrinsic, operandIndex);
+  if (failed(maybeTotalTileElems)) {
+    return failure();
+  }
+  int64_t totalTileElems = *maybeTotalTileElems;
+  if (!isXORShuffleValid(swizzle->rowElems, swizzle->accessElems,
+                         totalTileElems)) {
+    return failure();
+  }
+  return swizzle;
+}
+
+// Disabling clang-tidy for the following functions, as it will be externally
+// linked to the CAPI in a future PR.
+// NOLINTBEGIN(misc-use-internal-linkage)
+FailureOr<XorShuffleBounds>
+getXorShuffleBounds(IREE::Codegen::InnerTileDescAttrInterface intrinsic,
+                    int operandIndex) {
+  FailureOr<int64_t> maybeMinimumAccessElems =
+      getNumAccessElems(intrinsic, operandIndex);
+  FailureOr<int64_t> maybeTotalTileElems =
+      getTotalTileElems(intrinsic, operandIndex);
+  if (failed(maybeMinimumAccessElems) || failed(maybeTotalTileElems)) {
+    return failure();
+  }
+  return XorShuffleBounds{*maybeMinimumAccessElems, *maybeTotalTileElems};
+}
+
+bool isXORShuffleValid(int64_t numRowElems, int64_t numAccessElems,
+                       int64_t totalTileElems) {
+  // The number of total tile elements we want to swizzle must be greater than
+  // or equal to the number of elements in a row.
+  if (totalTileElems < numRowElems) {
+    LDBG()
+        << "The number of row elements exceed the total elements in the tile";
+    return false;
+  }
+  // We need at least one column of access elements to swizzle within a row.
+  if (numRowElems < numAccessElems) {
+    LDBG()
+        << "The number of access elements exceed the total elements in the row";
+    return false;
+  }
+  // The size of a row must evenly divide the total number of tile elements.
+  if (totalTileElems % numRowElems != 0) {
+    LDBG() << "The number of row elements does not evenly divide the total "
+              "elements in the tile";
+    return false;
+  }
+  // The number of access elements must evenly divide the number of row
+  // elements.
+  if (numRowElems % numAccessElems != 0) {
+    LDBG() << "The number of access elements does not evenly divide the number "
+              "of row elements";
+    return false;
+  }
+  // The number of columns in a row must evenly divide the total number of tile
+  // elements. This is to avoid incomplete rows at the end of the tile.
+  if (totalTileElems % (numRowElems / numAccessElems) != 0) {
+    LDBG() << "The number of columns in a row does not evenly divide the total "
+              "elements in the tile";
+    return false;
+  }
+  return true;
+}
+
+FailureOr<XorShuffleParams> getXorShuffleParamsForTunedChipset(
+    IREE::GPU::TargetAttr target,
+    IREE::Codegen::InnerTileDescAttrInterface intrinsic, int operandIndex) {
+  FailureOr<amdgpu::Chipset> maybeChipset =
+      amdgpu::Chipset::parse(target.getArch());
+  if (failed(maybeChipset)) {
+    return failure();
+  }
+  if (*maybeChipset == amdgpu::Chipset(9, 5, 0)) {
+    return validateXorShuffle(getXorShuffleParamsForGfx950(target, intrinsic),
+                              intrinsic, operandIndex);
+  }
+  return failure();
+}
+
+FailureOr<XorShuffleParams> getXorShuffleParamsForUntunedChipset(
+    IREE::GPU::TargetAttr target,
+    IREE::Codegen::InnerTileDescAttrInterface intrinsic,
+    ArrayRef<int64_t> reductionTileSizes, int operandIndex) {
+  // Compute XOR shuffle swizzle parameters for bank conflict avoidance.
+  // - rowElems: Select entirety of K Tile size, may not prevent bank
+  //              conflicts if the K tile size is too small.
+  // - accessElems: number of contiguous elements each thread accesses,
+  //                 derived from the MMA intrinsic's element layout.
+  int64_t numAccessElems = getNumAccessElems(intrinsic, operandIndex).value();
+
+  // Calculate K tile size (total K elements in shared memory) to use as row
+  // width. For small K tiles, this may not reduce bank conflicts effectively.
+  int64_t kTileSize =
+      llvm::product_of(reductionTileSizes) * getKSize(intrinsic).value();
+
+  // Figure out how many elements can fit across all banks of LDS.
+  IREE::GPU::TargetWgpAttr wgp = target.getWgp();
+  FailureOr<int64_t> bitwidth = getOperandBitwidth(intrinsic, operandIndex);
+  if (failed(bitwidth)) {
+    return failure();
+  }
+  std::optional<int64_t> workgroupMemoryBankCount =
+      wgp.getWorkgroupMemoryBankCount();
+  if (!workgroupMemoryBankCount.has_value()) {
+    return failure();
+  }
+  // Assuming each bank is 4 bytes wide (32 bits).
+  int64_t ldsBankWidthBits =
+      (workgroupMemoryBankCount.value() * int64_t(32)) / *bitwidth;
+
+  // Row width must be less than or equal to the row size (in elements) of LDS
+  // bank width to prevent bank conflicts.
+  int64_t effectiverowElems = std::min(ldsBankWidthBits, kTileSize);
+
+  // Ensure row width is at least access width (minimum 1 column).
+  effectiverowElems = std::max(effectiverowElems, numAccessElems);
+  return validateXorShuffle(XorShuffleParams({/*rowElems=*/effectiverowElems,
+                                              /*accessElems=*/numAccessElems}),
+                            intrinsic, operandIndex);
+}
+
+FailureOr<XorShuffleParams>
+getXorShuffleParams(IREE::GPU::TargetAttr target,
+                    IREE::Codegen::InnerTileDescAttrInterface intrinsic,
+                    ArrayRef<int64_t> reductionTileSizes, int operandIndex) {
+  FailureOr<XorShuffleParams> xorShuffleAttr =
+      getXorShuffleParamsForTunedChipset(target, intrinsic, operandIndex);
+  if (failed(xorShuffleAttr)) {
+    xorShuffleAttr = getXorShuffleParamsForUntunedChipset(
+        target, intrinsic, reductionTileSizes, operandIndex);
+  }
+  return xorShuffleAttr;
+}
+// NOLINTEND(misc-use-internal-linkage)
+
+FailureOr<Attribute>
+getXorShuffleAttr(MLIRContext *context, Attribute baseConfigAttr,
+                  IREE::GPU::TargetAttr target,
+                  IREE::Codegen::InnerTileDescAttrInterface intrinsic,
+                  ArrayRef<int64_t> reductionTileSizes, int operandIndex) {
+  FailureOr<XorShuffleParams> xorShuffleParams =
+      getXorShuffleParams(target, intrinsic, reductionTileSizes, operandIndex);
+  if (failed(xorShuffleParams)) {
+    return failure();
+  }
+  int64_t effectiverowElems = xorShuffleParams.value().rowElems;
+  int64_t numAccessElems = xorShuffleParams.value().accessElems;
+  auto swizzleAttr = IREE::Codegen::XORShuffleAttr::get(
+      context, effectiverowElems, numAccessElems,
+      /*row_stride=*/int64_t(0),
+      /*per_phase=*/int64_t(0));
+  return IREE::GPU::SwizzleOperandAttr::get(context, baseConfigAttr,
+                                            swizzleAttr);
+}
+
 //===----------------------------------------------------------------------===//
 // getMmaNativeVectorSize
 //===----------------------------------------------------------------------===//
@@ -729,12 +989,15 @@ std::optional<SmallVector<int64_t>> getWmmaNativeVectorSize(Operation *op) {
 static std::optional<int>
 getVectorContractOpOperandId(vector::ContractionOp contractOp,
                              OpResult result) {
-  if (contractOp.getLhs() == result)
+  if (contractOp.getLhs() == result) {
     return 0;
-  if (contractOp.getRhs() == result)
+  }
+  if (contractOp.getRhs() == result) {
     return 1;
-  if (contractOp.getAcc() == result)
+  }
+  if (contractOp.getAcc() == result) {
     return 2;
+  }
   return std::nullopt;
 }
 
@@ -747,24 +1010,30 @@ getVectorContractOpOperandIdForVectorReadOp(Operation *op) {
 
   // Check if the vector::TransferReadOp is consumed directly by
   // vector::ContractionOp.
-  if (op->use_empty())
+  if (op->use_empty()) {
     return std::nullopt;
+  }
   Operation *firstLevelUser = *((op->getUsers()).begin());
-  if (!firstLevelUser)
+  if (!firstLevelUser) {
     return std::nullopt;
-  if (auto contractOp = dyn_cast<vector::ContractionOp>(firstLevelUser))
+  }
+  if (auto contractOp = dyn_cast<vector::ContractionOp>(firstLevelUser)) {
     return getVectorContractOpOperandId(contractOp, op->getResult(0));
+  }
 
   // Check if the vector::TransferReadOp is consumed indirectly by
   // vector::ContractionOp. Only check until the second level of use-def chain.
-  if (firstLevelUser->use_empty())
+  if (firstLevelUser->use_empty()) {
     return std::nullopt;
+  }
   Operation *secondLevelUser = *((firstLevelUser->getUsers()).begin());
-  if (!secondLevelUser)
+  if (!secondLevelUser) {
     return std::nullopt;
-  if (auto contractOp = dyn_cast<vector::ContractionOp>(secondLevelUser))
+  }
+  if (auto contractOp = dyn_cast<vector::ContractionOp>(secondLevelUser)) {
     return getVectorContractOpOperandId(contractOp,
                                         firstLevelUser->getResult(0));
+  }
   return std::nullopt;
 }
 
@@ -780,15 +1049,15 @@ std::optional<SmallVector<int64_t>> getMmaNativeVectorSize(Operation *op) {
     Type sourceType = contract.getLhsType().getElementType();
 
     // Set mmaShapeK based on sourceType.
-    if (sourceType.isInteger(4))
+    if (sourceType.isInteger(4)) {
       mmaShapeK = 64;
-    else if (sourceType.isInteger(8))
+    } else if (sourceType.isInteger(8)) {
       mmaShapeK = 32;
-    else if (sourceType.isF16() || sourceType.isBF16())
+    } else if (sourceType.isF16() || sourceType.isBF16()) {
       mmaShapeK = 16;
-    else if (sourceType.isF32())
+    } else if (sourceType.isF32()) {
       mmaShapeK = 8;
-    else {
+    } else {
       LDBG() << "unsupported shape for vector.contract: ";
       return std::nullopt;
     }
@@ -803,8 +1072,9 @@ std::optional<SmallVector<int64_t>> getMmaNativeVectorSize(Operation *op) {
 
   // Shape of warp-level vector write operation.
   if (auto writeOp = dyn_cast<vector::TransferWriteOp>(op)) {
-    if (writeOp.getVectorType().getRank() < 2)
+    if (writeOp.getVectorType().getRank() < 2) {
       return std::nullopt;
+    }
     SmallVector<int64_t> outputShape(writeOp.getVectorType().getRank() - 2, 1);
     outputShape.append({mmaShapeM, mmaShapeN});
     LDBG() << "shape for vector.xfer_write: " << llvm::interleaved(outputShape);
@@ -892,11 +1162,13 @@ std::optional<SmallVector<int64_t>> getMmaNativeVectorSize(Operation *op) {
         VectorType sliceType;
         for (Operation *users : op->getUsers()) {
           auto extract = dyn_cast<vector::ExtractStridedSliceOp>(users);
-          if (!extract)
+          if (!extract) {
             return std::nullopt;
+          }
           auto vecType = cast<VectorType>(extract.getResult().getType());
-          if (sliceType && sliceType != vecType)
+          if (sliceType && sliceType != vecType) {
             return std::nullopt;
+          }
           sliceType = vecType;
         }
         LDBG() << "shape for vector.xfer_read: "
@@ -911,19 +1183,24 @@ std::optional<SmallVector<int64_t>> getMmaNativeVectorSize(Operation *op) {
 
 bool hasGlobalMemoryAddressSpace(MemRefType memrefType) {
   Attribute addrSpace = memrefType.getMemorySpace();
-  if (!addrSpace)
+  if (!addrSpace) {
     return true;
+  }
   auto intAttr = dyn_cast<IntegerAttr>(addrSpace);
   // Accept both default numeric address space and HAL descriptor type address
   // space--the former is used by LLVMGPU while the latter is used by SPIR-V.
-  if (intAttr && intAttr.getInt() == 0)
+  if (intAttr && intAttr.getInt() == 0) {
     return true;
+  }
   auto gpuAttr = dyn_cast<gpu::AddressSpaceAttr>(addrSpace);
-  if (gpuAttr && gpuAttr.getValue() == gpu::AddressSpace::Global)
+  if (gpuAttr && gpuAttr.getValue() == gpu::AddressSpace::Global) {
     return true;
+  }
   auto amdgpuAttr = dyn_cast<amdgpu::AddressSpaceAttr>(addrSpace);
-  if (amdgpuAttr && amdgpuAttr.getValue() == amdgpu::AddressSpace::FatRawBuffer)
+  if (amdgpuAttr &&
+      amdgpuAttr.getValue() == amdgpu::AddressSpace::FatRawBuffer) {
     return true;
+  }
   return isa<IREE::HAL::DescriptorTypeAttr>(addrSpace);
 }
 
@@ -970,8 +1247,9 @@ bool sharedMemTransposeFilter(AffineMap indexMap) {
 //===----------------------------------------------------------------------===//
 
 IREE::GPU::TargetAttr getCLGPUTarget(MLIRContext *context) {
-  if (clTestTarget.empty())
+  if (clTestTarget.empty()) {
     return nullptr;
+  }
 
   auto [archAndFeatures, backend] = StringRef(clTestTarget).split("@");
   if (backend.empty()) {
@@ -979,16 +1257,17 @@ IREE::GPU::TargetAttr getCLGPUTarget(MLIRContext *context) {
     // for cases like "ampere" which can be accepted by both CUDA and Vulkan;
     // it's very limited. So it's targeting common cases to make writing tests
     // simpler.
-    if (StringRef(clTestTarget).starts_with("sm_"))
+    if (StringRef(clTestTarget).starts_with("sm_")) {
       backend = "cuda";
-    else if (StringRef(clTestTarget).starts_with("gfx"))
+    } else if (StringRef(clTestTarget).starts_with("gfx")) {
       backend = "hip";
-    else if (StringRef(clTestTarget).starts_with("adreno"))
+    } else if (StringRef(clTestTarget).starts_with("adreno")) {
       backend = "vulkan";
-    else if (StringRef(clTestTarget).starts_with("apple"))
+    } else if (StringRef(clTestTarget).starts_with("apple")) {
       backend = "vulkan";
-    else if (StringRef(clTestTarget).starts_with("valhall"))
+    } else if (StringRef(clTestTarget).starts_with("valhall")) {
       backend = "vulkan";
+    }
   }
   auto [arch, features] = StringRef(archAndFeatures).split(':');
   // Use the target specified in the command line for testing purposes.
@@ -1041,11 +1320,13 @@ void addConfigWavesPerEu(MLIRContext *context, int64_t wavesPerEu,
 std::optional<int> getGPUSubgroupSize(mlir::FunctionOpInterface func) {
   // First try to see if there is a subgroup size chosen in the CodeGen pipeline
   // configuration.
-  if (std::optional<int64_t> subgroupSize = getSubgroupSize(func))
+  if (std::optional<int64_t> subgroupSize = getSubgroupSize(func)) {
     return subgroupSize.value();
+  }
   // Then try to find the subgroup size from the target description.
-  if (IREE::GPU::TargetAttr target = getGPUTargetAttr(func))
+  if (IREE::GPU::TargetAttr target = getGPUTargetAttr(func)) {
     return target.getPreferredSubgroupSize();
+  }
   return std::nullopt;
 }
 

@@ -54,7 +54,7 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 struct DispatchTensorLoadOpInterface
-    : public BufferizableOpInterface::ExternalModel<
+    : BufferizableOpInterface::ExternalModel<
           DispatchTensorLoadOpInterface,
           IREE::TensorExt::DispatchTensorLoadOp> {
   bool isWritable(Operation *op, Value value,
@@ -100,7 +100,7 @@ struct DispatchTensorLoadOpInterface
 };
 
 struct DispatchTensorStoreOpInterface
-    : public BufferizableOpInterface::ExternalModel<
+    : BufferizableOpInterface::ExternalModel<
           DispatchTensorStoreOpInterface,
           IREE::TensorExt::DispatchTensorStoreOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
@@ -149,15 +149,17 @@ struct DispatchTensorStoreOpInterface
 
     auto maybeBuffer =
         getBuffer(rewriter, storeOp->getOpOperand(0).get(), options, state);
-    if (failed(maybeBuffer))
+    if (failed(maybeBuffer)) {
       return failure();
+    }
     Value srcMemref = *maybeBuffer;
 
     // If everything bufferized inplace, no copy is needed. We wrote to the
     // target buffer already. The copy folds away in that case.
     if (failed(options.createMemCpy(rewriter, storeOp->getLoc(), srcMemref,
-                                    target)))
+                                    target))) {
       return failure();
+    }
 
     rewriter.eraseOp(storeOp);
     return success();
@@ -165,8 +167,8 @@ struct DispatchTensorStoreOpInterface
 };
 
 struct LoadFromBufferOpInterface
-    : public BufferizableOpInterface::ExternalModel<
-          LoadFromBufferOpInterface, IREE::Codegen::LoadFromBufferOp> {
+    : BufferizableOpInterface::ExternalModel<LoadFromBufferOpInterface,
+                                             IREE::Codegen::LoadFromBufferOp> {
   bool isWritable(Operation *op, Value value,
                   const AnalysisState &state) const {
     // Search for a hal.interface.binding.subspan op that is the source of the
@@ -176,8 +178,9 @@ struct LoadFromBufferOpInterface
         getSourceSubspanMemref(
             cast<TypedValue<MemRefType>>(loadFromBufferOp.getBuffer()));
     // Conservatively return false if the subspan is not found.
-    if (!subspanOp)
+    if (!subspanOp) {
       return false;
+    }
     std::optional<IREE::HAL::DescriptorFlags> descriptorFlags =
         subspanOp->getDescriptorFlags();
     return !descriptorFlags.has_value() ||
@@ -195,8 +198,8 @@ struct LoadFromBufferOpInterface
 };
 
 struct StoreToBufferOpInterface
-    : public BufferizableOpInterface::ExternalModel<
-          StoreToBufferOpInterface, IREE::Codegen::StoreToBufferOp> {
+    : BufferizableOpInterface::ExternalModel<StoreToBufferOpInterface,
+                                             IREE::Codegen::StoreToBufferOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
     return true;
@@ -219,15 +222,17 @@ struct StoreToBufferOpInterface
     auto storeOp = cast<IREE::Codegen::StoreToBufferOp>(op);
     FailureOr<Value> maybeBuffer =
         getBuffer(rewriter, storeOp.getTensor(), options, state);
-    if (failed(maybeBuffer))
+    if (failed(maybeBuffer)) {
       return failure();
+    }
     Value srcMemref = *maybeBuffer;
 
     // If everything bufferized inplace, no copy is needed. We wrote to the
     // target buffer already. The copy folds away in that case.
     if (failed(options.createMemCpy(rewriter, storeOp.getLoc(), srcMemref,
-                                    storeOp.getBuffer())))
+                                    storeOp.getBuffer()))) {
       return failure();
+    }
 
     rewriter.eraseOp(storeOp);
     return success();
@@ -285,13 +290,9 @@ static LogicalResult bufferizeLinalgExtOp(RewriterBase &rewriter,
   rewriter.setInsertionPoint(op);
 
   // Nothing to do. This op is already bufferized.
-  if (dspOp.hasPureBufferSemantics())
+  if (dspOp.hasPureBufferSemantics()) {
     return success();
-
-  // Ensure op has only tensors. Allow mixed tensor-buffer mode on a per-need
-  // basis.
-  if (!dspOp.hasPureTensorSemantics())
-    return op->emitError() << "op does not have tensor semantics";
+  }
 
   // New input operands for the cloned op.
   SmallVector<Value> newOperands, newOutputBuffers;
@@ -303,10 +304,16 @@ static LogicalResult bufferizeLinalgExtOp(RewriterBase &rewriter,
       newOperands.push_back(opOperand.get());
       continue;
     }
+    // Skip operands that are already memrefs (mixed tensor-buffer semantics).
+    if (isa<MemRefType>(opOperand.get().getType())) {
+      newOperands.push_back(opOperand.get());
+      continue;
+    }
     if (!dspOp.isDpsInit(&opOperand)) {
       auto maybeBuffer = getBuffer(rewriter, opOperand.get(), options, state);
-      if (failed(maybeBuffer))
+      if (failed(maybeBuffer)) {
         return failure();
+      }
       // Input operands are never written to.
       newOperands.push_back(*maybeBuffer);
       continue;
@@ -319,8 +326,9 @@ static LogicalResult bufferizeLinalgExtOp(RewriterBase &rewriter,
     FailureOr<Value> resultBuffer = getBuffer(
         rewriter, aliasingOpOperands.getAliases().front().opOperand->get(),
         options, state);
-    if (failed(resultBuffer))
+    if (failed(resultBuffer)) {
       return failure();
+    }
     newOperands.push_back(*resultBuffer);
     newOutputBuffers.push_back(*resultBuffer);
   }
@@ -348,7 +356,7 @@ static LogicalResult bufferizeLinalgExtOp(RewriterBase &rewriter,
 /// a new op that operates entirely on memrefs.
 template <typename OpTy>
 struct LinalgExtOpInterface
-    : public bufferization::DstBufferizableOpInterfaceExternalModel<
+    : bufferization::DstBufferizableOpInterfaceExternalModel<
           LinalgExtOpInterface<OpTy>, OpTy> {
 
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
@@ -375,155 +383,9 @@ struct LinalgExtOpInterfaceHelper {
   }
 };
 
-/// Returns the buffers of the source and destination for pack and unpack ops.
-/// Returns a failure if the buffers can not be found.
-template <typename OpTy>
-static FailureOr<std::pair<Value, Value>>
-getSourceAndDestFromPackUnPackOp(RewriterBase &rewriter, OpTy op,
-                                 const BufferizationOptions &options,
-                                 const BufferizationState &state) {
-  static_assert(llvm::is_one_of<OpTy, linalg::PackOp, linalg::UnPackOp>::value);
-  Value source;
-  auto maybeBuffer = getBuffer(rewriter, op.getSource(), options, state);
-  if (failed(maybeBuffer))
-    return failure();
-  source = *maybeBuffer;
-
-  Value dest;
-  AnalysisState analysisState(options);
-  AliasingOpOperandList aliasingOpOperands =
-      analysisState.getAliasingOpOperands(op->getOpResult(0));
-  assert(aliasingOpOperands.getNumAliases() == 1 && "expected 1 OpOperand");
-  FailureOr<Value> resultBuffer = getBuffer(
-      rewriter, aliasingOpOperands.getAliases().front().opOperand->get(),
-      options, state);
-  if (failed(resultBuffer))
-    return failure();
-  dest = *resultBuffer;
-  return std::make_pair(source, dest);
-}
-
-static LogicalResult bufferizePackOp(RewriterBase &rewriter, linalg::PackOp op,
-                                     const BufferizationOptions &options,
-                                     const BufferizationState &state) {
-  // Take a guard before anything else.
-  OpBuilder::InsertionGuard g(rewriter);
-  rewriter.setInsertionPoint(op);
-
-  auto maybeSrcAndDest =
-      getSourceAndDestFromPackUnPackOp(rewriter, op, options, state);
-  if (failed(maybeSrcAndDest))
-    return failure();
-  auto [source, dest] = *maybeSrcAndDest;
-
-  // Set insertion point now that potential alloc/dealloc are introduced.
-  rewriter.setInsertionPoint(op);
-  IREE::LinalgExt::PackOp::create(rewriter, op.getLoc(), source, dest,
-                                  op.getInnerDimsPos(), op.getMixedTiles(),
-                                  op.getPaddingValue(), op.getOuterDimsPerm());
-
-  // Replace the results of the old op with the new output buffers.
-  bufferization::replaceOpWithBufferizedValues(rewriter, op, dest);
-
-  return success();
-}
-
-static LogicalResult bufferizeUnPackOp(RewriterBase &rewriter,
-                                       linalg::UnPackOp op,
-                                       const BufferizationOptions &options,
-                                       const BufferizationState &state) {
-  // Take a guard before anything else.
-  OpBuilder::InsertionGuard g(rewriter);
-  rewriter.setInsertionPoint(op);
-
-  auto maybeSrcAndDest =
-      getSourceAndDestFromPackUnPackOp(rewriter, op, options, state);
-  if (failed(maybeSrcAndDest))
-    return failure();
-  auto [source, dest] = *maybeSrcAndDest;
-
-  // Set insertion point now that potential alloc/dealloc are introduced.
-  rewriter.setInsertionPoint(op);
-  IREE::LinalgExt::UnPackOp::create(rewriter, op.getLoc(), source, dest,
-                                    op.getInnerDimsPos(), op.getMixedTiles(),
-                                    op.getOuterDimsPerm());
-
-  // Replace the results of the old op with the new output buffers.
-  bufferization::replaceOpWithBufferizedValues(rewriter, op, dest);
-
-  return success();
-}
-
-template <typename OpTy>
-struct PackUnPackOpInterface
-    : public BufferizableOpInterface::ExternalModel<PackUnPackOpInterface<OpTy>,
-                                                    OpTy> {
-  bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
-                              const AnalysisState &state) const {
-    return true;
-  }
-
-  bool bufferizesToMemoryWrite(Operation *op, OpOperand &opOperand,
-                               const AnalysisState &state) const {
-    // Operand is written to if it has an aliasing OpResult.
-    auto dpsOp = cast<DestinationStyleOpInterface>(op);
-    return dpsOp.isDpsInit(&opOperand);
-  }
-
-  SmallVector<OpOperand *>
-  getAliasingOpOperand(Operation *op, OpResult opResult,
-                       const AnalysisState &state) const {
-    auto dpsOp = cast<DestinationStyleOpInterface>(op);
-    return {dpsOp.getDpsInitOperand(opResult.getResultNumber())};
-  }
-
-  SmallVector<OpResult> getAliasingValue(Operation *op, OpOperand &opOperand,
-                                         const AnalysisState &state) const {
-    auto dspOp = cast<DestinationStyleOpInterface>(op);
-
-    // The i-th "out" tensor may alias with the i-th OpResult.
-    if (dspOp.isDpsInit(&opOperand))
-      return {dspOp.getTiedOpResult(&opOperand)};
-    return {};
-  }
-
-  bufferization::AliasingValueList
-  getAliasingValues(Operation *op, OpOperand &opOperand,
-                    const AnalysisState &state) const {
-    auto dspOp = cast<DestinationStyleOpInterface>(op);
-
-    // The i-th "out" tensor may alias with the i-th OpResult.
-    if (dspOp.isDpsInit(&opOperand))
-      return {AliasingValue(dspOp.getTiedOpResult(&opOperand),
-                            BufferRelation::Equivalent,
-                            /*isDefinite=*/false)};
-    return {};
-  }
-
-  bufferization::BufferRelation
-  bufferRelation(Operation *op, OpResult opResult,
-                 const AnalysisState &state) const {
-    return bufferization::BufferRelation::Equivalent;
-  }
-
-  LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options,
-                          bufferization::BufferizationState &state) const {
-    return TypeSwitch<Operation *, LogicalResult>(op)
-        .template Case<linalg::PackOp>([&](auto pack) {
-          return bufferizePackOp(rewriter, pack, options, state);
-        })
-        .template Case<linalg::UnPackOp>([&](auto unpack) {
-          return bufferizeUnPackOp(rewriter, unpack, options, state);
-        })
-        .Default([](auto) { return failure(); });
-  }
-};
-
 struct DispatchTensorLoadOpSubsetInterface
-    : public SubsetOpInterface::ExternalModel<
-          DispatchTensorLoadOpSubsetInterface,
-          IREE::TensorExt::DispatchTensorLoadOp> {
+    : SubsetOpInterface::ExternalModel<DispatchTensorLoadOpSubsetInterface,
+                                       IREE::TensorExt::DispatchTensorLoadOp> {
   bool operatesOnEquivalentSubset(
       Operation *op, SubsetOpInterface candidate,
       function_ref<bool(Value, Value)> equivalenceFn) const {
@@ -531,8 +393,9 @@ struct DispatchTensorLoadOpSubsetInterface
     // DispatchTensorStoreOp result that bufferizes inplace.
     auto loadOp = cast<IREE::TensorExt::DispatchTensorLoadOp>(op);
     auto storeOp = dyn_cast<IREE::TensorExt::DispatchTensorStoreOp>(op);
-    if (!storeOp)
+    if (!storeOp) {
       return false;
+    }
     return equivalenceFn(loadOp.getSource(), storeOp.getTarget());
   }
 
@@ -545,9 +408,8 @@ struct DispatchTensorLoadOpSubsetInterface
 };
 
 struct DispatchTensorStoreOpSubsetInterface
-    : public SubsetOpInterface::ExternalModel<
-          DispatchTensorStoreOpSubsetInterface,
-          IREE::TensorExt::DispatchTensorStoreOp> {
+    : SubsetOpInterface::ExternalModel<DispatchTensorStoreOpSubsetInterface,
+                                       IREE::TensorExt::DispatchTensorStoreOp> {
 
   bool operatesOnEquivalentSubset(
       Operation *op, SubsetOpInterface candidate,
@@ -556,8 +418,9 @@ struct DispatchTensorStoreOpSubsetInterface
     // DispatchTensorLoadOp result that bufferizes inplace.
     auto storeOp = cast<IREE::TensorExt::DispatchTensorStoreOp>(op);
     auto loadOp = dyn_cast<IREE::TensorExt::DispatchTensorLoadOp>(op);
-    if (!loadOp)
+    if (!loadOp) {
       return false;
+    }
     return equivalenceFn(loadOp.getSource(), storeOp.getTarget());
   }
 
@@ -570,7 +433,7 @@ struct DispatchTensorStoreOpSubsetInterface
 };
 
 struct DispatchTensorStoreOpSubsetInsertionInterface
-    : public SubsetInsertionOpInterface::ExternalModel<
+    : SubsetInsertionOpInterface::ExternalModel<
           DispatchTensorStoreOpSubsetInsertionInterface,
           IREE::TensorExt::DispatchTensorStoreOp> {
 
@@ -610,8 +473,8 @@ struct DispatchTensorStoreOpSubsetInsertionInterface
 };
 
 struct LoadFromBufferOpSubsetInterface
-    : public SubsetOpInterface::ExternalModel<LoadFromBufferOpSubsetInterface,
-                                              IREE::Codegen::LoadFromBufferOp> {
+    : SubsetOpInterface::ExternalModel<LoadFromBufferOpSubsetInterface,
+                                       IREE::Codegen::LoadFromBufferOp> {
   bool operatesOnEquivalentSubset(
       Operation *op, SubsetOpInterface candidate,
       function_ref<bool(Value, Value)> equivalenceFn) const {
@@ -635,8 +498,8 @@ struct LoadFromBufferOpSubsetInterface
 };
 
 struct StoreToBufferOpSubsetInterface
-    : public SubsetOpInterface::ExternalModel<StoreToBufferOpSubsetInterface,
-                                              IREE::Codegen::StoreToBufferOp> {
+    : SubsetOpInterface::ExternalModel<StoreToBufferOpSubsetInterface,
+                                       IREE::Codegen::StoreToBufferOp> {
 
   bool operatesOnEquivalentSubset(
       Operation *op, SubsetOpInterface candidate,
@@ -663,7 +526,7 @@ struct StoreToBufferOpSubsetInterface
 };
 
 struct StoreToBufferOpSubsetInsertionInterface
-    : public SubsetInsertionOpInterface::ExternalModel<
+    : SubsetInsertionOpInterface::ExternalModel<
           StoreToBufferOpSubsetInsertionInterface,
           IREE::Codegen::StoreToBufferOp> {
 
@@ -737,13 +600,6 @@ void registerBufferizationInterfaces(DialectRegistry &registry) {
 #include "iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.cpp.inc"
             >::registerOpInterface(ctx);
       });
-  registry.insert<linalg::LinalgDialect>();
-  registry.addExtension(+[](MLIRContext *ctx, linalg::LinalgDialect *dialect) {
-    linalg::PackOp::attachInterface<PackUnPackOpInterface<linalg::PackOp>>(
-        *ctx);
-    linalg::UnPackOp::attachInterface<PackUnPackOpInterface<linalg::UnPackOp>>(
-        *ctx);
-  });
 }
 
 } // namespace mlir::iree_compiler

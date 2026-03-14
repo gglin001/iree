@@ -59,6 +59,7 @@ iree_cc_library(
     iree::compiler::Codegen::Dialect::VectorExt::IR::IREEVectorExtDialect
     iree::compiler::Codegen::LLVMCPU
     iree::compiler::Codegen::Utils
+    iree::compiler::Codegen::Utils::CodegenOptions
     iree::compiler::Dialect::Encoding::IR
     iree::compiler::Dialect::HAL::Target
     iree::compiler::Dialect::HAL::Target::Devices
@@ -196,7 +197,7 @@ endfunction()
 
 # This is just the CPU backends that we hard-link to. Single-target backends
 # like CUDA and ROCM bring their dependencies explicitly.
-# TODO: More archaeology and tieing this to explicit top-level configuration
+# TODO: More archaeology and tying this to explicit top-level configuration
 # of backends.
 _add_optional_llvm_target_deps(AArch64)
 _add_optional_llvm_target_deps(ARM)

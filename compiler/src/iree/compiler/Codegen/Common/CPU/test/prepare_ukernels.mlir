@@ -55,7 +55,7 @@ func.func @do_not_decompose_batch_mmt4d(%arg0: tensor<1x10x32x8x1xf32>, %arg1: t
 
 // -----
 
-func.func @batch_mmt4d_with_extened_inputs(%arg0: tensor<1x10x32x8x1xi8>, %arg1: tensor<1x80x32x4x1xi8>, %arg2: tensor<1x10x80x8x4xi32>) -> tensor<1x10x80x8x4xi32> attributes {
+func.func @batch_mmt4d_with_extended_inputs(%arg0: tensor<1x10x32x8x1xi8>, %arg1: tensor<1x80x32x4x1xi8>, %arg2: tensor<1x10x80x8x4xi32>) -> tensor<1x10x80x8x4xi32> attributes {
   hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {ukernels = "mmt4d", target_triple="x86_64-xyz-xyz", cpu_features=""}>
 } {
   %c0_i32 = arith.constant 0 : i32
@@ -83,7 +83,7 @@ func.func @batch_mmt4d_with_extened_inputs(%arg0: tensor<1x10x32x8x1xi8>, %arg1:
 }
 
 // CHECK:      #[[MAP:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
-// CHECK:      func.func @batch_mmt4d_with_extened_inputs
+// CHECK:      func.func @batch_mmt4d_with_extended_inputs
 // CHECK-SAME:   %[[LHS:.+]]: tensor<1x10x32x8x1xi8>,
 // CHECK-SAME:   %[[RHS:.+]]: tensor<1x80x32x4x1xi8>,
 // CHECK-SAME:   %[[OUT:.+]]: tensor<1x10x80x8x4xi32>
@@ -157,7 +157,6 @@ func.func @batch_mmt4d_with_cpu_lowering_config(%arg0: tensor<12x4x64x8x1xf16>, 
 func.func @pack_without_outer_dims_perm(%arg0: tensor<1x16384x512xbf16>, %arg1: tensor<1x1024x256x16x2xbf16>) -> tensor<1x1024x256x16x2xbf16> attributes {
   hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {ukernels = "pack", target_triple="x86_64-xyz-xyz", cpu_features=""}>
 } {
-  %cst = arith.constant 0.000000e+00 : bf16
   %pack = linalg.pack %arg0 inner_dims_pos = [1, 2] inner_tiles = [16, 2] into %arg1 : tensor<1x16384x512xbf16> -> tensor<1x1024x256x16x2xbf16>
   return %pack : tensor<1x1024x256x16x2xbf16>
 }
@@ -201,7 +200,6 @@ func.func @pack_with_outer_dims_perm(%arg0: tensor<484x16x64xbf16>, %arg1: tenso
 func.func @do_not_decompose_pack(%arg0: tensor<1x16384x512xbf16>, %arg1: tensor<1x1024x256x16x2xbf16>) -> tensor<1x1024x256x16x2xbf16> attributes {
   hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {ukernels = "", target_triple="x86_64-xyz-xyz", cpu_features=""}>
 } {
-  %cst = arith.constant 0.000000e+00 : bf16
   %pack = linalg.pack %arg0 inner_dims_pos = [1, 2] inner_tiles = [16, 2] into %arg1 : tensor<1x16384x512xbf16> -> tensor<1x1024x256x16x2xbf16>
   return %pack : tensor<1x1024x256x16x2xbf16>
 }
@@ -248,7 +246,6 @@ func.func @unpack_without_transpose(%arg0: tensor<1828x8x64x16x16xf32>) -> tenso
 func.func @unpack_outer_dim_transpose(%arg0: tensor<4x8x29241x16x16xf32>) -> tensor<29241x128x64xf32> attributes {
   hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {ukernels = "unpack", target_triple="x86_64-xyz-xyz", cpu_features=""}>
 } {
-  %cst = arith.constant 0.000000e+00 : bf16
   %4 = tensor.empty() : tensor<29241x128x64xf32>
   %unpack = linalg.unpack %arg0 outer_dims_perm = [2, 1, 0] inner_dims_pos = [1, 2] inner_tiles = [16, 16] into %4 : tensor<4x8x29241x16x16xf32> -> tensor<29241x128x64xf32>
   return %unpack : tensor<29241x128x64xf32>

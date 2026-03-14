@@ -37,7 +37,8 @@ func.func @dynamic_bound_alloc(%id : index) {
   return
 }
 // CHECK-LABEL: func @dynamic_bound_alloc(
-//       CHECK:   memref.alloc() : memref<4088xf32, 3>
+//       CHECK:   %[[ALLOC:.+]] = memref.alloc() : memref<4088xf32, 3>
+//       CHECK:   memref.subview %[[ALLOC]][0] [%{{.+}}] [1] : memref<4088xf32, 3> to memref<?xf32, strided<[1]>, 3>
 
 // -----
 
@@ -47,7 +48,8 @@ func.func @dynamic_bound_alloca(%id : index) {
   return
 }
 // CHECK-LABEL: func @dynamic_bound_alloca(
-//       CHECK:   memref.alloca() : memref<4088xf32, 3>
+//       CHECK:   %[[ALLOCA:.+]] = memref.alloca() : memref<4088xf32, 3>
+//       CHECK:   memref.subview %[[ALLOCA]][0] [%{{.+}}] [1] : memref<4088xf32, 3> to memref<?xf32, strided<[1]>, 3>
 
 // -----
 
@@ -55,15 +57,15 @@ func.func @dynamic_alloc_collapse_consumer(%id : index) {
   %c0 = arith.constant 0 : index
   %cst = arith.constant 0.000000e+00 : f32
   %0 = util.assume.int %id<umin = 0, umax =  32> : index
-  %1 = memref.alloc(%0, %0) : memref<?x?xf32, 3>
-  %2 = memref.collapse_shape %1 [[0, 1]] : memref<?x?xf32, 3> into memref<?xf32, 3>
+  %1 = memref.alloc(%0) : memref<?x32xf32, 3>
+  %2 = memref.collapse_shape %1 [[0, 1]] : memref<?x32xf32, 3> into memref<?xf32, 3>
   memref.store %cst, %2[%c0] : memref<?xf32, 3>
   return
 }
 // CHECK-LABEL: func @dynamic_alloc_collapse_consumer(
 //       CHECK:   %[[ALLOC:.+]] = memref.alloc() : memref<32x32xf32, 3>
 //       CHECK:   %[[SUBVIEW:.+]] = memref.subview %[[ALLOC]]
-//  CHECK-SAME:     [0, 0] [{{.*}}] [1, 1] : memref<32x32xf32, 3> to memref<?x?xf32, strided<[32, 1]>, 3>
+//  CHECK-SAME:     [0, 0] [{{.*}}] [1, 1] : memref<32x32xf32, 3> to memref<?x32xf32, strided<[32, 1]>, 3>
 //       CHECK:   %[[COLLAPSE:.+]] = memref.collapse_shape %[[SUBVIEW]] {{\[}}[0, 1]]
-//  CHECK-SAME:     : memref<?x?xf32, strided<[32, 1]>, 3> into memref<?xf32, strided<[?]>, 3>
-//       CHECK:   memref.store {{.*}} %[[COLLAPSE]]{{.*}} : memref<?xf32, strided<[?]>, 3>
+//  CHECK-SAME:     : memref<?x32xf32, strided<[32, 1]>, 3> into memref<?xf32, strided<[1]>, 3>
+//       CHECK:   memref.store {{.*}} %[[COLLAPSE]]{{.*}} : memref<?xf32, strided<[1]>, 3>

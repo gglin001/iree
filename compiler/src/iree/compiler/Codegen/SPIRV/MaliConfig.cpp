@@ -45,19 +45,21 @@ LogicalResult setMaliCodeGenConfig(IREE::GPU::TargetAttr target,
   const int subgroupSize = target.getPreferredSubgroupSize();
 
   if (auto linalgOp = dyn_cast<linalg::LinalgOp>(rootOp)) {
-    if (isMatmulOrBatchMatmul(linalgOp))
+    if (isMatmulOrBatchMatmul(linalgOp)) {
       return setMaliMatmulConfig(linalgOp, target);
+    }
   }
 
   if (auto convOp = dyn_cast<linalg::ConvolutionOpInterface>(rootOp)) {
     // Use the result type in case of larger bitwidth for accumulators.
     auto type = cast<ShapedType>(convOp->getResult(0).getType());
     const int bitwidth = type.getElementTypeBitWidth();
-    if (bitwidth > 32)
+    if (bitwidth > 32) {
       return failure();
-    const int multipler = 32 / bitwidth;
+    }
+    const int multiplier = 32 / bitwidth;
     bool hasPaddedInput = convOp.image().getDefiningOp<tensor::PadOp>();
-    const int bestTilingFactor = (hasPaddedInput ? 8 : 16) * multipler;
+    const int bestTilingFactor = (hasPaddedInput ? 8 : 16) * multiplier;
     return setConvOpConfig(cast<linalg::LinalgOp>(rootOp), subgroupSize,
                            bestTilingFactor);
   }

@@ -180,6 +180,11 @@ macro(iree_llvm_set_bundled_cmake_options)
   # that in IREE as a super-project.
   set(MLIR_DISABLE_CONFIGURE_PYTHON_DEV_PACKAGES ON CACHE BOOL "" FORCE)
 
+  # Enable reverse iteration over LLVM unordered maps/sets.
+  if(IREE_REVERSE_ITERATION)
+    set(LLVM_ENABLE_REVERSE_ITERATION ON CACHE BOOL "" FORCE)
+  endif()
+
   # If we are building clang/lld/etc, these will be the targets.
   # Otherwise, empty so scripts can detect unavailability.
   set(IREE_CLANG_TARGET)
@@ -254,6 +259,10 @@ macro(iree_llvm_set_bundled_cmake_options)
     list(APPEND LLVM_ENABLE_PROJECTS lld)
   endif()
 
+  if(IREE_BUILD_CLANG_TOOLS_EXTRA)
+    list(APPEND LLVM_ENABLE_PROJECTS clang-tools-extra)
+  endif()
+
   list(REMOVE_DUPLICATES LLVM_ENABLE_PROJECTS)
   list(REMOVE_DUPLICATES LLVM_TARGETS_TO_BUILD)
 
@@ -291,6 +300,12 @@ function(iree_llvm_add_external_project name location)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
     endif()
   endif()
+
+  # Disable PCH for external projects (llvm/llvm-project@b82c7fc65229).
+  # External projects live in a separate binary dir from LLVM, so CMake cannot
+  # resolve the LLVMSupport PCH path for targets that try to reuse it.
+  # Function scope ensures this doesn't affect LLVM/MLIR's own PCH.
+  set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
 
   add_subdirectory(${location} "llvm-external-projects/${name}" EXCLUDE_FROM_ALL)
 endfunction()

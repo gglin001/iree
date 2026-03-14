@@ -16,6 +16,8 @@ iree_lit_test_suite(
   SRCS
     "async_folding.mlir"
     "async_ops.mlir"
+    "async_parameter_folding.mlir"
+    "async_parameter_ops.mlir"
     "channel_folding.mlir"
     "channel_ops.mlir"
     "cmd_folding.mlir"
@@ -29,6 +31,7 @@ iree_lit_test_suite(
     "resource_ops.mlir"
     "tensor_folding.mlir"
     "tensor_ops.mlir"
+    "tensor_parameter_ops.mlir"
     "timepoint_folding.mlir"
     "timepoint_ops.mlir"
   TOOLS

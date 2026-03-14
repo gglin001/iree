@@ -161,7 +161,7 @@ namespace {
 
 // Folds subspan ranges into dispatch resource ranges.
 struct FoldBindingSubspansIntoDispatchOp
-    : public OpRewritePattern<ExecutableDispatchOp> {
+    : OpRewritePattern<ExecutableDispatchOp> {
   using Base::Base;
   LogicalResult matchAndRewrite(ExecutableDispatchOp op,
                                 PatternRewriter &rewriter) const override {
@@ -187,8 +187,9 @@ struct FoldBindingSubspansIntoDispatchOp
       bindingBuffers.push_back(subspanOp.getSource());
       bindingOffsets.push_back(newOffset);
     }
-    if (!didChangeAny)
+    if (!didChangeAny) {
       return failure();
+    }
     rewriter.modifyOpInPlace(op, [&]() {
       op.getBindingBuffersMutable().assign(bindingBuffers);
       op.getBindingOffsetsMutable().assign(bindingOffsets);

@@ -12,6 +12,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -57,6 +58,7 @@ struct WgpDetails {
   std::optional<int32_t> simdsPerWgp;
   std::optional<int32_t> vgprSpaceBits;
   std::optional<ArrayRef<int64_t>> dmaSizes;
+  std::optional<int32_t> workgroupMemoryBankCount;
 };
 
 // Chip level feature/limit details
@@ -110,8 +112,9 @@ TargetAttr createTargetAttr(const TargetDetails &details, StringRef arch,
 
   SmallVector<MMAAttr, 8> mmaAttrs;
   mmaAttrs.reserve(wgp->mmaCount);
-  for (int i = 0; i < wgp->mmaCount; ++i)
+  for (int i = 0; i < wgp->mmaCount; ++i) {
     mmaAttrs.push_back(MMAAttr::get(context, wgp->mmaOps[i]));
+  }
 
   SmallVector<ScaledMMAAttr, 8> scaledMmaAttrs;
   scaledMmaAttrs.reserve(wgp->scaledMmaCount);
@@ -149,7 +152,7 @@ TargetAttr createTargetAttr(const TargetDetails &details, StringRef arch,
       wgp->maxThreadSize, wgp->maxWorkgroupMemoryBytes,
       DenseI32ArrayAttr::get(context, wgp->maxWorkgroupCounts),
       wgp->maxLoadInstructionBits, wgp->simdsPerWgp, wgp->vgprSpaceBits,
-      dmaSizesAttr, DictionaryAttr{});
+      dmaSizesAttr, wgp->workgroupMemoryBankCount, DictionaryAttr{});
 
   TargetChipAttr targetChip;
   if (details.chip) {
@@ -251,7 +254,8 @@ const WgpDetails *getCDNA4WgpDetails() {
       /*maxLoadInstructionBits=*/128,
       /*simdsPerWgp=*/4,
       /*vgprSpaceBits=*/512 * 32,
-      /*dmaSizes=*/ArrayRef<int64_t>(cdna4DMASizes)};
+      /*dmaSizes=*/ArrayRef<int64_t>(cdna4DMASizes),
+      /*workgroupMemoryBankCount=*/64};
   return &cdna4Wgp;
 }
 
@@ -296,7 +300,8 @@ const WgpDetails *getCDNA3WgpDetails() {
       /*maxLoadInstructionBits=*/128,
       /*simdsPerWgp=*/4,
       /*vgprSpaceBits=*/512 * 32,
-      /*dmaSizes=*/ArrayRef<int64_t>(cdna3DMASizes)};
+      /*dmaSizes=*/ArrayRef<int64_t>(cdna3DMASizes),
+      /*workgroupMemoryBankCount=*/32};
   return &cdna3Wgp;
 }
 
@@ -328,7 +333,9 @@ const WgpDetails *getCDNA2WgpDetails() {
                                       {0x7fffffff, 0x7fffffff, 0x7fffffff},
                                       /*maxLoadInstructionBits=*/128,
                                       /*simdsPerWgp=*/4,
-                                      /*vgprSpaceBits=*/256 * 32};
+                                      /*vgprSpaceBits=*/256 * 32,
+                                      /*dmaSizes=*/std::nullopt,
+                                      /*workgroupMemoryBankCount=*/32};
   return &cdna2Wgp;
 }
 
@@ -353,7 +360,9 @@ const WgpDetails *getCDNA1WgpDetails() {
                                       {0x7fffffff, 0x7fffffff, 0x7fffffff},
                                       /*maxLoadInstructionBits=*/128,
                                       /*simdsPerWgp=*/4,
-                                      /*vgprSpaceBits=*/256 * 32};
+                                      /*vgprSpaceBits=*/256 * 32,
+                                      /*dmaSizes=*/std::nullopt,
+                                      /*workgroupMemoryBankCount=*/32};
   return &cdna1Wgp;
 }
 
@@ -384,7 +393,9 @@ const WgpDetails *getRDNA4WgpDetails() {
                                       {0x7fffffff, 0x7fffffff, 0x7fffffff},
                                       /*maxLoadInstructionBits=*/128,
                                       /*simdsPerWgp=*/4,
-                                      /*vgprSpaceBits=*/256 * 32};
+                                      /*vgprSpaceBits=*/256 * 32,
+                                      /*dmaSizes=*/std::nullopt,
+                                      /*workgroupMemoryBankCount=*/64};
   return &rdna4Wgp;
 }
 
@@ -412,7 +423,9 @@ const WgpDetails *getRDNA3WgpDetails() {
                                       {0x7fffffff, 0x7fffffff, 0x7fffffff},
                                       /*maxLoadInstructionBits=*/128,
                                       /*simdsPerWgp=*/4,
-                                      /*vgprSpaceBits=*/256 * 32};
+                                      /*vgprSpaceBits=*/256 * 32,
+                                      /*dmaSizes=*/std::nullopt,
+                                      /*workgroupMemoryBankCount=*/64};
   return &rdna3Wgp;
 }
 
@@ -492,11 +505,14 @@ const WgpDetails *getGfx1250WgpDetails() {
                                         {32, 32},
                                         {1024, 1024, 1024},
                                         1024,
-                                        64 * 1024,
+                                        320 * 1024,
                                         {0x7fffffff, 0x7fffffff, 0x7fffffff},
                                         /*maxLoadInstructionBits=*/128,
                                         /*simdsPerWgp=*/4,
-                                        /*vgprSpaceBits=*/256 * 32};
+                                        // 4 banks of 256 32-bit registers.
+                                        /*vgprSpaceBits=*/256 * 4 * 32,
+                                        /*dmaSizes=*/std::nullopt,
+                                        /*workgroupMemoryBankCount=*/64};
   return &gfx1250Wgp;
 }
 
@@ -814,10 +830,12 @@ std::optional<TargetDetails> getARMGPUTargetDetails(StringRef target) {
 }
 
 StringRef normalizeARMGPUTarget(StringRef target) {
-  if (target == "valhall")
+  if (target == "valhall") {
     return "valhall1";
-  if (target.starts_with("valhall"))
+  }
+  if (target.starts_with("valhall")) {
     return target;
+  }
 
   return llvm::StringSwitch<StringRef>(target.lower())
       .Cases({"mali-g715", "mali-g615"}, "valhall4")
@@ -839,6 +857,8 @@ StringRef normalizeARMGPUTarget(StringRef target) {
 
 const WgpDetails *getAmpereWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
+      MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16,
+      MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16,
       MMAIntrinsic::NV_WMMA_F32_16x16x16_F16,
       MMAIntrinsic::NV_WMMA_F16_16x16x16_F16,
   };
@@ -860,6 +880,8 @@ const WgpDetails *getAmpereWgpDetails() {
 
 const WgpDetails *getTuringWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
+      MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16,
+      MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16,
       MMAIntrinsic::NV_WMMA_F32_16x16x16_F16,
       MMAIntrinsic::NV_WMMA_F16_16x16x16_F16,
   };
@@ -881,6 +903,8 @@ const WgpDetails *getTuringWgpDetails() {
 
 const WgpDetails *getVoltaWgpDetails() {
   static const MMAIntrinsic mmaOps[] = {
+      MMAIntrinsic::NV_MMA_SYNC_F32_16x8x16_F16,
+      MMAIntrinsic::NV_MMA_SYNC_F16_16x8x16_F16,
       MMAIntrinsic::NV_WMMA_F32_16x16x16_F16,
       MMAIntrinsic::NV_WMMA_F16_16x16x16_F16,
   };
@@ -954,15 +978,19 @@ std::optional<TargetDetails> getNVIDIAGPUTargetDetails(StringRef target) {
 }
 
 StringRef normalizeNVIDIAGPUTarget(StringRef target) {
-  if (target.starts_with("sm_"))
+  if (target.starts_with("sm_")) {
     return target;
+  }
 
-  if (target.starts_with("rtx40"))
+  if (target.starts_with("rtx40")) {
     return "sm_89";
-  if (target.starts_with("rtx30"))
+  }
+  if (target.starts_with("rtx30")) {
     return "sm_86";
-  if (target.starts_with("rtx20"))
+  }
+  if (target.starts_with("rtx20")) {
     return "sm_75";
+  }
 
   return llvm::StringSwitch<StringRef>(target.lower())
       .Case("a100", "sm_80")
@@ -1002,22 +1030,26 @@ const WgpDetails *getAdrenoWgpDetails() {
 }
 
 bool verifyQualcommGPUTarget(StringRef target) {
-  if (target == "adreno")
+  if (target == "adreno") {
     return true;
+  }
 
   StringRef t = target;
-  if (!t.consume_front("adreno-"))
+  if (!t.consume_front("adreno-")) {
     return false;
+  }
 
   // The can exist an optional L at the end.
-  if (t.ends_with("l"))
+  if (t.ends_with("l")) {
     t = t.drop_back();
+  }
 
   // Check whether we have a product number
   unsigned number = 0;
   // StringRef::consumeInteger() returns true to signify errors.
-  if (t.size() != 3 || t.consumeInteger(10, number))
+  if (t.size() != 3 || t.consumeInteger(10, number)) {
     return false;
+  }
 
   return true;
 }
@@ -1036,8 +1068,9 @@ std::optional<TargetDetails> getQualcommGPUTargetDetails(StringRef target) {
   // Adreno-750: https://vulkan.gpuinfo.org/displayreport.php?id=27414
   // Adreno-740: https://vulkan.gpuinfo.org/displayreport.php?id=19218
   // Adreno-730: https://vulkan.gpuinfo.org/displayreport.php?id=19382
-  if (verifyQualcommGPUTarget(target))
+  if (verifyQualcommGPUTarget(target)) {
     return TargetDetails{adrenoWgp, nullptr};
+  }
 
   return std::nullopt;
 }
@@ -1103,9 +1136,11 @@ TargetAttr getMetalTargetDetails(MLIRContext *context) {
 
 TargetAttr getCUDATargetDetails(StringRef target, StringRef features,
                                 MLIRContext *context) {
-  if (std::optional<TargetDetails> details = getNVIDIAGPUTargetDetails(target))
+  if (std::optional<TargetDetails> details =
+          getNVIDIAGPUTargetDetails(target)) {
     return createTargetAttr(*details, normalizeNVIDIAGPUTarget(target),
                             features, context);
+  }
   return nullptr;
 }
 
@@ -1126,7 +1161,7 @@ Attribute getHIPTargetEncodingLayoutAttr(TargetAttr target,
                                          StringRef resolver) {
   if (resolver == kDataTilingEncodingLayoutResolverName) {
     // Return a GPUEncodingResolverAttr with an empty configuration. The
-    // addtional attributes will be attached by the `cloneWithSimplifiedConfig`
+    // additional attributes will be attached by the `cloneWithSimplifiedConfig`
     // interface method when the resolver needs to be configured.
     return IREE::GPU::GPUEncodingResolverAttr::get(target.getContext(), {});
   }
@@ -1147,8 +1182,9 @@ StringRef normalizeHIPTarget(StringRef target) {
 StringRef normalizeVulkanAMDGPUTarget(StringRef target) {
   // We cannot accept rdnaN as a target for LLVM AMDGPU backend; so the
   // following is only meant for Vulkan but not HIP.
-  if (target.starts_with("rdna"))
+  if (target.starts_with("rdna")) {
     return target;
+  }
   return normalizeAMDGPUTarget(target);
 }
 
@@ -1216,6 +1252,78 @@ TargetAttr getFullTarget(StringRef targetAPI, StringRef aliasTarget,
       .Case("hip", getHIPTargetDetails(aliasTarget, features, context))
       .Case("vulkan", getVulkanTargetDetails(aliasTarget, context))
       .Default(nullptr);
+}
+
+//===----------------------------------------------------------------------===//
+// Architecture-specific heuristic seed tables
+//===----------------------------------------------------------------------===//
+
+constexpr int64_t kCacheLineSizeBits = 128 * 8;
+
+// clang-format off
+
+/// Default seeds (CDNA and other architectures).
+static constexpr ArchSeedSet kDefaultSeeds = {
+    /*gemm=*/{
+        /*SmallGemm=*/     {2, 2,  4, 2 * kCacheLineSizeBits},
+        /*MediumGemm=*/    {4, 8,  4, 2 * kCacheLineSizeBits},
+        /*LargeGemm=*/     {4, 16, 2, kCacheLineSizeBits / 2},
+        /*VeryLargeGemm=*/ {4, 16, 2, kCacheLineSizeBits / 2},
+    },
+    /*scaledGemm=*/{
+        /*SmallGemm=*/     {2, 2,  4, 2 * kCacheLineSizeBits},
+        /*MediumGemm=*/    {8, 32, 4, kCacheLineSizeBits / 2},
+        /*LargeGemm=*/     {8, 32, 2, kCacheLineSizeBits / 2},
+        /*VeryLargeGemm=*/ {8, 32, 2, kCacheLineSizeBits / 2},
+    },
+    /*conv=*/{
+        /*SmallGemm=*/     {2, 2,  4, kCacheLineSizeBits},
+        /*MediumGemm=*/    {8, 4,  4, 2 * kCacheLineSizeBits},
+        /*LargeGemm=*/     {8, 8,  2, kCacheLineSizeBits / 2},
+        /*VeryLargeGemm=*/ {8, 8,  2, kCacheLineSizeBits / 2},
+    },
+};
+
+/// RDNA4 seeds (tuned based on RX 9070 XT benchmarking data).
+static constexpr ArchSeedSet kRDNA4Seeds = {
+    /*gemm=*/{
+        /*SmallGemm=*/     {2, 2,  4, 2 * kCacheLineSizeBits},
+        /*MediumGemm=*/    {4, 4,  4, kCacheLineSizeBits},
+        /*LargeGemm=*/     {8, 16, 4, kCacheLineSizeBits},
+        /*VeryLargeGemm=*/ {8, 16, 4, kCacheLineSizeBits},
+    },
+    /*scaledGemm=*/{
+        /*SmallGemm=*/     {2, 2,  4, 2 * kCacheLineSizeBits},
+        /*MediumGemm=*/    {8, 32, 4, kCacheLineSizeBits / 2},
+        /*LargeGemm=*/     {8, 32, 2, kCacheLineSizeBits / 2},
+        /*VeryLargeGemm=*/ {8, 32, 2, kCacheLineSizeBits / 2},
+    },
+    /*conv=*/{
+        /*SmallGemm=*/     {2, 2,  4, kCacheLineSizeBits},
+        /*MediumGemm=*/    {4, 4,  4, kCacheLineSizeBits},
+        /*LargeGemm=*/     {4, 8,  4, kCacheLineSizeBits},
+        /*VeryLargeGemm=*/ {4, 8,  4, kCacheLineSizeBits},
+    },
+};
+
+// clang-format on
+
+/// Look up the seed set for the given target architecture.
+const ArchSeedSet &getArchSeedSet(TargetAttr target) {
+  if (!target) {
+    return kDefaultSeeds;
+  }
+
+  StringRef arch = target.getArch();
+  // RDNA4 is gfx1200/gfx1201 (major=12, minor=0). Note: gfx1250 (minor=5)
+  // is a separate experimental target and should not use RDNA4 seeds.
+  FailureOr<amdgpu::Chipset> chipset = amdgpu::Chipset::parse(arch);
+  bool isRDNA4 = succeeded(chipset) && chipset->majorVersion == 12 &&
+                 chipset->minorVersion == 0;
+  if (isRDNA4 || arch == "rdna4") {
+    return kRDNA4Seeds;
+  }
+  return kDefaultSeeds;
 }
 
 } // namespace mlir::iree_compiler::IREE::GPU

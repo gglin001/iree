@@ -4,13 +4,26 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#ifndef IREE_COMPILER_CODEGEN_COMMON_GPU_GPUHEURISTICS_H_
+#define IREE_COMPILER_CODEGEN_COMMON_GPU_GPUHEURISTICS_H_
+
 #include <cstdint>
+#include <optional>
 #include "iree/compiler/Codegen/Dialect/GPU/IR/IREEGPUInterfaces.h"
 #include "mlir/IR/Types.h"
 
 namespace mlir::iree_compiler {
 
-enum class GemmSize { NotSet, SmallGemm, MediumGemm, LargeGemm };
+enum class GemmSizeKind : int {
+  SmallGemm,
+  MediumGemm,
+  LargeGemm,
+  VeryLargeGemm,
+  Count, // Must be last — used for static array sizes.
+};
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
+                              const GemmSizeKind &gemmSize);
 
 /// Struct containing information about a matmul's shape and type.
 struct GPUMatmulShapeType {
@@ -18,10 +31,14 @@ struct GPUMatmulShapeType {
   SmallVector<int64_t, 2> nSizes;
   SmallVector<int64_t, 2> kSizes;
   SmallVector<int64_t, 2> batchSizes;
+
   Type aType;
   Type bType;
   Type cType;
-  GemmSize gemmSize = GemmSize::NotSet;
+  Type aScaleType;
+  Type bScaleType;
+
+  std::optional<GemmSizeKind> gemmSize;
 
   // Number of horizontally fused operations.
   // Horizontal fusion: C1,C2 = fused_matmul(A, B1, B2) where A is shared.
@@ -32,15 +49,18 @@ struct GPUMatmulShapeType {
                      int64_t numHorizontallyFusedOps = 1)
       : mSizes({m}), nSizes({n}), kSizes({k}), batchSizes({}), aType(a),
         bType(b), cType(c), numHorizontallyFusedOps(numHorizontallyFusedOps) {}
+
   GPUMatmulShapeType(ArrayRef<int64_t> m, ArrayRef<int64_t> n,
                      ArrayRef<int64_t> k, ArrayRef<int64_t> batch, Type a,
-                     Type b, Type c, int64_t numHorizontallyFusedOps = 1)
+                     Type b, Type c, Type aScale = nullptr,
+                     Type bScale = nullptr, int64_t numHorizontallyFusedOps = 1)
       : mSizes(m), nSizes(n), kSizes(k), batchSizes(batch), aType(a), bType(b),
-        cType(c), numHorizontallyFusedOps(numHorizontallyFusedOps) {}
+        cType(c), aScaleType(aScale), bScaleType(bScale),
+        numHorizontallyFusedOps(numHorizontallyFusedOps) {}
 };
 
 /// Struct containing information about a GPU MMA intrinsic type.
-struct GPUIntrinsicType : public GPUMatmulShapeType {
+struct GPUIntrinsicType : GPUMatmulShapeType {
   IREE::Codegen::InnerTileDescAttrInterface mmaKind;
   GPUIntrinsicType(int64_t m, int64_t n, int64_t k, Type a, Type b, Type c,
                    IREE::Codegen::InnerTileDescAttrInterface kind)
@@ -68,34 +88,35 @@ struct GPUMMAHeuristicSeeds {
 struct GPUMMASchedule {
   // The MMA intrinsic kind to use for this schedule.
   IREE::Codegen::InnerTileDescAttrInterface mmaKind;
-  // Native MMA intrinsic size along M dimension for a subgroup.
-  int64_t mSize = 0;
-  // Native MMA intrinsic size along N dimension for a subgroup.
-  int64_t nSize = 0;
-  // Native MMA intrinsic size along K dimension for a subgroup.
-  int64_t kSize = 0;
+
+  // Native MMA intrinsic sizes along M, N and K dimensions for a subgroup.
+  SmallVector<int64_t, 2> mSizes;
+  SmallVector<int64_t, 2> nSizes;
+  SmallVector<int64_t, 2> kSizes;
 
   // Number of subgroups along each M and N dimension.
-  SmallVector<int64_t> mSubgroupCounts;
-  SmallVector<int64_t> nSubgroupCounts;
+  SmallVector<int64_t, 2> mSubgroupCounts;
+  SmallVector<int64_t, 2> nSubgroupCounts;
 
   // Tile sizes for each M, N, and K dimension. When there are multiple M, N,
   // or K dimensions, the intrinsic sizes are targeted to the innermost
   // dimension, and the outer dimensions can be thought of as unrolling factors
   // along M, N, or K.
-  SmallVector<int64_t> mTileSizes; // M tile sizes per subgroup.
-  SmallVector<int64_t> nTileSizes; // N tile sizes per subgroup.
-  SmallVector<int64_t> kTileSizes; // K tile sizes.
+  SmallVector<int64_t, 2> mTileSizes; // M tile sizes per subgroup.
+  SmallVector<int64_t, 2> nTileSizes; // N tile sizes per subgroup.
+  SmallVector<int64_t, 2> kTileSizes; // K tile sizes.
 
   // Constructor for multi M, N, K dim schedules.
   GPUMMASchedule(IREE::Codegen::InnerTileDescAttrInterface kind,
-                 int64_t mIntrinsicSize, int64_t nIntrinsicSize,
-                 int64_t kIntrinsicSize, ArrayRef<int64_t> mSubgroupCounts,
+                 ArrayRef<int64_t> mIntrinsicSizes,
+                 ArrayRef<int64_t> nIntrinsicSizes,
+                 ArrayRef<int64_t> kIntrinsicSizes,
+                 ArrayRef<int64_t> mSubgroupCounts,
                  ArrayRef<int64_t> nSubgroupCounts,
                  ArrayRef<int64_t> mTileSizes, ArrayRef<int64_t> nTileSizes,
                  ArrayRef<int64_t> kTileSizes)
-      : mmaKind(kind), mSize(mIntrinsicSize), nSize(nIntrinsicSize),
-        kSize(kIntrinsicSize), mSubgroupCounts(mSubgroupCounts),
+      : mmaKind(kind), mSizes(mIntrinsicSizes), nSizes(nIntrinsicSizes),
+        kSizes(kIntrinsicSizes), mSubgroupCounts(mSubgroupCounts),
         nSubgroupCounts(nSubgroupCounts), mTileSizes(mTileSizes),
         nTileSizes(nTileSizes), kTileSizes(kTileSizes) {}
 
@@ -104,20 +125,50 @@ struct GPUMMASchedule {
                  int64_t mIntrinsicSize, int64_t nIntrinsicSize,
                  int64_t kIntrinsicSize, int64_t mSubgroup, int64_t nSubgroup,
                  int64_t mTileSize, int64_t nTileSize, int64_t kTileSize)
-      : mmaKind(kind), mSize(mIntrinsicSize), nSize(nIntrinsicSize),
-        kSize(kIntrinsicSize), mSubgroupCounts({mSubgroup}),
+      : mmaKind(kind), mSizes({mIntrinsicSize}), nSizes({nIntrinsicSize}),
+        kSizes({kIntrinsicSize}), mSubgroupCounts({mSubgroup}),
         nSubgroupCounts({nSubgroup}), mTileSizes({mTileSize}),
         nTileSizes({nTileSize}), kTileSizes({kTileSize}) {}
+
+  // Helper methods to get the total product of intrinsic sizes.
+  int64_t getTotalMSize() const { return llvm::product_of(mSizes); }
+  int64_t getTotalNSize() const { return llvm::product_of(nSizes); }
+  int64_t getTotalKSize() const { return llvm::product_of(kSizes); }
+
+  // Helper methods to get the total product of tile sizes.
+  int64_t getTotalMTileSize() const { return llvm::product_of(mTileSizes); }
+  int64_t getTotalNTileSize() const { return llvm::product_of(nTileSizes); }
+  int64_t getTotalKTileSize() const { return llvm::product_of(kTileSizes); }
+
+  // Helper methods to get the total product of subgroup counts.
+  int64_t getTotalMSubgroupCount() const {
+    return llvm::product_of(mSubgroupCounts);
+  }
+  int64_t getTotalNSubgroupCount() const {
+    return llvm::product_of(nSubgroupCounts);
+  }
+
+  // Check if all schedule dimensions are single-element.
+  bool hasSingleDimensions() const {
+    return llvm::all_equal({size_t(1), mSubgroupCounts.size(),
+                            nSubgroupCounts.size(), mTileSizes.size(),
+                            nTileSizes.size(), kTileSizes.size(), mSizes.size(),
+                            nSizes.size(), kSizes.size()});
+  }
 };
 
 /// Returns a schedule for using one of the given MMA |intrinsics| to target the
 /// input |problem|. Returns std::nullopt if we cannot find such a schedule.
+/// When |doCPromotion| is true, the accumulator uses shared memory. This can be
+/// due to padding requirements or because the operation has an existing
+/// accumulator that needs to be loaded from global memory (matmul_accumulate).
 FailureOr<GPUMMASchedule> deduceMMASchedule(
     const GPUMatmulShapeType &problem, ArrayRef<GPUIntrinsicType> intrinsics,
     const GPUMMAHeuristicSeeds &seeds, int64_t sharedMemLimitInBytes,
-    int64_t subgroupSize, std::optional<int64_t> cuCount,
+    int64_t subgroupSize, std::optional<int64_t> cuCount, Location loc,
     bool transposedLhs = false, bool transposedRhs = false,
-    bool canUpcastAcc = false, bool mustBeAligned = true,
+    bool canUpcastAcc = false, bool useDirectLoad = false,
+    int64_t prefetchNumStages = 0, bool mustBeAligned = true,
     bool doCPromotion = false, int64_t splitReductionTripCnt = 0);
 
 /// Returns a schedule for the pvMatmul in attention using one of the given MMA
@@ -135,3 +186,5 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
                               const GPUMMASchedule &schedule);
 
 } // namespace mlir::iree_compiler
+
+#endif // IREE_COMPILER_CODEGEN_COMMON_GPU_GPUHEURISTICS_H_

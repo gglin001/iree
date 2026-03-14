@@ -151,7 +151,7 @@ iree_cc_library(
     MLIRVectorToLLVM
     MLIRVectorToSCF
     MLIRVectorTransforms
-    MLIRX86VectorTransforms
+    MLIRX86Transforms
     iree::compiler::Codegen::Common
     iree::compiler::Codegen::Common::CPU::CommonCPUPasses
     iree::compiler::Codegen::Common::TransformDialectInterpreterPass
@@ -160,11 +160,13 @@ iree_cc_library(
     iree::compiler::Codegen::Interfaces::PartitionableLoopsInterface
     iree::compiler::Codegen::Transforms
     iree::compiler::Codegen::Utils
+    iree::compiler::Codegen::Utils::CodegenOptions
     iree::compiler::Dialect::HAL::IR
     iree::compiler::Dialect::HAL::IR::HALDialect
     iree::compiler::Dialect::LinalgExt::IR
     iree::compiler::Dialect::LinalgExt::Transforms
     iree::compiler::Dialect::LinalgExt::Utils
+    iree::compiler::Dialect::TensorExt::IR
     iree::compiler::Dialect::Util::IR
     iree::compiler::Dialect::Util::Transforms
     iree::compiler::Utils
