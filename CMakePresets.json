@@ -11,6 +11,7 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": true,
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_SYSROOT": "/",
         "CMAKE_INSTALL_RPATH_USE_LINK_PATH": true,
         "IREE_ERROR_ON_MISSING_SUBMODULES": false,
         "IREE_ENABLE_LLD": true,
